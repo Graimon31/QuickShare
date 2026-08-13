@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  build-linux:
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+      target: linux-builder
+    volumes:
+      - ./dist/linux:/app/dist/linux
+      - ./dist:/app/dist
+    command: >
+      bash -c "echo 'Build complete. Exporting artifacts to host volume ./dist/linux...' && ls -la /app/dist/linux"

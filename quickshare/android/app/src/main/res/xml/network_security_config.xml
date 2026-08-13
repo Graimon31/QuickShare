@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  network_security_config.xml
+  Allows cleartext HTTP traffic ONLY to RFC1918 private IP ranges (LAN).
+  Public internet traffic still uses HTTPS only.
+
+  NOTE: Domain-based matching does NOT work for IP addresses/subnets in NSC.
+  The correct approach is to use base-config with cleartextTrafficPermitted=false
+  and add specific domain rules. For IP ranges, we rely on usesCleartextTraffic
+  being set ONLY in debug builds via the application's debug manifest override,
+  or we use the approach below which permits cleartext for the loopback and
+  private ranges by listing them explicitly as domains (best effort).
+
+  For production, consider using HTTPS with a self-signed cert + certificate pinning.
+-->
+<network-security-config>
+    <!-- Default: deny cleartext for all public traffic -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Allow cleartext HTTP for LAN addresses (RFC1918) -->
+    <!-- 10.x.x.x range -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.0.1</domain>
+    </domain-config>
+
+    <!-- Allow cleartext for localhost (development/testing) -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+
+    <!--
+      IMPORTANT: Android NSC does not support CIDR or wildcard IP ranges.
+      For full LAN cleartext support (192.168.x.x, 10.x.x.x, 172.16-31.x.x),
+      the recommended production approach is:
+        1. Use self-signed TLS within the LAN (shelf + dart:io SecurityContext)
+        2. Or set android:usesCleartextTraffic="true" ONLY in the debug variant
+           (android/app/src/debug/AndroidManifest.xml)
+      
+      The current android:usesCleartextTraffic="true" on the application tag
+      has been intentionally removed from the main manifest to tighten security.
+      Add it back only in debug/AndroidManifest.xml for testing.
+    -->
+</network-security-config>

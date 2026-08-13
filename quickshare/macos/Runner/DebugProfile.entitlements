@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<!-- Outgoing: signaling WebSocket, STUN, WebRTC. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Incoming: WebRTC peer connections. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<!-- Reading the file the user picks to send. -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<!-- Writing received files to ~/Downloads. -->
+	<key>com.apple.security.files.downloads.read-write</key>
+	<true/>
+	<!-- CoreBluetooth: advertise/scan for the LAN-free transfer mode. -->
+	<key>com.apple.security.device.bluetooth</key>
+	<true/>
+</dict>
+</plist>

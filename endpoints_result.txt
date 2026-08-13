@@ -1,0 +1,32 @@
+==========================================================================
+Проверка точек обмена (без VPN)
+==========================================================================
+
+--- Nostr-релеи (эфемерные события, WSS:443) ---
+  relay.damus.io           HTTP/1.1 503 Service Unavailable               302 ms
+  nos.lol                  HTTP/1.1 101 Switching Protocols               200 ms
+  relay.nostr.band         TimeoutError: timed out                        
+  relay.primal.net         HTTP/1.1 101 Switching Protocols               322 ms
+  nostr.mom                HTTP/1.1 101 Switching Protocols               198 ms
+  relay.snort.social       TimeoutError: _ssl.c:1063: The handshake ope   
+
+--- MQTT-брокеры поверх WebSocket ---
+  broker.emqx.io:8084          HTTP/1.1 101 Switching Protocols             555 ms
+  broker.emqx.io:443           HTTP/1.1 301 Moved Permanently               733 ms
+  test.mosquitto.org:8081      HTTP/1.1 101 Switching Protocols             233 ms
+  test.mosquitto.org:443       HTTP/1.1 301 Moved Permanently               2745 ms
+  broker.hivemq.com:8884       HTTP/1.1 101 Switching Protocols             1381 ms
+  mqtt.flespi.io:443           HTTP/1.1 101 Switching Protocols             647 ms
+
+--- ntfy.sh: полный круг публикация -> чтение ---
+  публикация 200 байт: 422 ms, топик qs-Qi3ZFqVzavRe
+  чтение обратно:      403 ms, данные НЕ совпали
+  полный круг:         825 ms
+
+--- Публичные TURN (запасной путь для данных) ---
+  openrelay.metered.ca:443       недоступен (ConnectionRefusedError)
+  turn.cloudflare.com:443        доступен, 17 ms
+  relay.metered.ca:443           недоступен (TimeoutError)
+
+Строка вида 'HTTP/1.1 101' = путь живой целиком.
+Отдайте endpoints_result.txt обратно в чат.

@@ -1,0 +1,14 @@
+{
+  "name": "quickshare-signaling",
+  "version": "1.0.0",
+  "description": "QuickShare WebRTC signaling server (headless, no UI)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/signaling.test.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.16.0"
+  }
+}
