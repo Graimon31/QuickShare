@@ -12,6 +12,7 @@ import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/utils/wakelock_guard.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
+import 'package:quickshare/core/webrtc/idle_watchdog.dart';
 import 'package:quickshare/core/webrtc/sdp_compressor.dart';
 import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
 import 'package:quickshare/features/sender/data/signaling/webrtc_signaling_client.dart';
@@ -66,6 +67,19 @@ class WebRtcReceiverTransport {
   int _speedBps = 0;
   String _baseDir = '';
   final _gathering = IceGatheringTracker();
+
+  /// Watches for the peer going silent mid-transfer — the serverless path has
+  /// no signaling channel to report a disconnect through, so ICE state and a
+  /// lack of incoming bytes are the only signals available.
+  IdleWatchdog? _idleWatchdog;
+  static const _idleTimeout = Duration(seconds: 30);
+
+  /// How long ICE may sit in `disconnected` before giving up — matches the
+  /// sender's grace period ([WebRtcTransferTransport._iceRecoveryGrace]) for
+  /// the same reason: routine on a relay path under a VPN, not fatal on its
+  /// own.
+  static const _iceRecoveryGrace = Duration(seconds: 20);
+  Timer? _iceRecoveryTimer;
 
   /// §8 — whether the incoming binary stream is gzip-compressed.
   bool _isCompressed = false;
@@ -162,6 +176,12 @@ class WebRtcReceiverTransport {
       // trickle path, so gathering has to finish before it is encoded.
       _peerConnection!.onIceCandidate = _gathering.observe;
 
+      // This path previously had no ICE-state reaction whatsoever — a dead
+      // connection here produced no error until the flat 120s timeout further
+      // down expired, and that timeout counted the whole transfer, not just
+      // the time since the connection actually died.
+      _peerConnection!.onIceConnectionState = _onIceStateChanged;
+
       AppLogger.info('Receiver: decompressed offer, ${rawSdp.length} chars',
           tag: 'WEBRTC_RECEIVER');
 
@@ -205,11 +225,18 @@ class WebRtcReceiverTransport {
         }
       });
 
+      // Real failure detection is _onIceStateChanged + the idle watchdog now;
+      // this is only a backstop against a Future that never resolves for some
+      // other reason. It used to be 120s counted across the *entire* transfer
+      // rather than just connection setup, which would have killed any file
+      // that took longer than two minutes over a relay even while healthy.
       return completer.future.timeout(
-        const Duration(seconds: 120),
+        const Duration(minutes: 30),
         onTimeout: () {
           sub.cancel();
-          throw Exception('Serverless transfer timed out waiting for data channel');
+          throw Exception(
+              'Serverless transfer timed out (30 min backstop) without '
+              'reaching a completed or failed state');
         },
       );
     } catch (e) {
@@ -390,6 +417,7 @@ class WebRtcReceiverTransport {
             ? GZipDecoder().decodeBytes(message.binary)
             : message.binary;
 
+        _idleWatchdog?.kick();
         _fileSink!.add(bytes);
         _receivedBytes += bytes.length;
 
@@ -420,6 +448,13 @@ class WebRtcReceiverTransport {
           _fileSink = File(_targetPath!).openWrite();
           _statusController.add(TransferStatus.transferring);
           _emit('transferring');
+          _idleWatchdog ??= IdleWatchdog(
+            timeout: _idleTimeout,
+            onTimeout: () => _fail(
+                'No data received for ${_idleTimeout.inSeconds}s — the '
+                'connection appears to have died'),
+          );
+          _idleWatchdog!.kick();
           break;
 
         case 'complete':
@@ -427,6 +462,7 @@ class WebRtcReceiverTransport {
           await _fileSink?.flush();
           await _fileSink?.close();
           _fileSink = null;
+          _idleWatchdog?.cancel();
           if (_totalBytes > 0 && _receivedBytes < _totalBytes) {
             _fail(
                 'Transfer completed prematurely: received $_receivedBytes of $_totalBytes bytes');
@@ -469,6 +505,39 @@ class WebRtcReceiverTransport {
     ));
   }
 
+  /// Reacts to ICE state changes on the serverless path, which — unlike the
+  /// room-based `receive()` — has no signaling channel left to carry a
+  /// `peer-disconnected` message, so this and the idle watchdog are the only
+  /// ways a dead connection is ever noticed here.
+  ///
+  /// `disconnected` gets a grace period rather than an immediate failure: it
+  /// is routine on a relayed path under a VPN and usually recovers within
+  /// seconds. Failing on the first blip would abort transfers that were never
+  /// actually broken.
+  void _onIceStateChanged(RTCIceConnectionState state) {
+    AppLogger.info('Receiver ICE state: $state', tag: 'WEBRTC_RECEIVER');
+
+    switch (state) {
+      case RTCIceConnectionState.RTCIceConnectionStateConnected:
+      case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+        _iceRecoveryTimer?.cancel();
+        _iceRecoveryTimer = null;
+      case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
+        _iceRecoveryTimer?.cancel();
+        _iceRecoveryTimer = Timer(_iceRecoveryGrace, () {
+          _fail('ICE stayed disconnected for '
+              '${_iceRecoveryGrace.inSeconds}s — giving up on this session');
+        });
+      case RTCIceConnectionState.RTCIceConnectionStateFailed:
+      case RTCIceConnectionState.RTCIceConnectionStateClosed:
+        _iceRecoveryTimer?.cancel();
+        _iceRecoveryTimer = null;
+        _fail('Peer connection failed (ICE $state)');
+      default:
+        break;
+    }
+  }
+
   void _fail(String reason) {
     debugPrint('WebRTC receive failed: $reason');
     _statusController.add(TransferStatus.failed);
@@ -480,6 +549,9 @@ class WebRtcReceiverTransport {
   }
 
   Future<void> _cleanup() async {
+    _idleWatchdog?.cancel();
+    _iceRecoveryTimer?.cancel();
+    _iceRecoveryTimer = null;
     _turnRefresher?.cancel(); // §9
     _turnRefresher = null;
     await _wakelockGuard.release(); // §6
