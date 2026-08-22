@@ -155,6 +155,22 @@ class _HomePageState extends State<HomePage>
               ],
             ),
 
+          // Settings, out of the way of the two things this screen is for.
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 8, right: 8),
+                child: IconButton(
+                  tooltip: 'Settings',
+                  icon: const Icon(Icons.settings_outlined,
+                      color: AppColors.textSecondary),
+                  onPressed: () => context.go('/settings'),
+                ),
+              ),
+            ),
+          ),
+
           // 2. Main Centered Glass UI Content
           SafeArea(
             child: ScrollConfiguration(

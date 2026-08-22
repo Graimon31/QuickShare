@@ -111,6 +111,7 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
               context.go('/receive/complete', extra: {
                 'filePath': state.filePath,
                 'fileName': state.fileName,
+                'items': state.items,
               });
             } else if (state is ReceiverError) {
               WakelockPlus.disable();

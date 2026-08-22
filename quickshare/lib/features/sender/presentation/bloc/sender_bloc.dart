@@ -12,6 +12,7 @@ import 'package:quickshare/features/sender/domain/transports/transfer_transport.
 import 'package:quickshare/features/sender/data/repositories/sender_repository_impl.dart';
 import 'package:quickshare/features/sender/data/transports/webrtc_transfer_transport.dart';
 import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
+import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:archive/archive_io.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
@@ -207,6 +208,19 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   StreamSubscription<TransferStatus>? _statusSubscription;
 
   FileMetadata? _currentFile;
+
+
+  /// Every file this session will send.
+
+  ///
+
+  /// The wire protocol carries a manifest, so a session is a list even when
+
+  /// it happens to hold one item. [_currentFile] stays alongside it because
+
+  /// the QR and progress screens still show a single name and size.
+
+  List<FileMetadata>? _sessionFiles;
   TransportType _selectedMode = TransportType.wifi;
   DateTime? _lastProgressUpdate;
   int _lastBytes = 0;
@@ -416,7 +430,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
             .listen((blocked) => add(
                 RelayBlocked(blocked.sessionBytes, blocked.limitBytes)));
 
-        await _activeWebRtcTransport!.startSharingServerless(file);
+        await _activeWebRtcTransport!
+            .startSharingServerless(file, files: _sessionFiles ?? [file]);
 
         final offerSdp = await _activeWebRtcTransport!.createLocalOfferSdp();
         if (offerSdp == null || offerSdp.isEmpty) {
@@ -507,6 +522,29 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         return;
       }
 
+      // Several plain files no longer need bundling: the DataChannel protocol
+      // carries a manifest now. Zipping is still the only way to preserve a
+      // *directory* tree, and it would also defeat saving photos into the
+      // recipient's gallery, so it is reserved for the case that needs it.
+      final allPlainFiles =
+          event.paths.every((path) => FileSystemEntity.isFileSync(path));
+
+      if (allPlainFiles && event.paths.length > 1) {
+        final files = <FileMetadata>[];
+        for (final path in event.paths) {
+          files.add(FileMetadata(
+            name: p.basename(path),
+            path: path,
+            size: await File(path).length(),
+            mimeType: lookupMimeType(path) ?? 'application/octet-stream',
+          ));
+        }
+        _sessionFiles = files;
+        _currentFile = files.first;
+        await _startSendingInternal(files.first, mode, emit);
+        return;
+      }
+
       final isSingleFile = event.paths.length == 1 &&
           FileSystemEntity.isFileSync(event.paths.first);
 
@@ -521,9 +559,13 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         targetMetadata = FileMetadata(
           name: name,
           path: filePath,
+          // A real type, not a blanket octet-stream: it decides whether the
+          // payload is compressed in flight and whether the far side files it
+          // as a photo or as a document.
+          mimeType: lookupMimeType(filePath) ?? 'application/octet-stream',
           size: size,
-          mimeType: 'application/octet-stream',
         );
+        _sessionFiles = [targetMetadata];
       } else {
         emit(ServerStarting());
         String? zipPath;

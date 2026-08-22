@@ -1,7 +1,8 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:mime/mime.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/receiver/domain/usecases/download_file_usecase.dart';
@@ -11,6 +12,8 @@ import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.da
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
+import 'package:quickshare/core/storage/received_item.dart';
+import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -104,9 +107,19 @@ class Verifying extends ReceiverState {}
 class DownloadComplete extends ReceiverState {
   final String filePath;
   final String fileName;
-  const DownloadComplete(this.filePath, this.fileName);
+
+  /// Everything that arrived, still sitting in the transfer cache.
+  ///
+  /// Empty for the transports that have not been moved onto the cache yet
+  /// (QHTP, Bluetooth), which still write straight to their destination; the
+  /// completion screen falls back to [filePath] in that case.
+  final List<ReceivedItem> items;
+
+  const DownloadComplete(this.filePath, this.fileName,
+      {this.items = const []});
+
   @override
-  List<Object> get props => [filePath, fileName];
+  List<Object> get props => [filePath, fileName, items];
 }
 
 class ReceiverError extends ReceiverState {
@@ -298,8 +311,14 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           'candidates, answering on topic $topic',
           tag: 'WEBRTC_RECEIVER');
 
+      // Everything lands in the transfer cache first, on every platform.
+      // Where it goes afterwards is the completion screen's decision, and on
+      // a phone that decision belongs to the user.
+      final cacheDir = await const TransferCache().directory();
+
       final savedPath = await transport.receiveWithSdpOffer(
         qr.offer.toSdp(isOffer: true),
+        targetDir: cacheDir.path,
         deliverAnswer: (answerSdp) async {
           final sealed = await SealedEnvelope.seal(
             plaintext: ServerlessQr.trimForQr(CompactSdp.fromSdp(answerSdp))
@@ -310,7 +329,18 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           await channel.publish(topic, sealed);
         },
       );
-      emit(DownloadComplete(savedPath, payload.fileName));
+      final items = [
+        for (final path in transport.receivedPaths)
+          ReceivedItem.fromCacheFile(
+            File(path),
+            lookupMimeType(path) ?? 'application/octet-stream',
+          ),
+      ];
+      emit(DownloadComplete(
+        savedPath,
+        items.length == 1 ? items.first.name : payload.fileName,
+        items: items,
+      ));
     } catch (e, st) {
       AppLogger.error('Serverless transfer failed',
           error: e, stackTrace: st, tag: 'WEBRTC_RECEIVER');

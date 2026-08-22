@@ -39,6 +39,7 @@ void main() {
     '/receive/preview',
     '/receive/download',
     '/receive/complete',
+    '/settings',
   ];
 
   for (final path in senderAndReceiverRoutes) {

@@ -9,7 +9,9 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/core/media/media_library.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/features/sender/presentation/pages/media_picker_page.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class FilePickerPage extends StatefulWidget {
@@ -37,16 +39,51 @@ class _FilePickerPageState extends State<FilePickerPage> {
     }
   }
 
-  void _pickFile() {
+  /// Files, any number of them.
+  ///
+  /// Multi-select rather than one at a time: the wire protocol carries a
+  /// manifest now, so several files no longer have to be zipped into one.
+  Future<void> _pickFile() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
-    context.read<SenderBloc>().add(PickFile());
+    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
+    final paths = result?.files
+        .map((f) => f.path)
+        .whereType<String>()
+        .toList(growable: false);
+
+    if (paths == null || paths.isEmpty) {
+      if (mounted) setState(() => _selectionInFlight = false);
+      return;
+    }
+    if (mounted) {
+      context.read<SenderBloc>().add(StartQhtpSend(paths, mode: _selectedMode));
+    }
   }
 
-  void _pickMedia() {
+  /// Photos and videos, straight from the library and untouched.
+  ///
+  /// Its own screen rather than the system picker: `image_picker` hands back
+  /// a transcoded copy on iOS, and sending a re-encoded photo is exactly what
+  /// this app is supposed not to do.
+  Future<void> _pickMedia() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
-    context.read<SenderBloc>().add(PickMedia());
+
+    final entries = await Navigator.of(context).push<List<MediaEntry>>(
+      MaterialPageRoute(builder: (_) => const MediaPickerPage()),
+    );
+
+    if (entries == null || entries.isEmpty) {
+      if (mounted) setState(() => _selectionInFlight = false);
+      return;
+    }
+    if (mounted) {
+      context.read<SenderBloc>().add(StartQhtpSend(
+            entries.map((e) => e.file.path).toList(growable: false),
+            mode: _selectedMode,
+          ));
+    }
   }
 
   Future<void> _pickFolder() async {

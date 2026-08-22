@@ -6,6 +6,7 @@ import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/theme/app_motion.dart';
 import 'package:quickshare/features/home/presentation/pages/home_page.dart';
+import 'package:quickshare/features/settings/presentation/pages/settings_page.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/features/sender/presentation/pages/file_picker_page.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
@@ -21,6 +22,7 @@ import 'package:quickshare/features/receiver/presentation/pages/transfer_preview
 import 'package:quickshare/features/receiver/presentation/pages/complete_page.dart';
 import 'package:quickshare/features/receiver/presentation/pages/code_receive_page.dart';
 import 'package:quickshare/features/receiver/presentation/pages/bluetooth_receive_page.dart';
+import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 
 CustomTransitionPage<void> _qsPage(
@@ -241,12 +243,23 @@ class AppRouter {
                 CompletePage(
                   filePath: extra?['filePath'] as String? ?? '',
                   fileName: extra?['fileName'] as String? ?? 'Unknown',
+                  items: (extra?['items'] as List?)?.cast<ReceivedItem>() ??
+                      const [],
                 ),
                 sharedAxis: true,
               );
             },
           ),
         ],
+      ),
+
+      GoRoute(
+        path: '/settings',
+        pageBuilder: (context, state) => _qsPage(
+          state,
+          const SettingsPage(),
+          sharedAxis: true,
+        ),
       ),
 
       // Error page
