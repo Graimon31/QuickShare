@@ -4,15 +4,15 @@ import 'package:quickshare/core/deep_link/deep_link_service.dart';
 void main() {
   group('DeepLinkService.parseRoomCode', () {
     test('accepts the canonical share link', () {
-      expect(DeepLinkService.parseRoomCode(Uri.parse('quickshare://join?room=A1B2C3')), 'A1B2C3');
+      expect(DeepLinkService.parseRoomCode(Uri.parse('directdrop://join?room=A1B2C3')), 'A1B2C3');
     });
 
     test('uppercases a lowercase code', () {
-      expect(DeepLinkService.parseRoomCode(Uri.parse('quickshare://join?room=a1b2c3')), 'A1B2C3');
+      expect(DeepLinkService.parseRoomCode(Uri.parse('directdrop://join?room=a1b2c3')), 'A1B2C3');
     });
 
     test('accepts the code as a trailing path segment', () {
-      expect(DeepLinkService.parseRoomCode(Uri.parse('quickshare://join/A1B2C3')), 'A1B2C3');
+      expect(DeepLinkService.parseRoomCode(Uri.parse('directdrop://join/A1B2C3')), 'A1B2C3');
     });
 
     test('rejects a foreign scheme', () {
@@ -20,19 +20,28 @@ void main() {
     });
 
     test('rejects a malformed code', () {
-      expect(DeepLinkService.parseRoomCode(Uri.parse('quickshare://join?room=TOO-LONG-123')), isNull);
-      expect(DeepLinkService.parseRoomCode(Uri.parse('quickshare://join?room=AB1')), isNull);
-      expect(DeepLinkService.parseRoomCode(Uri.parse('quickshare://join?room=')), isNull);
+      expect(DeepLinkService.parseRoomCode(Uri.parse('directdrop://join?room=TOO-LONG-123')), isNull);
+      expect(DeepLinkService.parseRoomCode(Uri.parse('directdrop://join?room=AB1')), isNull);
+      expect(DeepLinkService.parseRoomCode(Uri.parse('directdrop://join?room=')), isNull);
     });
 
     test('rejects a link with no room at all', () {
-      expect(DeepLinkService.parseRoomCode(Uri.parse('quickshare://join')), isNull);
+      expect(DeepLinkService.parseRoomCode(Uri.parse('directdrop://join')), isNull);
+    });
+
+    test('rejects the retired quickshare:// scheme', () {
+      // The product was renamed off the Quick Share trademark; a link in the
+      // old scheme belongs to whatever else claims it now, not to us.
+      expect(
+          DeepLinkService.parseRoomCode(
+              Uri.parse('quickshare://join?room=A1B2C3')),
+          isNull);
     });
   });
 
   group('DeepLinkService.parseFromText', () {
     test('accepts a pasted full link', () {
-      expect(DeepLinkService.parseFromText('  quickshare://join?room=A1B2C3  '), 'A1B2C3');
+      expect(DeepLinkService.parseFromText('  directdrop://join?room=A1B2C3  '), 'A1B2C3');
     });
 
     test('accepts a bare six-character code', () {
@@ -66,7 +75,7 @@ void main() {
 
     test('rejects non-ws sig', () {
       final uri = Uri.parse(
-          'quickshare://join?room=A1B2C3&sig=${Uri.encodeComponent('http://evil')}');
+          'directdrop://join?room=A1B2C3&sig=${Uri.encodeComponent('http://evil')}');
       final invite = DeepLinkService.parseInternetInviteFromUri(uri);
       expect(invite?.roomCode, 'A1B2C3');
       expect(invite?.signalingUrl, isNull);

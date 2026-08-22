@@ -8,6 +8,9 @@ import 'package:quickshare/core/theme/app_motion.dart';
 import 'package:quickshare/features/home/presentation/pages/home_page.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/features/sender/presentation/pages/file_picker_page.dart';
+import 'package:quickshare/core/network/local_hotspot_service.dart';
+import 'package:quickshare/features/sender/presentation/pages/local_network_page.dart';
+import 'package:quickshare/features/sender/presentation/pages/network_fallback_page.dart';
 import 'package:quickshare/features/sender/presentation/pages/qr_display_page.dart';
 import 'package:quickshare/features/sender/presentation/pages/sender_progress_page.dart';
 import 'package:quickshare/features/sender/presentation/pages/bluetooth_send_page.dart';
@@ -108,7 +111,32 @@ class AppRouter {
             },
           ),
           GoRoute(
-            path: '/send/qr',
+            path: 'fallback',
+            builder: (context, state) {
+              final extra = state.extra as Map<String, int?>?;
+              return NetworkFallbackPage(
+                sessionBytes: extra?['sessionBytes'],
+                limitBytes: extra?['limitBytes'],
+                onBack: () => context.go('/send'),
+                onUseLocalNetwork: () => context.go('/send'),
+                // iOS cannot raise a hotspot from inside an app, so the button
+                // is simply absent there rather than failing when tapped.
+                onCreateNetwork: LocalHotspotService().canHost
+                    ? () {
+                        context.read<SenderBloc>().add(StartLocalNetwork());
+                        context.go('/send/local-network');
+                      }
+                    : null,
+              );
+            },
+          ),
+          GoRoute(
+            path: 'local-network',
+            builder: (context, state) =>
+                LocalNetworkPage(onCancel: () => context.go('/send')),
+          ),
+          GoRoute(
+            path: 'qr',
             pageBuilder: (context, state) => _qsPage(
               state,
               const QRDisplayPage(),

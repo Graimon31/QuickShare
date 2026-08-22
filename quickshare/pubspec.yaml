@@ -71,14 +71,22 @@ dependencies:
   universal_ble: ^2.1.1
   dbus: ^0.7.14
   cryptography: ^2.9.0
-  mqtt_client: ^10.11.11
 
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # Real WebRTC needs platform channels, which the headless runner has none of.
+  # These tests run on a device or, as it turns out, on the macOS desktop
+  # target — which is enough to exercise ICE, DTLS and the DataChannel for
+  # real without any phone in the room.
+  integration_test:
+    sdk: flutter
   flutter_lints: ^4.0.0
   bloc_test: ^9.1.7
+  # Deterministic time for the hotspot lifecycle tests: "two minutes later"
+  # has to be exact, and a real delay would make the suite slow and flaky.
+  fake_async: ^1.3.1
   mocktail: ^1.0.4
   wakelock_plus_platform_interface: ^1.6.0
 

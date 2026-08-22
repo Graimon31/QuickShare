@@ -493,7 +493,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.yourorg.quickshare.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.directdrop.app.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/quickshare.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/quickshare";
@@ -508,7 +508,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.yourorg.quickshare.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.directdrop.app.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/quickshare.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/quickshare";
@@ -523,7 +523,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.yourorg.quickshare.RunnerTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.directdrop.app.RunnerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/quickshare.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/quickshare";

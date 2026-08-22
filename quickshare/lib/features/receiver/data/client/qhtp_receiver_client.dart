@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -61,7 +60,40 @@ class QhtpReceiverClient {
     if (clean.isEmpty || clean.replaceAll('.', '').isEmpty) {
       clean = 'item';
     }
-    return clean;
+    return _fitToNameLimit(clean);
+  }
+
+  /// Shortens a name that no filesystem would accept, keeping its extension.
+  ///
+  /// Refusing the item instead would mean the user does not get their file at
+  /// all because its name was long — the wrong trade. The extension is kept
+  /// because it is what decides whether the file opens afterwards, and the
+  /// middle is what gets dropped.
+  ///
+  /// Counted in UTF-8 bytes, and cut on a character boundary so the result is
+  /// never mojibake.
+  String _fitToNameLimit(String name) {
+    const limit = AppConstants.qhtpMaxNameBytes;
+    if (utf8.encode(name).length <= limit) return name;
+
+    final extension = p.extension(name);
+    // An "extension" longer than the budget is not an extension, it is a name
+    // with a dot in it.
+    final keptExtension =
+        utf8.encode(extension).length <= limit ~/ 4 ? extension : '';
+    final stem = name.substring(0, name.length - extension.length);
+    final stemBudget = limit - utf8.encode(keptExtension).length;
+
+    final buffer = StringBuffer();
+    var used = 0;
+    for (final rune in stem.runes) {
+      final encoded = utf8.encode(String.fromCharCode(rune)).length;
+      if (used + encoded > stemBudget) break;
+      buffer.writeCharCode(rune);
+      used += encoded;
+    }
+    final shortened = '$buffer$keptExtension';
+    return shortened.isEmpty ? 'item' : shortened;
   }
 
   String materializePath(String relativePath, String baseDir) {
@@ -112,6 +144,36 @@ class QhtpReceiverClient {
     );
   }
 
+  /// Checks a finished `.qs.partial` against the manifest before it is
+  /// published under its real name, and returns the digest to record.
+  ///
+  /// Deletes the partial on any mismatch, so the retry starts from zero rather
+  /// than resuming onto bytes already known to be wrong. Throws to signal the
+  /// caller's retry loop.
+  Future<String?> _verifyPartial({
+    required File partial,
+    required QhtpItem item,
+  }) async {
+    final writtenBytes = await partial.length();
+    if (item.size > 0 && writtenBytes != item.size) {
+      await partial.delete();
+      throw Exception(
+          'size mismatch for ${item.path}: received $writtenBytes bytes, '
+          'manifest declares ${item.size}');
+    }
+
+    final expected = item.sha256;
+    final digest = await sha256.bind(partial.openRead()).first;
+    final actual = 'sha256:$digest';
+
+    if (expected != null && expected.isNotEmpty && actual != expected) {
+      await partial.delete();
+      throw Exception('checksum mismatch for ${item.path}: '
+          'expected $expected, computed $actual');
+    }
+    return actual;
+  }
+
   Future<int?> _getAvailableDiskSpace(String dirPath) async {
     // The disk_space_2 iOS plugin crashes while registering on iOS 18.4.1.
     // This check is advisory; transfers remain safe because the file is
@@ -134,7 +196,7 @@ class QhtpReceiverClient {
       final sessionId = payload.sessionId ??
           'session_${DateTime.now().millisecondsSinceEpoch}';
 
-      onProgress?.call(QhtpProgress(
+      onProgress?.call(const QhtpProgress(
         phase: 'connecting',
         itemIndex: 0,
         itemCount: 0,
@@ -174,7 +236,7 @@ class QhtpReceiverClient {
             'Session file count ($itemCount) exceeds max limit of ${AppConstants.qhtpMaxFileCount}'));
       }
       if (totalBytes > AppConstants.qhtpMaxSessionBytes) {
-        return Left(FileFailure('Session size exceeds max limit of 500 GB'));
+        return const Left(FileFailure('Session size exceeds max limit of 500 GB'));
       }
 
       // Keep the transport safe even if another caller supplies the old
@@ -213,7 +275,7 @@ class QhtpReceiverClient {
       final manifestRes =
           await dio.get('http://$host:$port/v2/manifest', options: options);
       if (manifestRes.statusCode != 200) {
-        return Left(NetworkFailure('Failed to fetch session manifest'));
+        return const Left(NetworkFailure('Failed to fetch session manifest'));
       }
 
       final manifestMap = manifestRes.data is String
@@ -223,7 +285,7 @@ class QhtpReceiverClient {
           QhtpManifest.fromJson(manifestMap as Map<String, dynamic>);
 
       // Load or initialize state store for resume
-      var localState = await stateStore.loadState(sessionId) ?? {};
+      final localState = await stateStore.loadState(sessionId) ?? {};
 
       int sessionReceivedBytes = 0;
       for (final item in manifest.items) {
@@ -240,7 +302,7 @@ class QhtpReceiverClient {
       // 4. Transfer each item in order with per-file 3x retry
       for (int i = 0; i < manifest.items.length; i++) {
         if (_cancelToken?.isCancelled ?? false) {
-          return Left(FileFailure('Transfer cancelled by user'));
+          return const Left(FileFailure('Transfer cancelled by user'));
         }
 
         final item = manifest.items[i];
@@ -273,9 +335,10 @@ class QhtpReceiverClient {
             attempt <= AppConstants.maxRetryAttempts;
             attempt++) {
           if (_cancelToken?.isCancelled ?? false) {
-            return Left(FileFailure('Transfer cancelled by user'));
+            return const Left(FileFailure('Transfer cancelled by user'));
           }
 
+          IOSink? fileSink;
           try {
             final partialFile = File(partialPath);
             int existingBytes = 0;
@@ -283,11 +346,16 @@ class QhtpReceiverClient {
               existingBytes = await partialFile.length();
             }
 
-            if (existingBytes >= item.size && item.size > 0) {
-              existingBytes = item.size;
+            if (item.size > 0 && existingBytes > item.size) {
+              // A previous attempt wrote past the declared end — a 200 answered
+              // to a Range request appends a whole second copy. Clamping the
+              // counter used to hide that and rename an oversized file as
+              // complete; start the item over instead.
+              await partialFile.delete();
+              existingBytes = 0;
             }
 
-            final fileSink = partialFile.openWrite(
+            fileSink = partialFile.openWrite(
               mode: existingBytes > 0 ? FileMode.append : FileMode.write,
             );
 
@@ -311,8 +379,14 @@ class QhtpReceiverClient {
                 cancelToken: _cancelToken,
               );
 
+              if (existingBytes > 0 && response.statusCode == 200) {
+                // 200 means the server ignored the Range header and is sending
+                // from byte zero. Appending that to a partial file silently
+                // corrupts it, which is how resumed downloads used to break.
+                throw Exception(
+                    'Server ignored the Range request (200 instead of 206)');
+              }
               if (response.statusCode != 200 && response.statusCode != 206) {
-                await fileSink.close();
                 throw Exception(
                     'Server returned status ${response.statusCode}');
               }
@@ -351,8 +425,11 @@ class QhtpReceiverClient {
 
             await fileSink.flush();
             await fileSink.close();
+            fileSink = null;
 
-            // 5. Verify & Atomic Rename
+            // 5. Verify, then rename. In that order: the old code renamed
+            // first and hashed afterwards without comparing to anything, so a
+            // truncated or corrupted file was published as complete.
             onProgress?.call(QhtpProgress(
               phase: 'verifying',
               itemIndex: itemIndex,
@@ -366,15 +443,16 @@ class QhtpReceiverClient {
               speedBps: currentSpeedBps,
             ));
 
+            final checksumStr = await _verifyPartial(
+              partial: partialFile,
+              item: item,
+            );
+
             final finalFile = File(finalPath);
             if (await finalFile.exists()) {
               await finalFile.delete();
             }
             await partialFile.rename(finalPath);
-
-            final hashDigest =
-                await sha256.bind(File(finalPath).openRead()).first;
-            final checksumStr = 'sha256:$hashDigest';
 
             itemState = itemState.copyWith(
               status: 'completed',
@@ -399,6 +477,18 @@ class QhtpReceiverClient {
             itemError = e.toString();
             if (attempt < AppConstants.maxRetryAttempts) {
               await Future.delayed(Duration(seconds: attempt));
+            }
+          } finally {
+            // The sink used to be left open on every failed attempt, leaking a
+            // handle per retry and — worse — letting buffered bytes land in the
+            // file after the next attempt had already measured its length.
+            if (fileSink != null) {
+              try {
+                await fileSink.flush();
+              } catch (_) {}
+              try {
+                await fileSink.close();
+              } catch (_) {}
             }
           }
         }
@@ -443,7 +533,7 @@ class QhtpReceiverClient {
       return Right(deriveReceiveResult(manifest, resolvedTargetBaseDir));
     } catch (e) {
       if (e is DioException && CancelToken.isCancel(e)) {
-        return Left(FileFailure('Transfer cancelled'));
+        return const Left(FileFailure('Transfer cancelled'));
       }
       debugPrint('QHTP Client download error: $e');
       final isTimeout = e is DioException &&

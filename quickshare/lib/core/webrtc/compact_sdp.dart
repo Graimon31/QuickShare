@@ -43,9 +43,11 @@ class CompactSdp {
     String? ufrag, pwd, setup;
     Uint8List? fp;
     final candidates = <CompactCandidate>[];
+    var mediaSections = 0;
 
     for (final raw in sdp.split(RegExp(r'\r?\n'))) {
       final line = raw.trim();
+      if (line.startsWith('m=')) mediaSections++;
       if (line.startsWith('a=ice-ufrag:')) {
         ufrag = line.substring(12);
       } else if (line.startsWith('a=ice-pwd:')) {
@@ -63,6 +65,20 @@ class CompactSdp {
     if (ufrag == null || pwd == null || fp == null) {
       throw const FormatException('SDP is missing ice-ufrag, ice-pwd or a '
           'sha-256 fingerprint — cannot compact it');
+    }
+
+    // [toSdp] rebuilds exactly one `m=application` section at mid 0. An SDP
+    // with more than one media section cannot survive that round trip: the far
+    // side would answer the single-section template, and the answer would come
+    // back with one m-line against an offer that has several. libwebrtc
+    // rejects that with "the order of m-lines in answer doesn't match order in
+    // offer" — at setRemoteDescription, three steps and one network round trip
+    // away from the actual cause. Fail here instead, where the cause is.
+    if (mediaSections > 1) {
+      throw FormatException(
+          'SDP carries $mediaSections media sections; CompactSdp can only '
+          'represent one. Create the offer with OfferToReceiveAudio and '
+          'OfferToReceiveVideo disabled.');
     }
     return CompactSdp(
       iceUfrag: ufrag,

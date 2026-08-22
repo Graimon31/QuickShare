@@ -4,10 +4,14 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<false/>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>voip</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>QuickShare</string>
+	<string>DirectDrop</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -17,7 +21,7 @@
 			<string>com.quickshare.app</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>quickshare</string>
+				<string>directdrop</string>
 			</array>
 		</dict>
 	</array>
@@ -42,7 +46,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>QuickShare</string>
+	<string>DirectDrop</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -66,19 +70,19 @@
 		<string>_quickshare._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>QuickShare needs camera access to scan QR codes for receiving files from nearby devices.</string>
+	<string>DirectDrop needs camera access to scan QR codes for receiving files from nearby devices.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>QuickShare uses the microphone for WebRTC file-transfer connections when required by the peer connection.</string>
+	<string>DirectDrop uses the microphone for WebRTC file-transfer connections when required by the peer connection.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>QuickShare needs access to your local network to transfer files directly between devices. Files are sent peer-to-peer and never leave your network.</string>
+	<string>DirectDrop needs access to your local network to transfer files directly between devices. Files are sent peer-to-peer and never leave your network.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>QuickShare needs permission to save received photos and videos to your photo library.</string>
+	<string>DirectDrop needs permission to save received photos and videos to your photo library.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>QuickShare needs access to your photo library so you can select photos and videos to send.</string>
+	<string>DirectDrop needs access to your photo library so you can select photos and videos to send.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>QuickShare uses Bluetooth to discover nearby devices for peer-to-peer file transfers.</string>
+	<string>DirectDrop uses Bluetooth to discover nearby devices for peer-to-peer file transfers.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>QuickShare uses Bluetooth to advertise file transfer availability to nearby devices.</string>
+	<string>DirectDrop uses Bluetooth to advertise file transfer availability to nearby devices.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

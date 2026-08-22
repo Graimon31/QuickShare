@@ -3,10 +3,13 @@ import 'dart:convert';
 import 'dart:io' show File, RandomAccessFile;
 import 'dart:math' show max;
 
+import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:universal_ble/universal_ble.dart';
 
+import 'package:quickshare/core/utils/mime_compression.dart';
+import 'package:quickshare/core/utils/wakelock_guard.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
@@ -47,6 +50,9 @@ class BluetoothTransferTransport implements TransferTransport {
   bool _universalStartReceived = false;
   bool _universalTransferStarted = false;
   int _totalBytes = 0;
+
+  /// §6 — keeps CPU/display awake during the BLE transfer (universal path).
+  final _wakelockGuard = WakelockGuard();
 
   bool get _usesNativeAppleBridge =>
       defaultTargetPlatform == TargetPlatform.iOS ||
@@ -268,15 +274,21 @@ class BluetoothTransferTransport implements TransferTransport {
     }
     _universalTransferStarted = true;
 
+    await _wakelockGuard.acquire(); // §6
     try {
       final path = _universalFilePath;
       if (path == null) throw Exception('No file selected for Bluetooth transfer.');
       _universalFile = await File(path).open();
 
+      // §8: decide whether to compress this payload.
+      final compress =
+          shouldCompressForTransfer(_universalMime, _universalFileName);
+
       final metadata = utf8.encode(jsonEncode({
         'name': _universalFileName,
         'size': _totalBytes,
         'mime': _universalMime,
+        'compressed': compress, // §8
       }));
       await UniversalBlePeripheral.updateCharacteristicValue(
         characteristicId: _metadataUuid,
@@ -293,9 +305,15 @@ class BluetoothTransferTransport implements TransferTransport {
       while (sent < _totalBytes) {
         final chunk = await _universalFile!.read(chunkSize);
         if (chunk.isEmpty) break;
+
+        // §8: compress the chunk if applicable.
+        final payload = compress
+            ? Uint8List.fromList(GZipEncoder().encode(chunk)!)
+            : Uint8List.fromList(chunk);
+
         await UniversalBlePeripheral.updateCharacteristicValue(
           characteristicId: _dataUuid,
-          value: Uint8List.fromList(chunk),
+          value: payload,
           deviceId: _universalClientId,
         );
         sent += chunk.length;
@@ -314,6 +332,7 @@ class BluetoothTransferTransport implements TransferTransport {
     } finally {
       await _universalFile?.close();
       _universalFile = null;
+      await _wakelockGuard.release(); // §6
     }
   }
 

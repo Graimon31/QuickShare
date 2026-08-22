@@ -1,4 +1,3 @@
-import 'package:flutter/physics.dart';
 import 'package:flutter/widgets.dart';
 
 /// Shared motion vocabulary for the product. Keeping durations here prevents

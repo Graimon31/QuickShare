@@ -4,7 +4,7 @@ import 'package:quickshare/shared/models/qr_payload.dart';
 void main() {
   group('QRPayload', () {
     test('encode and decode roundtrip', () {
-      final payload = QRPayload(
+      const payload = QRPayload(
         version: 1,
         ip: '192.168.1.1',
         port: 8080,
@@ -23,7 +23,7 @@ void main() {
     });
 
     test('isValid returns false for empty token', () {
-      final payload = QRPayload(
+      const payload = QRPayload(
         version: 1, ip: '192.168.1.1', port: 8080,
         token: '', fileName: 'test.txt', fileSize: 100, checksum: 'x',
       );
@@ -31,7 +31,7 @@ void main() {
     });
 
     test('isValid returns true for fileSize zero (0-byte file)', () {
-      final payload = QRPayload(
+      const payload = QRPayload(
         version: 1, ip: '192.168.1.1', port: 8080,
         token: 'tok', fileName: 'test.txt', fileSize: 0, checksum: 'x',
       );

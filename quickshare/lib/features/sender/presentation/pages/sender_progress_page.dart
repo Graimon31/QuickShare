@@ -9,7 +9,7 @@ import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class SenderProgressPage extends StatelessWidget {
-  const SenderProgressPage({Key? key}) : super(key: key);
+  const SenderProgressPage({super.key});
 
   void _showCancelDialog(BuildContext context) {
     showDialog(

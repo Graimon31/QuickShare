@@ -15,7 +15,7 @@ import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class QRDisplayPage extends StatefulWidget {
-  const QRDisplayPage({Key? key}) : super(key: key);
+  const QRDisplayPage({super.key});
 
   @override
   State<QRDisplayPage> createState() => _QRDisplayPageState();
@@ -148,7 +148,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                             textAlign: TextAlign.center,
                             style: GoogleFonts.inter(
                               fontSize: 13,
-                              color: Colors.white.withOpacity(0.70),
+                              color: Colors.white.withValues(alpha: 0.70),
                             ),
                           ).animate().fadeIn(),
                         ],
@@ -176,7 +176,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                   ),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: Colors.black.withOpacity(0.35),
+                                      color: Colors.black.withValues(alpha: 0.35),
                                       blurRadius: 28,
                                       offset: const Offset(0, 8),
                                     ),
@@ -256,7 +256,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                             style: GoogleFonts.inter(
                                               fontSize: 11,
                                               color:
-                                                  Colors.white.withOpacity(0.55),
+                                                  Colors.white.withValues(alpha: 0.55),
                                             ),
                                           ),
                                           const SizedBox(height: 2),
@@ -267,7 +267,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                             style: GoogleFonts.firaCode(
                                               fontSize: 14,
                                               color:
-                                                  Colors.white.withOpacity(0.9),
+                                                  Colors.white.withValues(alpha: 0.9),
                                             ),
                                           ),
                                         ],
@@ -279,7 +279,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                           color: Colors.white, size: 20),
                                       onPressed: () => _copyToClipboard(
                                         isInternet
-                                            ? (shareText ?? '')
+                                            ? shareText
                                             : '${state.session.localIp}:${state.session.serverPort}',
                                         isInternet
                                             ? 'Link copied to clipboard'

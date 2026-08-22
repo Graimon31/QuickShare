@@ -15,7 +15,7 @@ import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 class FilePickerPage extends StatefulWidget {
   final List<String>? qhtpPaths;
 
-  const FilePickerPage({Key? key, this.qhtpPaths}) : super(key: key);
+  const FilePickerPage({super.key, this.qhtpPaths});
 
   @override
   State<FilePickerPage> createState() => _FilePickerPageState();
@@ -90,6 +90,19 @@ class _FilePickerPageState extends State<FilePickerPage> {
             context.go('/send/qr');
           } else if (state is BluetoothAdvertising) {
             context.go('/send/bluetooth');
+          } else if (state is RelayTooExpensive) {
+            _selectionInFlight = false;
+            context.go('/send/fallback', extra: <String, int?>{
+              'sessionBytes': state.sessionBytes,
+              'limitBytes': state.limitBytes,
+            });
+          } else if (state is NoUsablePathFound) {
+            _selectionInFlight = false;
+            context.go('/send/fallback',
+                extra: const <String, int?>{
+                  'sessionBytes': null,
+                  'limitBytes': null,
+                });
           } else if (state is SenderError) {
             _selectionInFlight = false;
             ScaffoldMessenger.of(context).showSnackBar(
@@ -131,13 +144,23 @@ class _FilePickerPageState extends State<FilePickerPage> {
                         style: GoogleFonts.inter(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
-                          color: Colors.white.withOpacity(0.90),
+                          color: Colors.white.withValues(alpha: 0.90),
                         ),
                       ),
 
                       const SizedBox(height: 12),
 
-                      // Mode choices: Wi-Fi, Bluetooth, Internet
+                      // Mode choices: Wi-Fi, Bluetooth, Internet.
+                      // RadioGroup owns the selection now; the individual
+                      // Radio widgets no longer carry groupValue/onChanged.
+                      RadioGroup<TransportType>(
+                        groupValue: _selectedMode,
+                        onChanged: (val) {
+                          if (val != null) setState(() => _selectedMode = val);
+                        },
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
                       _buildModeTile(
                         type: TransportType.wifi,
                         title: 'Wi-Fi / Local Network',
@@ -164,6 +187,9 @@ class _FilePickerPageState extends State<FilePickerPage> {
                         subtitle: 'Share link via WebRTC signaling server',
                         icon: Icons.language_rounded,
                       ),
+                          ],
+                        ),
+                      ),
 
                       const SizedBox(height: 28),
 
@@ -172,7 +198,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
                         style: GoogleFonts.inter(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
-                          color: Colors.white.withOpacity(0.90),
+                          color: Colors.white.withValues(alpha: 0.90),
                         ),
                       ),
 
@@ -320,7 +346,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
                   icon,
                   color: isSelected
                       ? AppColors.primary
-                      : Colors.white.withOpacity(0.70),
+                      : Colors.white.withValues(alpha: 0.70),
                   size: 24,
                 ),
                 const SizedBox(width: 14),
@@ -341,7 +367,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
                         subtitle,
                         style: GoogleFonts.inter(
                           fontSize: 13,
-                          color: Colors.white.withOpacity(0.65),
+                          color: Colors.white.withValues(alpha: 0.65),
                         ),
                       ),
                     ],
@@ -349,11 +375,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
                 ),
                 Radio<TransportType>(
                   value: type,
-                  groupValue: _selectedMode,
                   activeColor: AppColors.primary,
-                  onChanged: (val) {
-                    if (val != null) setState(() => _selectedMode = val);
-                  },
                 ),
               ],
             ),

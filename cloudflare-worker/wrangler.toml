@@ -1,0 +1,21 @@
+name = "directdrop-worker"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# Not a secret: it is the account slug that appears in every dashboard URL.
+# Setting it here means wrangler never has to guess which account to target,
+# and CLOUDFLARE_ACCOUNT_ID is not needed in the environment.
+account_id = "54b17088c84ebb56a495f2d96617bd52"
+
+# Created by `wrangler kv namespace create RENDEZVOUS_KV` (and the same with
+# `--preview`, used by `wrangler dev`). Namespace ids are not secrets.
+kv_namespaces = [
+  { binding = "RENDEZVOUS_KV", id = "9ab05c1d929d4f69b1a72c489b6077c9", preview_id = "5183319a750a4d19aae2e9ef7f92a35a" }
+]
+
+# Secrets (never put these values here — set via `wrangler secret put <NAME>`):
+#   CF_TURN_KEY_ID       Cloudflare Calls TURN key ID
+#   CF_TURN_API_TOKEN    Cloudflare Calls TURN API token
+#   METERED_SUBDOMAIN    Metered account subdomain, e.g. "quickshare" for
+#                        https://quickshare.metered.live
+#   METERED_API_KEY      Metered API key

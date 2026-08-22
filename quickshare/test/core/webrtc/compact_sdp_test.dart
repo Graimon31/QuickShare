@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
 
 void main() {
+  _multiSectionGuard();
   const realOffer = '''v=0
 o=- 4611731400430051336 2 IN IP4 127.0.0.1
 s=-
@@ -124,6 +125,39 @@ a=candidate:mdns1 1 udp 2122197247 f3a1b2c3-1111-2222-3333-444455556666.local 54
       final valid = CompactSdp.fromSdp(realOffer).toBytes();
       expect(() => CompactSdp.fromBytes(valid.sublist(0, valid.length - 4)),
           throwsA(isA<FormatException>()));
+    });
+  });
+}
+
+void _multiSectionGuard() {
+  group('media section guard', () {
+    // Regression: flutter_webrtc offers audio and video by default even when
+    // only a data channel exists, producing three m-sections. toSdp() rebuilds
+    // one, so the answer came back with a single m-line against a three-line
+    // offer and libwebrtc rejected it at setRemoteDescription — far from the
+    // cause. Caught here instead.
+    const credentials = 'a=ice-ufrag:Xt3k\r\n'
+        'a=ice-pwd:9pQ2vLmR4sT7wZ1aB6cD8eF0\r\n'
+        'a=fingerprint:sha-256 11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:'
+        '11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00\r\n'
+        'a=setup:actpass\r\n';
+
+    test('accepts a data-channel-only offer', () {
+      final compact = CompactSdp.fromSdp(
+          'v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n$credentials');
+      expect(compact.iceUfrag, equals('Xt3k'));
+    });
+
+    test('rejects an offer that also carries audio and video', () {
+      expect(
+        () => CompactSdp.fromSdp('v=0\r\n'
+            'm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n'
+            'm=video 9 UDP/TLS/RTP/SAVPF 96\r\n'
+            'm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n$credentials'),
+        throwsA(isA<FormatException>().having((e) => e.message, 'message',
+            allOf(contains('3 media sections'),
+                contains('OfferToReceiveAudio')))),
+      );
     });
   });
 }

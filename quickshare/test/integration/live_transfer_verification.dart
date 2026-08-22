@@ -1,3 +1,6 @@
+// A hand-run diagnostic script rather than a test: it prints a report for a
+// human to read, so print() is the output format, not a leftover.
+// ignore_for_file: avoid_print
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';

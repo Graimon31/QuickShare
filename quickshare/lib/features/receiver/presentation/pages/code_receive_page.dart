@@ -208,8 +208,9 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                         }
                       },
                       builder: (context, state) {
-                        if (state is QRParsed)
+                        if (state is QRParsed) {
                           return _buildConfirm(context, state);
+                        }
                         return _buildIdle(context);
                       },
                     )
@@ -258,7 +259,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                   border: InputBorder.none,
                   hintText: 'Wi-Fi code or room link',
                   hintStyle:
-                      GoogleFonts.inter(color: Colors.white.withOpacity(0.40)),
+                      GoogleFonts.inter(color: Colors.white.withValues(alpha: 0.40)),
                 ),
                 onSubmitted: (_) => _submit(),
               ),
@@ -272,8 +273,9 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
               child: OutlinedButton.icon(
                 onPressed: () async {
                   final data = await Clipboard.getData(Clipboard.kTextPlain);
-                  if (data?.text != null)
+                  if (data?.text != null) {
                     setState(() => _controller.text = data!.text!);
+                  }
                 },
                 icon: const Icon(Icons.paste_rounded,
                     size: 18, color: Colors.white),
@@ -398,7 +400,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                               .sizeFormatted,
                           style: GoogleFonts.inter(
                               fontSize: 14,
-                              color: Colors.white.withOpacity(0.70)),
+                              color: Colors.white.withValues(alpha: 0.70)),
                         ),
                       ],
                     ),
@@ -477,7 +479,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
               speedBytesPerSec: _speedBps.toDouble(),
               fileName: _fileName,
               progressColor: AppColors.primary,
-              speedColor: Colors.white.withOpacity(0.75),
+              speedColor: Colors.white.withValues(alpha: 0.75),
             ),
             const SizedBox(height: 12),
             Text(
@@ -485,7 +487,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
               '${_speedBps > 0 ? '  ·  ${_fmt(_speedBps)}/s' : ''}',
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(
-                  fontSize: 14, color: Colors.white.withOpacity(0.75)),
+                  fontSize: 14, color: Colors.white.withValues(alpha: 0.75)),
             ),
           ],
         );
@@ -510,7 +512,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
               _fileName,
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(
-                  fontSize: 16, color: Colors.white.withOpacity(0.9)),
+                  fontSize: 16, color: Colors.white.withValues(alpha: 0.9)),
             ),
             if (_savedPath != null) ...[
               const SizedBox(height: 6),
@@ -518,7 +520,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 _savedPath!,
                 textAlign: TextAlign.center,
                 style: GoogleFonts.firaCode(
-                    fontSize: 12, color: Colors.white.withOpacity(0.50)),
+                    fontSize: 12, color: Colors.white.withValues(alpha: 0.50)),
               ),
             ],
             const SizedBox(height: 24),
@@ -561,7 +563,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                   : (_internetError ?? 'Unknown error'),
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(
-                  fontSize: 14, color: Colors.white.withOpacity(0.70)),
+                  fontSize: 14, color: Colors.white.withValues(alpha: 0.70)),
             ),
             const SizedBox(height: 24),
             OutlinedButton(

@@ -6,14 +6,13 @@
 // so this covers everything up to (and including) offer/answer/ICE exchange:
 // the layer that was previously broken, where the receiver called signaling
 // methods that did not exist.
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quickshare/features/sender/data/signaling/webrtc_signaling_client.dart';
 
 const _port = 3996;
-final _serverPath = Directory.current.path + '/signaling_server/server.js';
+final _serverPath = '${Directory.current.path}/signaling_server/server.js';
 
 void main() {
   late Process server;

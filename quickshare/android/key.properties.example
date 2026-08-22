@@ -1,0 +1,17 @@
+# Copy to android/key.properties and fill in. That file is gitignored and must
+# never be committed — it points at your signing key and carries its passwords.
+#
+# CI does not use this file: it supplies the same four values as environment
+# variables (QUICKSHARE_KEYSTORE, QUICKSHARE_KEYSTORE_PASSWORD,
+# QUICKSHARE_KEY_ALIAS, QUICKSHARE_KEY_PASSWORD), which take precedence.
+#
+# Generating the keystore is a one-time manual step, deliberately not scripted
+# here — the key is the app's identity and losing it means no more updates:
+#
+#   keytool -genkey -v -keystore ~/quickshare-release.jks \
+#     -keyalg RSA -keysize 2048 -validity 10000 -alias quickshare
+
+storeFile=/absolute/path/to/quickshare-release.jks
+storePassword=
+keyAlias=quickshare
+keyPassword=

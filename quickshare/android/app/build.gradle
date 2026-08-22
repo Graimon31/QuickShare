@@ -15,14 +15,38 @@ if (localPropertiesFile.exists()) {
 def flutterVersionCode = localProperties.getProperty('flutter.versionCode') ?: '1'
 def flutterVersionName = localProperties.getProperty('flutter.versionName') ?: '1.0.0'
 
+// Release signing material, in order of precedence:
+//   1. environment variables  — how CI supplies it, straight from secrets
+//   2. android/key.properties — how a developer supplies it locally
+//
+// Neither the keystore nor the passwords live in the repository, and
+// key.properties is gitignored. When nothing is configured the release build
+// stays *unsigned* rather than silently falling back to the debug key: an
+// APK signed with the debug certificate cannot be published, cannot be
+// upgraded over a real release, and looks valid until the store rejects it.
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file('key.properties')
 if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
 }
 
+def resolveSigning = { String envName, String propName ->
+    return System.getenv(envName) ?: keystoreProperties.getProperty(propName)
+}
+
+def signingStorePath = resolveSigning('QUICKSHARE_KEYSTORE', 'storeFile')
+def signingStorePassword = resolveSigning('QUICKSHARE_KEYSTORE_PASSWORD', 'storePassword')
+def signingKeyAlias = resolveSigning('QUICKSHARE_KEY_ALIAS', 'keyAlias')
+def signingKeyPassword = resolveSigning('QUICKSHARE_KEY_PASSWORD', 'keyPassword')
+
+def hasReleaseSigning = signingStorePath != null &&
+        signingStorePassword != null &&
+        signingKeyAlias != null &&
+        signingKeyPassword != null &&
+        file(signingStorePath).exists()
+
 android {
-    namespace "com.yourorg.quickshare"
+    namespace "com.directdrop.app"
     compileSdk 36
     ndkVersion flutter.ndkVersion
 
@@ -40,16 +64,55 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.yourorg.quickshare"
+        applicationId "com.directdrop.app"
         minSdk 24
         targetSdk 35
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(signingStorePath)
+                storePassword signingStorePassword
+                keyAlias signingKeyAlias
+                keyPassword signingKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            // R8 is off, and the decision is measured rather than assumed.
+            // Decomposing the release APK showed 94% of it is native .so
+            // libraries across three ABIs; dex is 2%. Turning R8 on moved the
+            // total from 101.9 MB to 102.1 MB — it costs 0.7 MB of dex through
+            // proguard-android-optimize's inlining and saves nothing, while
+            // adding a class of failure that only appears at runtime when a
+            // keep rule misses a JNI or reflection entry point in
+            // flutter_webrtc, universal_ble or ML Kit.
+            //
+            // Download size is solved instead by --split-per-abi and the app
+            // bundle: 37.6 MB for arm64 against 102.1 MB universal.
+            //
+            // proguard-rules.pro stays in the tree. Flip these two flags back
+            // on once someone has installed app-arm64-v8a-release.apk on a real
+            // device and exercised the scanner, Bluetooth and internet screens.
+            minifyEnabled false
+            shrinkResources false
+
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            } else {
+                // Unsigned on purpose — see the note above.
+                signingConfig null
+                println("DirectDrop: no release signing configured, building " +
+                        "an UNSIGNED release. Set QUICKSHARE_KEYSTORE / " +
+                        "QUICKSHARE_KEYSTORE_PASSWORD / QUICKSHARE_KEY_ALIAS / " +
+                        "QUICKSHARE_KEY_PASSWORD, or create android/key.properties " +
+                        "from key.properties.example.")
+            }
         }
     }
 }

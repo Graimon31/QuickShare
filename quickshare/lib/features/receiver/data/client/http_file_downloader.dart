@@ -42,11 +42,11 @@ class HttpFileDownloader {
         }
         await Future.delayed(Duration(seconds: attempts));
       } catch (e) {
-        throw ServerException(
+        throw const ServerException(
             'Unknown error during download. Please try again.');
       }
     }
-    throw NetworkException('Download failed');
+    throw const NetworkException('Download failed');
   }
 
   void cancel() {

@@ -2,13 +2,16 @@ include: package:flutter_lints/flutter.yaml
 
 linter:
   rules:
+    # avoid_slow_async_io is deliberately off. It flags await file.exists() and
+    # friends in favour of the synchronous calls, which are indeed a little
+    # faster — but this app streams multi-gigabyte files, and blocking the UI
+    # isolate on disk I/O to save a few microseconds is the wrong trade. The
+    #28 sites it flagged are all on async paths where staying async is correct.
     - always_declare_return_types
     - annotate_overrides
     - avoid_empty_else
     - avoid_print
     - avoid_relative_lib_imports
-    - avoid_returning_null_for_future
-    - avoid_slow_async_io
     - avoid_types_as_parameter_names
     - avoid_unnecessary_containers
     - avoid_web_libraries_in_flutter

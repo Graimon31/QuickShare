@@ -15,7 +15,7 @@ class InternetInvite {
   const InternetInvite({required this.roomCode, this.signalingUrl});
 }
 
-/// Listens for `quickshare://join?room=CODE` links and exposes the room codes.
+/// Listens for `directdrop://join?room=CODE` links and exposes the room codes.
 ///
 /// Internet shares may also carry `sig=` (URL-encoded ws/wss endpoint) so the
 /// phone can reach the Mac's signaling server without guessing localhost.
@@ -39,7 +39,7 @@ class DeepLinkService {
     return parseInternetInviteFromUri(uri)?.roomCode;
   }
 
-  /// Parses `quickshare://join?room=CODE&sig=ws%3A%2F%2F…`.
+  /// Parses `directdrop://join?room=CODE&sig=ws%3A%2F%2F…`.
   static InternetInvite? parseInternetInviteFromUri(Uri uri) {
     if (uri.scheme.toLowerCase() != AppConstants.deepLinkScheme) return null;
 
@@ -96,7 +96,7 @@ class DeepLinkService {
     String? signalingUrlForPeer,
   }) {
     final code = roomCode.trim().toUpperCase();
-    final base = '${AppConstants.deepLinkScheme}://${AppConstants.deepLinkHost}';
+    const base = '${AppConstants.deepLinkScheme}://${AppConstants.deepLinkHost}';
     if (signalingUrlForPeer == null || signalingUrlForPeer.isEmpty) {
       return '$base?room=$code';
     }

@@ -17,9 +17,6 @@ import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
-import 'package:quickshare/features/sender/data/transports/webrtc_transfer_transport.dart';
-import 'package:quickshare/core/network/auto_tunnel_service.dart';
-import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 
 class SenderRepositoryImpl implements SenderRepository {
@@ -66,11 +63,11 @@ class SenderRepositoryImpl implements SenderRepository {
         );
         return Right(metadata);
       } else {
-        return Left(FileFailure('No file selected'));
+        return const Left(FileFailure('No file selected'));
       }
     } catch (e) {
       debugPrint('Error details: $e');
-      return Left(FileFailure('Failed to pick file. Please try again.'));
+      return const Left(FileFailure('Failed to pick file. Please try again.'));
     }
   }
 
@@ -105,7 +102,7 @@ class SenderRepositoryImpl implements SenderRepository {
 
       final ip = await networkInfoService.getLocalIpAddress();
       if (ip == null) {
-        return Left(NetworkFailure('Could not determine local IP'));
+        return const Left(NetworkFailure('Could not determine local IP'));
       }
 
       final token = const Uuid().v4();
@@ -131,7 +128,7 @@ class SenderRepositoryImpl implements SenderRepository {
     } catch (e) {
       _statusController.add(TransferStatus.failed);
       debugPrint('Error details: $e');
-      return Left(ServerFailure('Failed to start server. Please try again.'));
+      return const Left(ServerFailure('Failed to start server. Please try again.'));
     }
   }
 
@@ -143,7 +140,7 @@ class SenderRepositoryImpl implements SenderRepository {
 
       final ip = await networkInfoService.getLocalIpAddress();
       if (ip == null) {
-        return Left(NetworkFailure('Could not determine local IP'));
+        return const Left(NetworkFailure('Could not determine local IP'));
       }
 
       final sessionId = const Uuid().v4();
@@ -211,14 +208,14 @@ class SenderRepositoryImpl implements SenderRepository {
 
   @override
   Future<Either<Failure, String>> generateQRPayload(
-      TransferSession session) async {
+      TransferSession session, {String? hostOverride}) async {
     try {
       // Legacy single-file session path
       if (!session.isQhtp) {
         final file = File(session.fileMetadata.path);
         final checksum = await _computeChecksumStream(file);
         final qrData = qrEncoder.encode(
-          ip: session.localIp,
+          ip: hostOverride ?? session.localIp,
           port: session.serverPort,
           token: session.authToken,
           fileName: session.fileMetadata.name,
@@ -232,7 +229,7 @@ class SenderRepositoryImpl implements SenderRepository {
       // can show "folder size" immediately after scan without waiting on LAN.
       final qrPayload = QRPayload(
         version: 2,
-        ip: session.localIp,
+        ip: hostOverride ?? session.localIp,
         port: session.serverPort,
         token: session.authToken,
         sessionId: session.id,
@@ -245,52 +242,7 @@ class SenderRepositoryImpl implements SenderRepository {
       return Right(qrPayload.encode());
     } catch (e) {
       debugPrint('Error details: $e');
-      return Left(ServerFailure('Failed to generate QR payload.'));
-    }
-  }
-
-  @override
-  Future<Either<Failure, String>> generateServerlessQRPayload({
-    required TransferSession session,
-    required String sdpOffer,
-  }) async {
-    try {
-      final autoTunnel = AutoTunnelService();
-      final publicIp = await autoTunnel.getPublicIpAddress() ?? session.localIp;
-      final upnpResult = await autoTunnel.checkServerlessReachability(localPort: session.serverPort);
-      final effectiveIp = (upnpResult.success && upnpResult.publicIp != null)
-          ? upnpResult.publicIp!
-          : publicIp;
-      final effectivePort = upnpResult.externalPort ?? session.serverPort;
-
-      AppLogger.info(
-        'Generating serverless QR Payload: IP=$effectiveIp, Port=$effectivePort, File=${session.fileMetadata.name}',
-        tag: 'SENDER_REPO',
-      );
-
-      final qrPayload = QRPayload(
-        version: 2,
-        ip: effectiveIp,
-        port: effectivePort,
-        token: session.authToken,
-        sessionId: session.id,
-        mode: 'webrtc-sdp',
-        sdpOffer: sdpOffer,
-        fileName: session.fileMetadata.name,
-        fileSize: session.fileMetadata.size,
-        itemCount: session.itemCount,
-      );
-      return Right(qrPayload.encode());
-    } catch (e, st) {
-      AppLogger.error('Failed to generate serverless QR payload', error: e, stackTrace: st, tag: 'SENDER_REPO');
-      return Left(ServerFailure('Failed to generate serverless QR payload: $e'));
-    }
-  }
-
-  @override
-  void setActiveWebRtcTransport(dynamic transport) {
-    if (transport == null || transport is WebRtcTransferTransport) {
-      localServer.activeWebRtcTransport = transport as WebRtcTransferTransport?;
+      return const Left(ServerFailure('Failed to generate QR payload.'));
     }
   }
 
@@ -302,7 +254,7 @@ class SenderRepositoryImpl implements SenderRepository {
       return const Right(null);
     } catch (e) {
       debugPrint('Error details: $e');
-      return Left(ServerFailure('Failed to stop server.'));
+      return const Left(ServerFailure('Failed to stop server.'));
     }
   }
 }

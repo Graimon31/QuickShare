@@ -28,8 +28,9 @@ class BluetoothQrPayload {
       final decoded =
           utf8.decode(base64Url.decode(base64Url.normalize(encoded)));
       final json = jsonDecode(decoded);
-      if (json is! Map || json['v'] != 1 || json['service'] != serviceUuid)
+      if (json is! Map || json['v'] != 1 || json['service'] != serviceUuid) {
         return null;
+      }
       final token = json['token'];
       if (token is! String || token.isEmpty || token.length > 128) return null;
       return BluetoothQrPayload(token: token);

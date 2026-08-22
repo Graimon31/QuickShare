@@ -50,11 +50,6 @@ void main() {
         .thenAnswer((_) => const Stream.empty());
     when(() => mockRepository.stopServer())
         .thenAnswer((_) async => const Right(null));
-    when(() => mockRepository.setActiveWebRtcTransport(any())).thenReturn(null);
-    when(() => mockRepository.generateServerlessQRPayload(
-          session: any(named: 'session'),
-          sdpOffer: any(named: 'sdpOffer'),
-        )).thenAnswer((_) async => const Right('serverless_qr_payload'));
   });
 
   group('SenderBloc', () {

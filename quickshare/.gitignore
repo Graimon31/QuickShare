@@ -74,3 +74,8 @@ app.*.map.json
 **/ios/Flutter/flutter_export_environment.sh
 **/ios/ServiceDefinitions.json
 **/ios/Runner/GeneratedPluginRegistrant.*
+
+# Android signing material — never commit
+**/android/key.properties
+*.jks
+*.keystore

@@ -67,6 +67,21 @@ class AutoTunnelService {
     return false;
   }
 
+  /// Closes any router mapping this process opened.
+  ///
+  /// Must be called when a share ends. Without it every session leaves a
+  /// permanent hole in the user's router, and the app never reopened the
+  /// subject afterwards.
+  Future<void> releasePortMappings() async {
+    if (!_upnpForwarder.hasActiveMappings) return;
+    try {
+      final removed = await _upnpForwarder.releaseAll();
+      debugPrint('UPnP: released $removed port mapping(s)');
+    } catch (e) {
+      debugPrint('UPnP release failed: $e');
+    }
+  }
+
   /// Explicitly checks whether UPnP/NAT-PMP port forwarding succeeded.
   Future<PortMappingResult> checkServerlessReachability({int localPort = 3000}) async {
     try {

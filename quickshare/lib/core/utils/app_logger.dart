@@ -18,7 +18,7 @@ class AppLogger {
   static Future<void> init() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
-      _logFile = File(p.join(dir.path, 'quickshare.log'));
+      _logFile = File(p.join(dir.path, 'directdrop.log'));
       info('AppLogger initialized at ${_logFile?.path}');
     } catch (e) {
       debugPrint('AppLogger init error: $e');

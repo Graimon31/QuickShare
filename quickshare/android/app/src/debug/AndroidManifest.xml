@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Debug-only manifest: allows cleartext HTTP for LAN testing -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
-    <application
-        android:usesCleartextTraffic="true"
-        tools:replace="android:usesCleartextTraffic" />
+<!--
+  Debug variant only. The cleartext policy itself lives in
+  res/xml/network_security_config.xml, which applies to every variant — this
+  file no longer tries to override it, because android:usesCleartextTraffic is
+  ignored on API 24+ when a network security config is present.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug builds talk to a local dev server over the loopback interface. -->
+    <uses-permission android:name="android.permission.INTERNET" />
 </manifest>

@@ -5,6 +5,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'package:quickshare/core/utils/app_logger.dart';
+import 'universal_ble_receiver_transport.dart';
+
+export 'universal_ble_receiver_transport.dart'
+    show UniversalBleReceiverTransport, UniversalBleReceiveProgress;
+
 class BluetoothDevice extends Equatable {
   final String id;
   final String name;
@@ -27,10 +33,11 @@ class BluetoothReceiveProgress {
   });
 }
 
-/// Receiver side of the native CoreBluetooth transport.
+/// Native CoreBluetooth receiver for iOS and macOS.
 ///
-/// When [startScanning] receives a session token, the native scanner filters
-/// BLE advertisers to the Mac represented by the QR code.
+/// On Android and Windows, use [UniversalBleReceiverTransport] instead.
+/// The static factory [BluetoothReceiverTransport.forPlatform] picks the right
+/// one automatically.
 class BluetoothReceiverTransport {
   static const _method = MethodChannel('quickshare/bluetooth');
   static const _events = EventChannel('quickshare/bluetooth/events');
@@ -47,6 +54,49 @@ class BluetoothReceiverTransport {
   Stream<BluetoothDevice> get devices => _devicesController.stream;
   Stream<BluetoothReceiveProgress> get progressStream =>
       _progressController.stream;
+
+  // -------------------------------------------------------------------------
+  // Factory: returns the right receiver for the current platform.
+  // -------------------------------------------------------------------------
+
+  /// Returns `true` when the native Apple CoreBluetooth bridge should be used.
+  ///
+  /// On macOS the bridge handles both the peripheral (sender) and central
+  /// (receiver) roles. The universal_ble Central role is available on macOS
+  /// too, but the native bridge is already installed and tested, so we leave
+  /// it as-is for receiver on Apple platforms.
+  static bool get _usesNativeBridge =>
+      defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.macOS;
+
+  /// Creates the appropriate BLE receiver for the current platform.
+  ///
+  /// On iOS/macOS: returns a [BluetoothReceiverTransport] (CoreBluetooth).
+  /// On Android/Windows: returns a [UniversalBleReceiverTransport].
+  ///
+  /// Usage:
+  /// ```dart
+  /// final receiver = BluetoothReceiverTransport.forPlatform();
+  /// if (receiver is BluetoothReceiverTransport) {
+  ///   await receiver.startScanning(sessionToken: token);
+  /// } else if (receiver is UniversalBleReceiverTransport) {
+  ///   await receiver.startScanning(sessionToken: token);
+  /// }
+  /// ```
+  static Object forPlatform() {
+    if (_usesNativeBridge) {
+      AppLogger.info('BLE receiver: using native CoreBluetooth bridge',
+          tag: 'BLE_RECEIVER');
+      return BluetoothReceiverTransport();
+    }
+    AppLogger.info('BLE receiver: using universal_ble GATT Central',
+        tag: 'BLE_RECEIVER');
+    return UniversalBleReceiverTransport();
+  }
+
+  // -------------------------------------------------------------------------
+  // Native CoreBluetooth implementation (iOS / macOS)
+  // -------------------------------------------------------------------------
 
   Future<void> startScanning({String? sessionToken}) async {
     _eventSub ??= _events.receiveBroadcastStream().listen(
@@ -132,8 +182,9 @@ class BluetoothReceiverTransport {
       case 'receiverFailed':
         final err = map['error'] as String? ?? 'Unknown error';
         debugPrint('Bluetooth receive failed: $err');
-        if (_completion?.isCompleted == false)
+        if (_completion?.isCompleted == false) {
           _completion!.completeError(Exception(err));
+        }
         break;
     }
   }

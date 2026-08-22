@@ -7,7 +7,7 @@ import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 void main() {
   group('QRPayload v2 (QHTP locator)', () {
     test('encode/decode roundtrip preserves sid, mode and size metadata', () {
-      final payload = QRPayload(
+      const payload = QRPayload(
         version: 2,
         ip: '192.168.1.42',
         port: 8123,
@@ -38,7 +38,7 @@ void main() {
     });
 
     test('isValid requires sessionId for QHTP', () {
-      final invalid = QRPayload(
+      const invalid = QRPayload(
         version: 2,
         ip: '10.0.0.1',
         port: 8000,
@@ -49,7 +49,7 @@ void main() {
       // but isValid needs non-empty sessionId
       expect(invalid.isValid, isFalse);
 
-      final valid = QRPayload(
+      const valid = QRPayload(
         version: 2,
         ip: '10.0.0.1',
         port: 8000,
@@ -61,7 +61,7 @@ void main() {
 
     test('QRPayloadDecoder accepts v2 and rejects unsupported version', () {
       final decoder = QRPayloadDecoder();
-      final payload = QRPayload(
+      const payload = QRPayload(
         version: 2,
         ip: '192.168.0.5',
         port: 9000,
@@ -74,7 +74,7 @@ void main() {
       expect(decoded.sessionId, 'sid1');
 
       // Manually craft base64url JSON with v=99 (encode() always forces v:2 for isQhtp)
-      final badJson = '{"v":99,"ip":"1.1.1.1","p":1,"t":"t","sid":"x","mode":"http-lan"}';
+      const badJson = '{"v":99,"ip":"1.1.1.1","p":1,"t":"t","sid":"x","mode":"http-lan"}';
       final badEncoded = base64UrlEncode(utf8.encode(badJson));
       expect(() => decoder.decode(badEncoded), throwsA(anything));
     });

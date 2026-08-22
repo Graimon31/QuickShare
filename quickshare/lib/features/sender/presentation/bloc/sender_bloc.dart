@@ -5,7 +5,6 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
 import 'package:uuid/uuid.dart';
 
-import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
@@ -15,13 +14,13 @@ import 'package:quickshare/features/sender/data/transports/webrtc_transfer_trans
 import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
 import 'package:path/path.dart' as p;
 import 'package:archive/archive_io.dart';
+import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
-import 'package:quickshare/core/signaling/mqtt_answer_channel.dart';
+import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
-import 'dart:typed_data';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 
 // Events
@@ -65,6 +64,10 @@ class StartQhtpSend extends SenderEvent {
   List<Object?> get props => [paths, mode];
 }
 
+/// The user chose to build a local network instead of fighting the one they
+/// are on. Raised from the network fallback screen.
+class StartLocalNetwork extends SenderEvent {}
+
 class CancelSending extends SenderEvent {}
 
 class TransferCompleted extends SenderEvent {}
@@ -74,6 +77,14 @@ class TransferFailed extends SenderEvent {
   const TransferFailed(this.error);
   @override
   List<Object?> get props => [error];
+}
+
+class RelayBlocked extends SenderEvent {
+  final int sessionBytes;
+  final int limitBytes;
+  const RelayBlocked(this.sessionBytes, this.limitBytes);
+  @override
+  List<Object?> get props => [sessionBytes, limitBytes];
 }
 
 class TransferProgressEvent extends SenderEvent {
@@ -137,6 +148,51 @@ class TransferComplete extends SenderState {
   List<Object?> get props => [file];
 }
 
+/// The connection came up, but only through a relay, and the session is too
+/// large to push through somebody else's bandwidth. Nothing has been sent.
+///
+/// Distinct from [SenderError] because there is a concrete way out — put both
+/// devices on one network — and the UI should offer it instead of an apology.
+class RelayTooExpensive extends SenderState {
+  final int sessionBytes;
+  final int limitBytes;
+  const RelayTooExpensive(this.sessionBytes, this.limitBytes);
+  @override
+  List<Object?> get props => [sessionBytes, limitBytes];
+}
+
+/// ICE finished without a single candidate a peer on another network could
+/// use. Usually a VPN holding the default route, or a symmetric NAT.
+class NoUsablePathFound extends SenderState {
+  const NoUsablePathFound();
+}
+
+class HotspotStarting extends SenderState {
+  const HotspotStarting();
+}
+
+/// A local-only hotspot is up and the transfer is being served on it.
+///
+/// Two codes, because they are two different things to two different readers:
+/// [wifiQr] is the standard `WIFI:` payload any phone camera understands and
+/// joins, and [transferQr] is the QHTP locator the app scans afterwards.
+class LocalNetworkReady extends SenderState {
+  final HotspotCredentials credentials;
+  final String wifiQr;
+  final String transferQr;
+  final TransferSession session;
+
+  const LocalNetworkReady({
+    required this.credentials,
+    required this.wifiQr,
+    required this.transferQr,
+    required this.session,
+  });
+
+  @override
+  List<Object?> get props => [credentials.ssid, wifiQr, transferQr, session];
+}
+
 class SenderError extends SenderState {
   final String message;
   const SenderError(this.message);
@@ -157,21 +213,35 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   WebRtcTransferTransport? _activeWebRtcTransport;
   BluetoothTransferTransport? _activeBluetoothTransport;
+  StreamSubscription<RelayLimitExceeded>? _relayBlockedSubscription;
+
+  final LocalHotspotService hotspot;
+  List<String>? _currentPaths;
 
   AnswerChannel? _answerChannel;
   StreamSubscription<Uint8List>? _answerSubscription;
 
-  SenderBloc({required this.repository}) : super(SenderInitial()) {
+  SenderBloc({required this.repository, LocalHotspotService? hotspotService})
+      : hotspot = hotspotService ?? LocalHotspotService(),
+        super(SenderInitial()) {
     on<PickFile>(_onPickFile);
     on<PickMedia>(_onPickMedia);
     on<StartSending>(_onStartSending);
     on<SelectTransportMode>(_onSelectTransportMode);
     on<StartSendingWithTransport>(_onStartSendingWithTransport);
     on<StartQhtpSend>(_onStartQhtpSend);
+    on<StartLocalNetwork>(_onStartLocalNetwork);
     on<CancelSending>(_onCancelSending);
     on<TransferCompleted>(_onTransferCompleted);
     on<TransferFailed>(_onTransferFailed);
     on<TransferProgressEvent>(_onTransferProgress);
+    on<RelayBlocked>((event, emit) async {
+      await _closeAnswerChannel();
+      await _activeWebRtcTransport?.stopSharing();
+      _activeWebRtcTransport = null;
+      _subscribeToWifiProgress();
+      emit(RelayTooExpensive(event.sessionBytes, event.limitBytes));
+    });
 
     _progressSubscription = repository.transferProgress.listen((progress) {
       add(TransferProgressEvent(progress));
@@ -190,6 +260,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   Future<void> _closeAnswerChannel() async {
     await _answerSubscription?.cancel();
     _answerSubscription = null;
+    await _relayBlockedSubscription?.cancel();
+    _relayBlockedSubscription = null;
     await _answerChannel?.close();
     _answerChannel = null;
   }
@@ -198,8 +270,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   ///
   /// Subscription happens before the code appears, so the phone can never
   /// answer into a channel nobody is watching. Returns null if no public
-  /// channel could be reached, in which case the caller falls back to the
-  /// signaling-server link.
+  /// channel could be reached; the caller then fails the share outright rather
+  /// than showing a code that leads nowhere.
   Future<String?> _prepareServerlessQr(String offerSdp) async {
     try {
       final qr = ServerlessQr(
@@ -208,7 +280,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       );
       final topic = await qr.topic;
 
-      final channel = RacingAnswerChannel([MqttAnswerChannel()]);
+      final channel = buildRendezvousChannel();
       await channel.subscribe(topic);
       _answerChannel = channel;
 
@@ -323,8 +395,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _activeWebRtcTransport = WebRtcTransferTransport();
         await _activeWebRtcTransport!.initialize();
 
-        repository.setActiveWebRtcTransport(_activeWebRtcTransport);
-
         _progressSubscription?.cancel();
         _progressSubscription =
             _activeWebRtcTransport!.progressStream.listen((progress) {
@@ -341,28 +411,35 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           }
         });
 
-        final webLink =
-            await _activeWebRtcTransport!.startSharing(file, 'webrtc_token');
+        _relayBlockedSubscription?.cancel();
+        _relayBlockedSubscription = _activeWebRtcTransport!.relayBlockedStream
+            .listen((blocked) => add(
+                RelayBlocked(blocked.sessionBytes, blocked.limitBytes)));
 
-        final session = _makeDummySession(file);
-        String qrPayloadData = webLink;
+        await _activeWebRtcTransport!.startSharingServerless(file);
 
         final offerSdp = await _activeWebRtcTransport!.createLocalOfferSdp();
-        if (offerSdp != null && offerSdp.isNotEmpty) {
-          qrPayloadData = await _prepareServerlessQr(offerSdp) ?? webLink;
+        if (offerSdp == null || offerSdp.isEmpty) {
+          throw Exception('WebRTC produced no local offer to put in the QR');
         }
 
-        emit(QRReady(qrPayloadData, session, mode, webLinkUrl: webLink));
+        final qrPayloadData = await _prepareServerlessQr(offerSdp);
+        if (qrPayloadData == null) {
+          // Better a clear failure than a QR code pointing at a rendezvous
+          // nobody is listening on.
+          throw Exception(
+              'No public rendezvous channel could be reached. Check the '
+              'internet connection and try again.');
+        }
+
+        emit(QRReady(qrPayloadData, _makeDummySession(file), mode));
       } catch (e) {
         debugPrint('WebRTC init error: $e');
+        await _closeAnswerChannel();
         await _activeWebRtcTransport?.stopSharing();
         _activeWebRtcTransport = null;
         _subscribeToWifiProgress();
-        final errorMsg = e.toString().contains('Signaling') ||
-                e.toString().contains('Cannot reach')
-            ? 'Signaling server unreachable (${AppConstants.signalingServerUrl}). Specify a remote server using:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com'
-            : 'Failed to start internet transfer: $e';
-        emit(SenderError(errorMsg));
+        emit(SenderError('Failed to start internet transfer: $e'));
       }
       return;
     }
@@ -422,6 +499,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onStartQhtpSend(
       StartQhtpSend event, Emitter<SenderState> emit) async {
+    _currentPaths = event.paths;
     final mode = event.mode ?? _selectedMode;
     if (mode == TransportType.internet || mode == TransportType.bluetooth) {
       if (event.paths.isEmpty) {
@@ -526,10 +604,86 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     }
   }
 
+  /// Builds a network of our own and serves the transfer over it.
+  ///
+  /// The internet attempt is torn down first — its peer connection and its
+  /// rendezvous subscription are of no further use, and leaving the WebRTC
+  /// transport registered would keep the unauthenticated answer route alive.
+  ///
+  /// The file server needs no special handling: it binds every interface, so
+  /// once the hotspot exists it is already listening there. What has to wait is
+  /// the address printed into the QR code, which appears a few hundred
+  /// milliseconds after the hotspot callback fires.
+  Future<void> _onStartLocalNetwork(
+      StartLocalNetwork event, Emitter<SenderState> emit) async {
+    final paths = _currentPaths ??
+        (_currentFile != null ? [_currentFile!.path] : const <String>[]);
+    if (paths.isEmpty) {
+      emit(const SenderError('Nothing is selected to send.'));
+      return;
+    }
+
+    emit(const HotspotStarting());
+
+    await _closeAnswerChannel();
+    await _activeWebRtcTransport?.stopSharing();
+    _activeWebRtcTransport = null;
+    _subscribeToWifiProgress();
+
+    HotspotCredentials credentials;
+    try {
+      credentials = await hotspot.startHosting();
+    } on HotspotException catch (e) {
+      emit(SenderError('Could not create a network: $e'));
+      return;
+    }
+
+    if (credentials.hostAddress == null) {
+      await hotspot.stopHosting();
+      emit(const SenderError(
+          'The network came up but never got an address, so there is nothing '
+          'to point the other device at.'));
+      return;
+    }
+
+    final result = await repository.startQhtpTransfer(paths);
+    await result.fold(
+      (failure) async {
+        await hotspot.stopHosting();
+        emit(SenderError(failure.message));
+      },
+      (session) async {
+        _currentFile = session.fileMetadata;
+        final qrResult = await repository.generateQRPayload(
+          session,
+          hostOverride: credentials.hostAddress,
+        );
+        await qrResult.fold(
+          (failure) async {
+            await hotspot.stopHosting();
+            emit(SenderError(failure.message));
+          },
+          (transferQr) async {
+            AppLogger.info(
+                'Serving over the local hotspot ${credentials.ssid} at '
+                '${credentials.hostAddress}:${session.serverPort}',
+                tag: 'SENDER_BLOC');
+            emit(LocalNetworkReady(
+              credentials: credentials,
+              wifiQr: credentials.toWifiQrPayload(),
+              transferQr: transferQr,
+              session: session,
+            ));
+          },
+        );
+      },
+    );
+  }
+
   Future<void> _onCancelSending(
       CancelSending event, Emitter<SenderState> emit) async {
+    await hotspot.stopHosting();
     await _cleanupTempZipIfNeeded(_currentFile);
-    repository.setActiveWebRtcTransport(null);
     await repository.stopServer();
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();

@@ -1,38 +1,131 @@
-# QHTP (QuickShare Heavy Transfer Protocol) v1 Walkthrough
+# DirectDrop — как проходит передача
 
-We have completed the full end-to-end (E2E) fixes and integration for **QHTP v1** in QuickShare (`quickshare/`).
-
-## Critical Bug Fixes Implemented
-
-### 1. QRPayloadDecoder v2 Support (`C1`)
-- Updated `QRPayloadDecoder` in [qr_payload_decoder.dart](file:///Users/mrgraimon/Desktop/Share/quickshare/lib/features/receiver/data/qr/qr_payload_decoder.dart):
-  - Added support for both `payload.version == 1` (legacy single-file) and `payload.version == 2` (QHTP locator).
-  - Validates `payload.isValid` (accepting QHTP session locators without `fileName`/`fileSize` fields).
-
-### 2. SenderBloc `_onStartQhtpSend` Handler (`C2`)
-- Implemented `_onStartQhtpSend` in [sender_bloc.dart](file:///Users/mrgraimon/Desktop/Share/quickshare/lib/features/sender/presentation/bloc/sender_bloc.dart):
-  - Handles `StartQhtpSend(paths)` event triggered by the **Select Folder** UI button.
-  - Calls `repository.startQhtpTransfer(paths)` -> `repository.generateQRPayload(session)` -> emits `QRReady(qrData, session)`.
-
-### 3. QR Payload Encoding Split (`C3`)
-- Updated `generateQRPayload` in [sender_repository_impl.dart](file:///Users/mrgraimon/Desktop/Share/quickshare/lib/features/sender/data/repositories/sender_repository_impl.dart):
-  - **Legacy single file**: Computes SHA-256 stream checksum and outputs legacy `v: 1` QR payload (`ip`, `port`, `token`, `fileName`, `fileSize`, `checksum`).
-  - **QHTP session**: Outputs QHTP `v: 2` locator QR payload (`ip`, `port`, `token`, `sessionId`, `mode: "http-lan"`).
-
-### 4. Honest Storage Preflight Handling (`C4`)
-- Updated `_getAvailableDiskSpace` in [qhtp_receiver_client.dart](file:///Users/mrgraimon/Desktop/Share/quickshare/lib/features/receiver/data/client/qhtp_receiver_client.dart):
-  - Removed artificial fallback claims, ensuring accurate disk preflight handling.
+Сверено с кодом 2026-08-16. Единственная копия: две другие (`walkthrough.md` в
+корне репозитория и в `quickshare/`) удалены — они были редакционными
+вариантами одного текста из первого коммита и описывали QHTP v1 тех времён,
+когда рандеву ещё шло через `POST /webrtc/answer`.
 
 ---
 
-## Architectural Mapping
+## 1. Локальная сеть — основной путь
 
-| Layer | Component | Status |
-|-------|-----------|--------|
-| **Core** | `AppConstants` (`maxFileSizeBytes` = 2GB, `qhtpMaxFileBytes` = 100GB) | ✅ |
-| **Model** | `QRPayload` (`v=1` & `v=2` support) | ✅ |
-| **Data (Sender)** | `FileIndexer`, `LocalHttpServer` (`/v2/*` routes, 30 min idle TTL, 401/403 status codes) | ✅ |
-| **Data (Receiver)** | `QhtpReceiverClient` (Range 206, `.qs.partial`, 3x retries, SHA-256 post-receive) | ✅ |
-| **Domain** | `SenderRepository`, `ReceiverRepository` | ✅ |
-| **BLoC** | `SenderBloc` (`_onStartQhtpSend`), `ReceiverBloc` (`isQhtp` branching) | ✅ |
-| **UI** | `FilePickerPage` (Select Folder button) | ✅ |
+**Отправитель**
+
+1. Выбирает файлы или папку. `FileIndexer` рекурсивно обходит выбор, пропуская
+   `.DS_Store`, `Thumbs.db`, `desktop.ini`, `.git/` и `node_modules/`, и
+   собирает манифест: `id`, относительный путь, размер, mtime, mime. Для сессий
+   до 2 ГБ считается ещё и SHA-256 каждого элемента.
+2. `LocalHttpServer` занимает первый свободный порт 8000–9000 и биндится на
+   `InternetAddress.anyIPv4` — то есть слушает все интерфейсы сразу.
+3. В QR уходит локатор v2: IP, порт, одноразовый bearer-токен, `sessionId`,
+   имя и суммарный размер (чтобы приёмник показал их сразу, не дожидаясь
+   `/v2/session`).
+
+**Получатель**
+
+1. Сканирует QR, сразу видит имя и объём.
+2. `GET /v2/session` → `GET /v2/manifest`. Манифест отклоняется, если
+   `Content-Length` больше 32 МБ, а сессия — если в ней есть файл больше 100 ГБ
+   или больше 100 000 элементов.
+3. По каждому элементу: `GET /v2/files/<id>`, при докачке с заголовком
+   `Range: bytes=<с чего>-`. Ответ `200` на Range-запрос **отвергается** — это
+   означало бы, что сервер шлёт с нуля, и дозапись в append испортила бы файл.
+4. Байты идут в `<имя>.qs.partial`. Три попытки на элемент.
+5. **Проверка, затем переименование** — именно в этом порядке. Сверяется размер
+   всегда, SHA-256 — если манифест его несёт. При несовпадении партиал
+   удаляется, попытка начинается с нуля.
+6. `POST /v2/session/complete`.
+
+Прерванная передача возобновляется с точного байта: состояние лежит в
+`qhtp_sessions/<sessionId>.json`. Записи старше суток убираются при следующем
+запуске приложения — вместе с их `.qs.partial`, иначе гигабайты остались бы в
+песочнице без единой ссылки.
+
+---
+
+## 2. Интернет — serverless WebRTC
+
+Оба устройства обычно за NAT, который не пропустит неожиданный входящий пакет,
+а у десктопа нет камеры — значит обратного визуального канала нет. Поэтому
+оффер едет в одну сторону, в QR, а ответ возвращается вне полосы.
+
+**Отправитель**
+
+1. Поднимает `RTCPeerConnection` и DataChannel. Сигнальный сервер здесь не
+   участвует: `startSharingServerless()` намеренно не зовёт ни `createRoom()`,
+   ни `resolvePeerReachableUrl()`.
+2. Ждёт ICE-кандидатов до 6 секунд, но выходит раньше, как только собран relay.
+   Trickle-канала нет: что не попало в SDP к моменту отрисовки QR, до пира не
+   доедет никогда.
+3. `CompactSdp` ужимает 6,5–8,4 КБ SDP до ~200 байт. QR = `QS1` + 16-байтный
+   seed + оффер.
+4. **Подписывается на топик до отрисовки кода** — иначе телефон ответил бы в
+   канал, который никто не слушает. Топик выводится HKDF из seed.
+
+**Получатель**
+
+1. Сканирует, восстанавливает SDP из шаблона, отвечает.
+2. Запечатывает ответ ChaCha20-Poly1305: ключ — HKDF от seed, AAD — SHA-256
+   оффера. Ответ, сделанный для одного оффера, не пройдёт аутентификацию против
+   другого.
+3. Публикует в тот же топик веером по всем Nostr-релеям сразу — релеи между
+   собой не обмениваются событиями, поэтому обе стороны работают со всем
+   списком.
+
+**Дальше** — DataChannel и файл чанками по 16 КБ с backpressure по
+`bufferedAmount` 256 КБ.
+
+**Перед первым байтом** отправитель спрашивает `getStats()`, какая пара
+кандидатов реально выбрана. Если это relay и сессия больше 50 МБ — передача не
+начинается, показывается экран с выходом. Проверить это на этапе gathering
+нельзя: там известно только что предложено, а победившую пару определяют
+connectivity-проверки обеих сторон.
+
+---
+
+## 3. Нет общей сети — локальный хотспот
+
+Выход с экрана деградации, куда приводят `RelayTooExpensive` и
+`NoUsablePathFound`.
+
+1. Кнопка «Create a network». На iOS её просто нет — Apple не даёт приложению
+   поднять сеть, поэтому предлагать было бы тупиком.
+2. Android поднимает `startLocalOnlyHotspot` и отдаёт сгенерированные SSID и
+   пароль. Интернет при этом не рвётся — мобильные данные остаются на своём
+   интерфейсе.
+3. Приложение ждёт, пока у интерфейса появится адрес: коллбек приходит раньше,
+   чем адрес назначен, поэтому идёт опрос 15 × 200 мс. Имя интерфейса ищется
+   перебором (`ap*`, `swlan*`, `wlan1`), а не берётся из константы — вендоры
+   расходятся и в имени, и в подсети.
+4. Файловый сервер перезапускать не нужно: он и так слушает все интерфейсы.
+   Ждать приходится только адрес, который пойдёт в QR.
+5. Два кода подряд: сначала `WIFI:T:WPA;S:…;P:…;;` — его понимает системная
+   камера, приложение на той стороне ещё не нужно. После подключения — обычный
+   локатор QHTP.
+
+Хостом всегда выступает Android или десктоп. Пара iPhone ↔ iPhone так не
+закрывается: там нужен режим модема, включённый руками.
+
+Если приложение уходит в фон, хотспот гасится не сразу — две минуты отсрочки,
+которая отменяется при возврате. Пользователь может отойти скопировать пароль
+посреди передачи, и рвать сеть под ним хуже, чем сэкономленная батарея. При
+`detached` сеть гасится немедленно.
+
+---
+
+## 4. Bluetooth
+
+Единый GATT-профиль поверх трёх реализаций: CoreBluetooth на iOS и macOS,
+`universal_ble` на Android и Windows, DBus/BlueZ на Linux. Передача идёт
+нотификациями примерно по 182 байта, поэтому это канал для мелочи, а не для
+гигабайтов.
+
+---
+
+## 5. Что видит посредник
+
+| Участник | Что ему видно |
+|---|---|
+| Nostr-релей | ~200 байт шифртекста и производный от seed тег. Ни ICE-креденшелов, ни адресов кандидатов, ни отпечатка. Событие эфемерное (kind 20000) — релей его не хранит |
+| TURN-сервер | Зашифрованный DTLS-трафик, если дошло до relay |
+| Кто угодно в локальной сети | **Всё**: QHTP это открытый HTTP, токен лежит в QR. Честное решение — self-signed TLS с отпечатком в QR, пока не сделано |

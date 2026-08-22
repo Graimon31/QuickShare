@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/status.dart' as status;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/network/auto_tunnel_service.dart';
 
 class SignalingException implements Exception {
@@ -26,6 +25,8 @@ class WebRtcSignalingClient {
   WebSocketChannel? _channel;
   StreamController<Map<String, dynamic>> _messageController =
       StreamController<Map<String, dynamic>>.broadcast();
+  // Cancelled in dispose(); the lint only looks inside the declaring method.
+  // ignore: cancel_subscriptions
   StreamSubscription<dynamic>? _socketSub;
   bool _isDisposed = false;
 

@@ -16,7 +16,7 @@ import 'package:quickshare/core/theme/app_motion.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class QRScanPage extends StatefulWidget {
-  const QRScanPage({Key? key}) : super(key: key);
+  const QRScanPage({super.key});
 
   @override
   State<QRScanPage> createState() => _QRScanPageState();
@@ -318,7 +318,7 @@ class _QRScanPageState extends State<QRScanPage>
                       ),
                       TextButton.icon(
                         style: TextButton.styleFrom(
-                          backgroundColor: AppColors.voidBg.withOpacity(0.72),
+                          backgroundColor: AppColors.voidBg.withValues(alpha: 0.72),
                           foregroundColor: Colors.white,
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(20)),
@@ -343,7 +343,7 @@ class _QRScanPageState extends State<QRScanPage>
                           padding: const EdgeInsets.symmetric(
                               horizontal: 16, vertical: 10),
                           decoration: BoxDecoration(
-                            color: AppColors.voidBg.withOpacity(0.85),
+                            color: AppColors.voidBg.withValues(alpha: 0.85),
                             borderRadius: BorderRadius.circular(16),
                             border: Border.all(color: AppColors.primary),
                           ),

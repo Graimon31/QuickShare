@@ -1,0 +1,70 @@
+name: Integration tests (real WebRTC)
+
+# Deliberately not on push or pull_request.
+#
+# These tests build and launch a real desktop app and drive an actual libwebrtc
+# stack. That costs a few minutes against the ~30 seconds the unit suite takes,
+# and a pipeline developers wait on is a pipeline they learn to ignore. Nightly
+# catches a regression within a day, which is the right trade for a suite whose
+# job is to catch changes in somebody else's native library.
+on:
+  schedule:
+    # 04:00 UTC — after the working day in the target timezone, so a failure is
+    # waiting in the morning rather than interrupting.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+  push:
+    # The paths where a break would be invisible to the unit suite: anything
+    # that touches SDP, ICE or the transports built on them.
+    paths:
+      - 'quickshare/lib/core/webrtc/**'
+      - 'quickshare/lib/core/signaling/**'
+      - 'quickshare/lib/features/*/data/transports/**'
+      - 'quickshare/integration_test/**'
+      - 'quickshare/pubspec.yaml'
+
+jobs:
+  serverless_webrtc:
+    name: Serverless handshake on macOS
+    runs-on: macos-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ./quickshare
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Enable the macOS desktop target
+        run: flutter config --enable-macos-desktop
+
+      - run: flutter pub get
+
+      # macOS is the only desktop target that carries a full libwebrtc build,
+      # which makes it the cheapest place to exercise the real handshake — no
+      # emulator, no device, no signing.
+      - name: Serverless end-to-end
+        run: flutter test integration_test/serverless_e2e_test.dart -d macos
+
+      # The room-based path runs its signaling server inside the test, so this
+      # needs nothing installed beyond Flutter itself.
+      - name: LAN room handshake end-to-end
+        run: flutter test integration_test/lan_webrtc_e2e_test.dart -d macos
+
+      # The candidate types the run gathered are the diagnostic worth keeping:
+      # "relay present: false" is how we learned the baked-in TURN credentials
+      # produce no relay candidate.
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs-${{ github.run_number }}
+          path: |
+            quickshare/build/macos/Build/Products/Debug/*.log
+          if-no-files-found: ignore

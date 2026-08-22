@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 
 class PortMappingResult {
@@ -37,11 +36,25 @@ class UpnpPortForwarder {
   static const int _ssdpPort = 1900;
   static const int _natPmpPort = 5351;
 
+  /// Preferred lease, in seconds. A mapping that outlives the process is a
+  /// hole in the user's router that nothing will ever close — and the previous
+  /// code asked for exactly that (`NewLeaseDuration` of 0 means permanent)
+  /// while never calling DeletePortMapping anywhere. A finite lease means a
+  /// crash costs an hour rather than forever; [releaseAll] closes it sooner in
+  /// the normal case.
+  static const int _leaseSeconds = 3600;
+
+  /// Mappings this instance created and is responsible for removing.
+  final List<({UpnpDeviceInfo device, int externalPort})> _activeMappings = [];
+
+  /// True when there is something to clean up.
+  bool get hasActiveMappings => _activeMappings.isNotEmpty;
+
   /// Attempts to map [internalPort] on the local router using UPnP IGD or NAT-PMP.
   Future<PortMappingResult> forwardPort({
     required int internalPort,
     int? externalPort,
-    String description = 'QuickShare',
+    String description = 'DirectDrop',
     Duration timeout = const Duration(seconds: 4),
   }) async {
     final port = externalPort ?? internalPort;
@@ -159,6 +172,8 @@ class UpnpPortForwarder {
       );
 
       if (soapSuccess) {
+        _activeMappings
+            .add((device: deviceInfo, externalPort: externalPort));
         final publicIp = await _getUpnpExternalIp(deviceInfo);
         return PortMappingResult(
           success: true,
@@ -223,6 +238,34 @@ class UpnpPortForwarder {
     required int externalPort,
     required String description,
   }) async {
+    // Some IGD implementations answer 725 OnlyPermanentLeasesSupported for a
+    // finite lease, so ask for one first and fall back rather than give up.
+    if (await _addPortMapping(
+        deviceInfo: deviceInfo,
+        localIp: localIp,
+        internalPort: internalPort,
+        externalPort: externalPort,
+        description: description,
+        leaseSeconds: _leaseSeconds)) {
+      return true;
+    }
+    return _addPortMapping(
+        deviceInfo: deviceInfo,
+        localIp: localIp,
+        internalPort: internalPort,
+        externalPort: externalPort,
+        description: description,
+        leaseSeconds: 0);
+  }
+
+  Future<bool> _addPortMapping({
+    required UpnpDeviceInfo deviceInfo,
+    required String localIp,
+    required int internalPort,
+    required int externalPort,
+    required String description,
+    required int leaseSeconds,
+  }) async {
     final body = '''<?xml version="1.0"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
 <s:Body>
@@ -234,7 +277,7 @@ class UpnpPortForwarder {
 <NewInternalClient>$localIp</NewInternalClient>
 <NewEnabled>1</NewEnabled>
 <NewPortMappingDescription>$description</NewPortMappingDescription>
-<NewLeaseDuration>0</NewLeaseDuration>
+<NewLeaseDuration>$leaseSeconds</NewLeaseDuration>
 </u:AddPortMapping>
 </s:Body>
 </s:Envelope>''';
@@ -246,6 +289,61 @@ class UpnpPortForwarder {
       final req = await client.postUrl(uri);
       req.headers.set('Content-Type', 'text/xml; charset="utf-8"');
       req.headers.set('SOAPAction', '"${deviceInfo.serviceType}#AddPortMapping"');
+      req.add(utf8.encode(body));
+      final res = await req.close();
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// Removes every mapping this instance created.
+  ///
+  /// Best effort by design: a router that has already dropped the mapping, or
+  /// that went away with the network, is not an error the caller can act on.
+  /// Returns the number of mappings the router confirmed removing.
+  Future<int> releaseAll() async {
+    if (_activeMappings.isEmpty) return 0;
+    final pending = List.of(_activeMappings);
+    _activeMappings.clear();
+
+    var removed = 0;
+    for (final mapping in pending) {
+      if (await _sendSoapDeletePortMapping(
+          deviceInfo: mapping.device, externalPort: mapping.externalPort)) {
+        removed++;
+      } else {
+        debugPrint('UPnP: router did not confirm removing external port '
+            '${mapping.externalPort}');
+      }
+    }
+    return removed;
+  }
+
+  Future<bool> _sendSoapDeletePortMapping({
+    required UpnpDeviceInfo deviceInfo,
+    required int externalPort,
+  }) async {
+    final body = '''<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+<s:Body>
+<u:DeletePortMapping xmlns:u="${deviceInfo.serviceType}">
+<NewRemoteHost></NewRemoteHost>
+<NewExternalPort>$externalPort</NewExternalPort>
+<NewProtocol>TCP</NewProtocol>
+</u:DeletePortMapping>
+</s:Body>
+</s:Envelope>''';
+
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 3);
+    try {
+      final req = await client.postUrl(Uri.parse(deviceInfo.controlUrl));
+      req.headers.set('Content-Type', 'text/xml; charset="utf-8"');
+      req.headers
+          .set('SOAPAction', '"${deviceInfo.serviceType}#DeletePortMapping"');
       req.add(utf8.encode(body));
       final res = await req.close();
       return res.statusCode == 200;

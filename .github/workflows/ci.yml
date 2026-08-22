@@ -18,7 +18,7 @@ jobs:
       - name: Set up Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.x'
+          flutter-version: '3.44.x'
           channel: 'stable'
           cache: true
 
@@ -26,7 +26,7 @@ jobs:
         run: flutter pub get
 
       - name: Analyze code
-        run: flutter analyze
+        run: flutter analyze --fatal-infos
 
       - name: Run unit and integration tests
         run: flutter test --coverage
@@ -42,7 +42,7 @@ jobs:
       - name: Set up Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.x'
+          flutter-version: '3.44.x'
           channel: 'stable'
           cache: true
 
@@ -68,11 +68,58 @@ jobs:
       - name: Set up Flutter SDK
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.x'
+          flutter-version: '3.44.x'
           channel: 'stable'
           cache: true
 
-      - name: Build Android APK
+      - name: Build Android APK (debug)
         run: |
           flutter pub get
           flutter build apk --debug --no-pub
+
+      # Release is built on every push so the signing path, R8 and the network
+      # security config are exercised — a debug-only pipeline is exactly how
+      # the previous release breakage went unnoticed.
+      #
+      # Signing material comes from repository secrets. Without them the build
+      # still runs and produces an unsigned APK rather than silently falling
+      # back to the debug certificate.
+      # The secrets context is not reliably usable in a step-level `if`, so the
+      # value is read into an env var and the emptiness check happens in shell.
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.QUICKSHARE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "No keystore secret configured — the release APK will be unsigned."
+            exit 0
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          echo "QUICKSHARE_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      # Per-ABI APKs rather than one fat binary. The universal APK is 102 MB
+      # because it carries libflutter, libjingle_peerconnection and the ML Kit
+      # barcode models three times over; a device only ever needs one set.
+      - name: Build Android APKs (release, per ABI)
+        env:
+          QUICKSHARE_KEYSTORE_PASSWORD: ${{ secrets.QUICKSHARE_KEYSTORE_PASSWORD }}
+          QUICKSHARE_KEY_ALIAS: ${{ secrets.QUICKSHARE_KEY_ALIAS }}
+          QUICKSHARE_KEY_PASSWORD: ${{ secrets.QUICKSHARE_KEY_PASSWORD }}
+        run: flutter build apk --release --no-pub --split-per-abi
+
+      # What Play actually wants; it serves each device only its own slice.
+      - name: Build Android App Bundle (release)
+        env:
+          QUICKSHARE_KEYSTORE_PASSWORD: ${{ secrets.QUICKSHARE_KEYSTORE_PASSWORD }}
+          QUICKSHARE_KEY_ALIAS: ${{ secrets.QUICKSHARE_KEY_ALIAS }}
+          QUICKSHARE_KEY_PASSWORD: ${{ secrets.QUICKSHARE_KEY_PASSWORD }}
+        run: flutter build appbundle --release --no-pub
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: |
+            quickshare/build/app/outputs/flutter-apk/*-release.apk
+            quickshare/build/app/outputs/bundle/release/*.aab
+          if-no-files-found: error

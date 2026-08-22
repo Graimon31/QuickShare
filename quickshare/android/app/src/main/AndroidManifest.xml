@@ -20,6 +20,12 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- startLocalOnlyHotspot: raising the network the receiver joins when the
+         internet path is blocked. Android gates hotspot control behind the
+         location permission because an access point is positionally
+         identifiable, so ACCESS_FINE_LOCATION below is required at runtime
+         even though QuickShare never reads a position. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
 
     <!-- Camera for QR scanning -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -40,9 +46,8 @@
         android:maxSdkVersion="29" />
 
     <!-- Location: Required for Wi-Fi info on Android 12 (API 31-32) -->
-    <uses-permission
-        android:name="android.permission.ACCESS_FINE_LOCATION"
-        android:maxSdkVersion="32" />
+    <!-- No maxSdkVersion: startLocalOnlyHotspot still requires this on 13+. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission
         android:name="android.permission.ACCESS_COARSE_LOCATION"
         android:maxSdkVersion="32" />
@@ -70,7 +75,7 @@
 
 
     <application
-        android:label="QuickShare"
+        android:label="DirectDrop"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
@@ -100,7 +105,7 @@
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="quickshare" android:host="join"/>
+                <data android:scheme="directdrop" android:host="join"/>
             </intent-filter>
         </activity>
 

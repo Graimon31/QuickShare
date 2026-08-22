@@ -181,7 +181,7 @@ class _HomePageState extends State<HomePage>
                               end: Alignment.centerRight,
                             ).createShader(bounds),
                             child: Text(
-                              'QuickShare',
+                              'DirectDrop',
                               style: GoogleFonts.inter(
                                 fontSize: 38,
                                 fontWeight: FontWeight.w600,
@@ -200,7 +200,7 @@ class _HomePageState extends State<HomePage>
                           style: GoogleFonts.inter(
                             fontSize: 16,
                             height: 1.5,
-                            color: Colors.white.withOpacity(0.88),
+                            color: Colors.white.withValues(alpha: 0.88),
                             fontWeight: FontWeight.w400,
                           ),
                           textAlign: TextAlign.center,
@@ -282,7 +282,7 @@ class _HomePageState extends State<HomePage>
           height: size,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            color: color.withOpacity(opacity),
+            color: color.withValues(alpha: opacity),
           ),
         ),
       ),
@@ -342,7 +342,7 @@ class _GlassCardState extends State<_GlassCard> {
 
     final borderWidth = _isDragOver ? 2.2 : 1.5;
 
-    Widget cardInner = Container(
+    final Widget cardInner = Container(
       width:
           double.infinity, // Ensures full horizontal stretch inside container
       decoration: BoxDecoration(
@@ -353,13 +353,13 @@ class _GlassCardState extends State<_GlassCard> {
         border: Border.all(color: borderColor, width: borderWidth),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.40),
+            color: Colors.black.withValues(alpha: 0.40),
             blurRadius: 36,
             offset: const Offset(0, 10),
           ),
           if (_isHovered || _isDragOver)
             BoxShadow(
-              color: widget.badgeGlowColor.withOpacity(0.35),
+              color: widget.badgeGlowColor.withValues(alpha: 0.35),
               blurRadius: 28,
               spreadRadius: 2,
             ),
@@ -378,9 +378,9 @@ class _GlassCardState extends State<_GlassCard> {
                 borderRadius: BorderRadius.circular(1),
                 gradient: LinearGradient(
                   colors: [
-                    Colors.white.withOpacity(0.0),
-                    Colors.white.withOpacity(0.50),
-                    Colors.white.withOpacity(0.0),
+                    Colors.white.withValues(alpha: 0.0),
+                    Colors.white.withValues(alpha: 0.50),
+                    Colors.white.withValues(alpha: 0.0),
                   ],
                 ),
               ),
@@ -406,8 +406,8 @@ class _GlassCardState extends State<_GlassCard> {
                       gradient: widget.badgeGradient,
                       boxShadow: [
                         BoxShadow(
-                          color: widget.badgeGlowColor.withOpacity(
-                              _isHovered || _isDragOver ? 0.90 : 0.70),
+                          color: widget.badgeGlowColor.withValues(
+                              alpha: _isHovered || _isDragOver ? 0.90 : 0.70),
                           blurRadius: _isHovered || _isDragOver ? 32 : 24,
                           spreadRadius: _isHovered || _isDragOver ? 3 : 1,
                         ),
@@ -458,17 +458,17 @@ class _GlassCardState extends State<_GlassCard> {
       ),
     );
 
-    Widget cardContent = AnimatedContainer(
+    final Widget cardContent = AnimatedContainer(
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeOut,
       transform: Matrix4.identity()
-        ..translate(0.0, translateY)
-        ..scale(scale),
+        ..translateByDouble(0.0, translateY, 0.0, 1.0)
+        ..scaleByDouble(scale, scale, scale, 1.0),
       child: cardInner,
     );
 
     // iOS uses the opaque card treatment without a backdrop readback blur.
-    Widget glassCard = ClipRRect(
+    final Widget glassCard = ClipRRect(
       borderRadius: BorderRadius.circular(24),
       child: Platform.isIOS
           ? cardContent
@@ -479,7 +479,7 @@ class _GlassCardState extends State<_GlassCard> {
     );
 
     // Keyboard & Focus Outline detector
-    Widget interactiveCard = FocusableActionDetector(
+    final Widget interactiveCard = FocusableActionDetector(
       onFocusChange: (focused) => setState(() => _isFocused = focused),
       actions: {
         ActivateIntent:

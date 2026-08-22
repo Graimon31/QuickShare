@@ -5,7 +5,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
-import 'package:quickshare/features/sender/data/transports/webrtc_transfer_transport.dart';
+import 'package:quickshare/features/sender/data/server/http_range.dart';
 import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -17,39 +17,11 @@ class LocalHttpServer {
   Map<String, String>? _itemIdToAbsPathMap;
   int _qhtpBytesSent = 0;
 
-  WebRtcTransferTransport? activeWebRtcTransport;
 
   final _progressController = StreamController<double>.broadcast();
   Stream<double> get transferProgress => _progressController.stream;
 
   bool get isRunning => _server != null;
-
-  void _registerWebRtcRoutes(Router router) {
-    router.post('/webrtc/answer', (Request request) async {
-      try {
-        final bodyText = await request.readAsString();
-        final jsonMap = jsonDecode(bodyText) as Map<String, dynamic>;
-        final sdp = jsonMap['sdp'] as String?;
-        final type = jsonMap['type'] as String? ?? 'answer';
-        if (sdp != null && activeWebRtcTransport != null) {
-          await activeWebRtcTransport!.handleDirectAnswer(sdp, type);
-          return Response.ok(
-            jsonEncode({'status': 'accepted'}),
-            headers: {'Content-Type': 'application/json; charset=utf-8'},
-          );
-        }
-        return Response.badRequest(
-          body: jsonEncode({'error': 'Missing sdp or WebRTC transport active'}),
-          headers: {'Content-Type': 'application/json; charset=utf-8'},
-        );
-      } catch (e) {
-        return Response.internalServerError(
-          body: jsonEncode({'error': e.toString()}),
-          headers: {'Content-Type': 'application/json; charset=utf-8'},
-        );
-      }
-    });
-  }
 
   /// Legacy single-file start method
   Future<int> start(
@@ -68,7 +40,6 @@ class LocalHttpServer {
     _authToken = authToken;
 
     final router = Router();
-    _registerWebRtcRoutes(router);
 
     router.get('/info', (Request request) {
       return Response.ok(
@@ -147,7 +118,6 @@ class LocalHttpServer {
     _qhtpBytesSent = 0;
 
     final router = Router();
-    _registerWebRtcRoutes(router);
 
     // 1. GET /v2/health (No auth required)
     router.get('/v2/health', (Request request) {
@@ -208,33 +178,23 @@ class LocalHttpServer {
       );
 
       final totalSize = await file.length();
-      final rangeHeader = request.headers['range'];
+      final parsed = parseRangeHeader(request.headers['range'], totalSize);
 
-      int startOffset = 0;
-      int endOffset = totalSize > 0 ? totalSize - 1 : 0;
-      bool isRange = false;
-
-      if (rangeHeader != null && rangeHeader.startsWith('bytes=')) {
-        final parts = rangeHeader.substring(6).split('-');
-        if (parts.isNotEmpty && parts[0].isNotEmpty) {
-          startOffset = int.tryParse(parts[0]) ?? 0;
-        }
-        if (parts.length > 1 && parts[1].isNotEmpty) {
-          endOffset = int.tryParse(parts[1]) ?? endOffset;
-        }
-        if (startOffset <= endOffset && startOffset < totalSize) {
-          isRange = true;
-        } else if (totalSize > 0) {
-          return Response(
-            416,
-            body: jsonEncode({'error': 'Range Not Satisfiable', 'code': 'INVALID_RANGE'}),
-            headers: {
-              'Content-Type': 'application/json; charset=utf-8',
-              'Content-Range': 'bytes */$totalSize',
-            },
-          );
-        }
+      if (parsed.outcome == RangeOutcome.unsatisfiable) {
+        return Response(
+          416,
+          body: jsonEncode(
+              {'error': 'Range Not Satisfiable', 'code': 'INVALID_RANGE'}),
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Content-Range': 'bytes */$totalSize',
+          },
+        );
       }
+
+      final isRange = parsed.outcome == RangeOutcome.satisfiable;
+      final startOffset = parsed.range?.start ?? 0;
+      final endOffset = parsed.range?.end ?? (totalSize > 0 ? totalSize - 1 : 0);
 
       final contentLength = totalSize > 0 ? (endOffset - startOffset + 1) : 0;
       final rawStream = file.openRead(startOffset, contentLength > 0 ? startOffset + contentLength : 0);
@@ -319,10 +279,12 @@ class LocalHttpServer {
   Middleware _authMiddleware() {
     return (Handler innerHandler) {
       return (Request request) async {
-        // Allow unauthed GET /info, GET /v2/health, and POST /webrtc/answer
-        if (request.url.path == 'info' ||
-            request.url.path == 'v2/health' ||
-            request.url.path == 'webrtc/answer') {
+        // Unauthenticated by design: /info is a name-and-size preview and
+        // /v2/health is a liveness probe. The POST /webrtc/answer route that
+        // used to sit here is gone — it accepted an SDP answer from anyone on
+        // the network and handed it to the active peer connection, and the
+        // rendezvous moved to a sealed out-of-band channel long ago.
+        if (request.url.path == 'info' || request.url.path == 'v2/health') {
           return innerHandler(request);
         }
 

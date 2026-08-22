@@ -105,7 +105,7 @@ class BluetoothSendPage extends StatelessWidget {
                                   ),
                         ).animate().fadeIn(delay: 200.ms),
                         const SizedBox(height: 16),
-                        Icon(
+                        const Icon(
                           Icons.bluetooth_searching,
                           size: 48,
                           color: AppColors.primary,

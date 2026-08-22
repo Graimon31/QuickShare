@@ -1,4 +1,4 @@
-# QuickShare Heavy Transfer Protocol (QHTP)
+# DirectDrop Heavy Transfer Protocol (QHTP)
 
 **Version:** 1.0  
 **Status:** Draft for implementation  
@@ -37,7 +37,7 @@
 | Role | Responsibility |
 |------|----------------|
 | **Sender (Host)** | Indexes selection, opens local HTTP server, serves manifest + file bytes, tracks session |
-| **Receiver (Client)** | Scans QR, pulls manifest, downloads items in order (or resume order), writes paths, verifies hashes |
+| **Receiver (Client)** | Scans QR, pulls manifest, downloads items in order (or resume order), writes paths, **verifies size always and SHA-256 when the manifest carries one, before renaming** |
 
 One active **receiver download stream** at a time per session in v1 (simplifies progress and resume). Multiple receivers are **out of scope** (token may be single-consumer).
 
@@ -47,15 +47,15 @@ One active **receiver download stream** at a time per session in v1 (simplifies 
 
 | Constant | Value | Enforce where |
 |----------|------:|---------------|
-| `MAX_FILE_BYTES` | 100 × 1024³ | Sender index, Receiver before write |
-| `MAX_SESSION_BYTES` | 500 × 1024³ | Sender index, Receiver preflight |
-| `MAX_FILE_COUNT` | 100_000 | Sender index |
-| `MAX_PATH_DEPTH` | 32 | Sender path normalize |
-| `MAX_REL_PATH_CHARS` | 512 | UTF-8 length of relative path |
-| `MAX_NAME_CHARS` | 255 | Single path segment |
+| `MAX_FILE_BYTES` | 100 × 1024³ | `FileIndexer._checkFileLimits`; receiver rejects the session after reading the manifest |
+| `MAX_SESSION_BYTES` | 500 × 1024³ | `FileIndexer._checkFileLimits`; receiver preflight on `/v2/session` |
+| `MAX_FILE_COUNT` | 100_000 | `FileIndexer._checkFileLimits`; receiver preflight |
+| `MAX_PATH_DEPTH` | 32 | `FileIndexer._walkDirectory` |
+| `MAX_REL_PATH_CHARS` | 512 | `FileIndexer._validatePathString`, characters |
+| `MAX_NAME_BYTES` | 255 | `QhtpReceiverClient.sanitizeSegment`. **Bytes, not characters** — that is what filesystems count, and a Cyrillic name reaches the cap in half as many characters. An over-long name is shortened keeping its extension rather than refused, so the user still gets the file |
 | `IDLE_NO_TRAFFIC_MS` | 30 × 60 × 1000 | Sender session timer (reset on any authed request) |
-| `RESUME_STATE_TTL_MS` | 24 × 60 × 60 × 1000 | Receiver local state |
-| `MANIFEST_MAX_BYTES` | 32 × 1024 × 1024 | Reject oversized manifest JSON |
+| `RESUME_STATE_TTL_MS` | 24 × 60 × 60 × 1000 | `SessionStateStore.cleanExpiredStates`, run at app start. Deletes the `.qs.partial` files first and the record last |
+| `MANIFEST_MAX_BYTES` | 32 × 1024 × 1024 | Receiver checks `Content-Length` **before** parsing — the manifest is decoded into memory, so the bound has to come first |
 | `CHUNK_HINT` | 1 × 1024 × 1024 | Suggested Range size (1 MiB); not mandatory |
 
 Default skip names (sender index, configurable later):
@@ -69,7 +69,20 @@ Default skip names (sender index, configurable later):
 
 ### 4.1 Encoding
 
-Same as today: UTF-8 JSON → **base64url** (no padding required; decoder must accept missing `=`).
+UTF-8 JSON → **zlib** → **base64url**, padding stripped (`=` removed; a decoder
+must re-add it before decoding).
+
+```
+base64Url(zlib(utf8(json))).replaceAll('=', '')
+```
+
+> The zlib pass is not decoration. An earlier version base64-encoded the JSON
+> directly, and because the SDP inside was *already* base64 of compressed
+> bytes, the result grew ~33% and approached the 2953-byte ceiling of QR byte
+> mode v40 EC=L. One compression pass on the outside, raw payload on the
+> inside. A decoder written against the previous wording of this section would
+> read compressed bytes as text and fail — this is the one place in the spec
+> where the mismatch broke interoperability rather than expectations.
 
 ### 4.2 Schema (v2 locator)
 
@@ -95,9 +108,31 @@ Legacy single-file QR remains `v: 1` (existing app path).
 | `p` | int | yes | TCP port 1–65535 |
 | `t` | string | yes | Session auth token (UUID v4 recommended) |
 | `sid` | string | yes | Session id (hex 16–32 chars) |
-| `mode` | string | yes | v1: always `"http-lan"` |
+| `mode` | string | yes | `"http-lan"` for QHTP; `"webrtc-qs1"` for the serverless internet path |
+| `fn` | string | no | Display name. Present so the receiver can show it the moment the code is scanned |
+| `fs` | int | no | Total bytes, same reason |
+| `ic` | int | no | Item count, same reason |
+| `sdp` | string | no | Serverless path only: the raw `QS1…` payload |
 
-**Not in QR:** file names, sizes, checksums, item list.
+**Still not in QR:** per-item checksums and the item list. Those come from
+`/v2/manifest`.
+
+> `fn`, `fs` and `ic` were added deliberately and this section used to deny
+> their existence. Without them the receiver had to call `/v2/session` before
+> it could draw anything, which froze the scanner for up to ~20 seconds on
+> some networks and read to the user as "scanning does nothing". The QR is the
+> only thing available before any network call succeeds, so the preview lives
+> there.
+
+**A note on `ip`.** The table above used to require the receiver to validate
+that the address is RFC1918. It does not, and cannot: the serverless payload
+carries the literal `"p2p"` in this field, and a hotspot session carries
+whatever subnet the vendor's access point chose. `validatePrivateIp` rejects
+unparseable, link-local and multicast addresses and accepts the rest.
+
+**A note on `sid`.** Described here as hex 16–32 chars; the implementation uses
+a UUID v4 (36 characters including hyphens). Any opaque string round-trips —
+nothing parses this field.
 
 ### 4.3 Compatibility
 
@@ -131,7 +166,7 @@ Authorization: Bearer {token}
 |---------|--------|------|
 | Missing/invalid header | 401 | `{"error":"unauthorized","code":"AUTH_REQUIRED"}` |
 | Wrong token | 403 | `{"error":"forbidden","code":"AUTH_INVALID"}` |
-| Session expired/closed | 410 | `{"error":"gone","code":"SESSION_GONE"}` |
+| Session expired/closed | 410 | `{"error":"gone","code":"SESSION_GONE"}` — **not implemented**: an expired session stops the server, so the request fails to connect rather than answering 410. The 410 that does exist is `ITEM_GONE`, for a file that vanished from disk between indexing and download |
 
 Compare tokens with **constant-time** equality.
 
@@ -224,6 +259,14 @@ Optional: allow re-download until idle timeout — **v1 default = multi-get unti
   ]
 }
 ```
+
+Items carry two fields not shown above:
+
+- `mtime` — modification time in milliseconds, always present.
+- `sha256` — `sha256:<hex>`, **optional**. Filled in for sessions up to 2 GB
+  and skipped above that; hashing is a full read of every byte before the QR
+  can appear, and 500 GB of it would look like a hang. The receiver verifies
+  the digest when present and the byte count always.
 
 **Ordering:** `items` sorted by `path` ascending (UTF-8 byte order) for deterministic resume UI. Receiver **must not** assume order equals transfer order; transfer uses `id` list from client or default order = array order.
 
@@ -342,6 +385,13 @@ Stream:
 Receiver must handle either format based on `Content-Type` / query.
 
 **413** if JSON would exceed `MANIFEST_MAX_BYTES` and NDJSON not used — sender must use NDJSON.
+
+> **Not implemented.** `/v2/session` honestly advertises
+> `supportsNdjsonManifest: false`, and the server always serves full JSON — it
+> never returns 413. The receiver enforces the ceiling from its side instead,
+> refusing a manifest whose `Content-Length` exceeds `MANIFEST_MAX_BYTES`
+> before parsing it. A session near `MAX_FILE_COUNT` would therefore fail on
+> the receiving side rather than degrade to NDJSON.
 
 ### 8.4 `GET /v2/files/{id}`
 
@@ -510,7 +560,7 @@ Path example: `{appSupport}/qhtp/{sessionId}/state.json`
   "host": "192.168.1.42",
   "port": 8123,
   "token": "…",
-  "baseDir": "/storage/…/QuickShare/Incoming/a1b2c3d4",
+  "baseDir": "/storage/…/DirectDrop/Incoming/a1b2c3d4",
   "createdAt": 1712345678000,
   "updatedAt": 1712349999000,
   "items": {
@@ -722,3 +772,22 @@ QHTP v1 is a **LAN HTTP pull protocol**:
 5. No giant payloads in QR; no full-tree pre-hash.
 
 This is sufficient to implement H1 (single huge file as 1-item manifest) and H2 (folders) on the same API.
+
+
+---
+
+## Appendix: verified against the code on 2026-08-16
+
+Three limits in the table above existed only in this document until then, and
+have since been implemented rather than removed from the spec:
+
+- `MAX_NAME_CHARS` was absent from the code entirely, and is now
+  `MAX_NAME_BYTES` — renamed because bytes are what `ENAMETOOLONG` counts.
+- `MANIFEST_MAX_BYTES` was a declared constant nobody read.
+- `MAX_FILE_BYTES` was enforced on the sending side only.
+
+Per-item `sha256` in the manifest is **optional**. The indexer fills it in for
+sessions up to 2 GB and skips it above that: hashing is a full read of every
+byte before the QR code can appear, which for 500 GB would look like a hang.
+Above the threshold the receiver still verifies the byte count, which is what
+catches truncation.

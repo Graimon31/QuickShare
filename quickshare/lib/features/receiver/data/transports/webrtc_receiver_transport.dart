@@ -2,13 +2,18 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/utils/wakelock_guard.dart';
+import 'package:quickshare/core/webrtc/ice_servers.dart';
+import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/core/webrtc/sdp_compressor.dart';
+import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
 import 'package:quickshare/features/sender/data/signaling/webrtc_signaling_client.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -60,6 +65,16 @@ class WebRtcReceiverTransport {
   int _lastBytes = 0;
   int _speedBps = 0;
   String _baseDir = '';
+  final _gathering = IceGatheringTracker();
+
+  /// §8 — whether the incoming binary stream is gzip-compressed.
+  bool _isCompressed = false;
+
+  /// §6 — keeps CPU/display alive during the transfer.
+  final _wakelockGuard = WakelockGuard();
+
+  /// §9 — refreshes TURN credentials before they expire.
+  TurnCredentialRefresher? _turnRefresher;
 
   static const _connectionTimeout = Duration(seconds: 75);
 
@@ -73,6 +88,13 @@ class WebRtcReceiverTransport {
   }
 
   String resolveTargetPath(String fileName, String baseDir) {
+    // An empty base makes p.isWithin('', 'photo.jpg') return true and the
+    // guard below wave through a relative path, which lands the file in the
+    // process working directory. Reject it outright rather than trusting every
+    // caller to have set the destination.
+    if (baseDir.isEmpty || !p.isAbsolute(baseDir)) {
+      throw Exception('Receive directory is not set (got "$baseDir")');
+    }
     final resolved = p.normalize(p.join(baseDir, sanitizeFileName(fileName)));
     if (!p.isWithin(baseDir, resolved)) {
       throw Exception('Path traversal detected in "$fileName"');
@@ -80,25 +102,55 @@ class WebRtcReceiverTransport {
     return resolved;
   }
 
+  Future<Map<String, dynamic>> _buildIceConfiguration() =>
+      IceServers.configurationDynamic();
+
+  /// Starts the TURN credential refresh timer (§9).
+  Future<void> _startTurnRefresher({DateTime? expiresAt}) async {
+    _turnRefresher?.cancel();
+    final workerUrl = AppConstants.workerBaseUrl.trim();
+    if (workerUrl.isEmpty || _peerConnection == null) return;
+
+    _turnRefresher = TurnCredentialRefresher(
+      peerConnection: _peerConnection!,
+      workerBaseUrl: workerUrl,
+      expiresAt: expiresAt,
+    );
+    _turnRefresher!.start();
+  }
+
   /// Connects serverlessly using an [sdpOffer] carried in the QR code.
   ///
   /// The answer goes back through [deliverAnswer] — a sealed drop through
-  /// public infrastructure. The older [answerEndpointUrl] path posted straight
-  /// to the sender's address, which only ever worked when the sender was
-  /// reachable from the internet; behind CGNAT the request never arrived.
+  /// public infrastructure. An earlier version posted it straight to an
+  /// address in the QR code instead, which could only ever work when the
+  /// sender was reachable from the internet; the measurements in
+  /// natfilter_result.txt showed a port-restricted NAT where that request
+  /// never arrives, so both halves of that path are gone.
   Future<String> receiveWithSdpOffer(
     String sdpOffer, {
     String? targetDir,
-    String? answerEndpointUrl,
     Future<void> Function(String answerSdp)? deliverAnswer,
   }) async {
     try {
       _emit('connecting', detail: 'Processing serverless SDP offer…');
       _statusController.add(TransferStatus.connecting);
+      await _wakelockGuard.acquire(); // §6
+
+      // Resolve the destination before anything can arrive. Leaving this unset
+      // used to make resolveTargetPath() return a bare relative name, which
+      // put the incoming file in the process working directory — read-only
+      // inside the iOS sandbox, and a surprise on desktop.
+      _baseDir = targetDir ?? (await getApplicationDocumentsDirectory()).path;
+      final baseDirectory = Directory(_baseDir);
+      if (!baseDirectory.existsSync()) {
+        baseDirectory.createSync(recursive: true);
+      }
 
       final rawSdp = SdpCompressor.decompress(sdpOffer);
 
-      _peerConnection = await createPeerConnection(_buildIceConfiguration());
+      _peerConnection = await createPeerConnection(await _buildIceConfiguration());
+      await _startTurnRefresher(); // §9
 
       _peerConnection!.onDataChannel = (RTCDataChannel channel) {
         debugPrint('WebRTC receiver serverless: data channel received');
@@ -106,7 +158,12 @@ class WebRtcReceiverTransport {
         channel.onMessage = _handleMessage;
       };
 
-      AppLogger.info('Receiver: Decompressed sdpOffer length=${rawSdp.length}. Endpoint=$answerEndpointUrl', tag: 'WEBRTC_RECEIVER');
+      // The answer is sealed and published once; like the offer, it has no
+      // trickle path, so gathering has to finish before it is encoded.
+      _peerConnection!.onIceCandidate = _gathering.observe;
+
+      AppLogger.info('Receiver: decompressed offer, ${rawSdp.length} chars',
+          tag: 'WEBRTC_RECEIVER');
 
       try {
         await _peerConnection!.setRemoteDescription(RTCSessionDescription(rawSdp, 'offer'));
@@ -117,16 +174,8 @@ class WebRtcReceiverTransport {
       final answer = await _peerConnection!.createAnswer();
       await _peerConnection!.setLocalDescription(answer);
 
-      // Wait up to 1 second for ICE gathering
-      if (_peerConnection!.iceGatheringState != RTCIceGatheringState.RTCIceGatheringStateComplete) {
-        final completer = Completer<void>();
-        _peerConnection!.onIceGatheringState = (state) {
-          if (state == RTCIceGatheringState.RTCIceGatheringStateComplete && !completer.isCompleted) {
-            completer.complete();
-          }
-        };
-        await completer.future.timeout(const Duration(milliseconds: 1000), onTimeout: () {});
-      }
+      await waitForUsableCandidates(_peerConnection!, _gathering,
+          tag: 'WEBRTC_RECEIVER');
 
       final fullLocalDesc = await _peerConnection!.getLocalDescription();
       final finalAnswerSdp = fullLocalDesc?.sdp ?? answer.sdp;
@@ -137,24 +186,8 @@ class WebRtcReceiverTransport {
             '(${finalAnswerSdp?.length ?? 0} chars)',
             tag: 'WEBRTC_RECEIVER');
         await deliverAnswer(finalAnswerSdp ?? '');
-      } else if (answerEndpointUrl != null && answerEndpointUrl.isNotEmpty) {
-        final client = HttpClient();
-        client.connectionTimeout = const Duration(seconds: 5);
-        try {
-          AppLogger.info('Receiver: Posting SDP answer to $answerEndpointUrl', tag: 'WEBRTC_RECEIVER');
-          final req = await client.postUrl(Uri.parse(answerEndpointUrl));
-          req.headers.set('Content-Type', 'application/json');
-          req.add(utf8.encode(jsonEncode({'sdp': finalAnswerSdp, 'type': answer.type})));
-          final res = await req.close();
-          AppLogger.info('Receiver: Posted SDP answer response status code=${res.statusCode}', tag: 'WEBRTC_RECEIVER');
-        } catch (e) {
-          AppLogger.error('Receiver: Error posting SDP answer to $answerEndpointUrl', error: e, tag: 'WEBRTC_RECEIVER');
-        } finally {
-          client.close();
-        }
       }
 
-      final dir = targetDir ?? (await getApplicationDocumentsDirectory()).path;
       final completer = Completer<String>();
 
       late StreamSubscription sub;
@@ -162,7 +195,7 @@ class WebRtcReceiverTransport {
         if (status == TransferStatus.completed) {
           sub.cancel();
           if (!completer.isCompleted) {
-            completer.complete(_targetPath ?? p.join(dir, 'received_file'));
+            completer.complete(_targetPath ?? p.join(_baseDir, 'received_file'));
           }
         } else if (status == TransferStatus.failed) {
           sub.cancel();
@@ -180,6 +213,7 @@ class WebRtcReceiverTransport {
         },
       );
     } catch (e) {
+      await _wakelockGuard.release(); // §6
       _statusController.add(TransferStatus.failed);
       throw Exception('receiveWithSdpOffer failed: $e');
     }
@@ -195,6 +229,7 @@ class WebRtcReceiverTransport {
       _emit('connecting',
           detail: 'Contacting signaling server…');
       _statusController.add(TransferStatus.connecting);
+      await _wakelockGuard.acquire(); // §6
 
       final url = (signalingUrl != null && signalingUrl.isNotEmpty)
           ? signalingUrl
@@ -211,7 +246,8 @@ class WebRtcReceiverTransport {
 
       _signaling = WebRtcSignalingClient(serverUrl: url);
 
-      _peerConnection = await createPeerConnection(_buildIceConfiguration());
+      _peerConnection = await createPeerConnection(await _buildIceConfiguration());
+      await _startTurnRefresher(); // §9
 
       _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
         if (candidate.candidate == null) return;
@@ -303,6 +339,7 @@ class WebRtcReceiverTransport {
         },
       );
     } catch (e) {
+      await _wakelockGuard.release(); // §6
       _statusController.add(TransferStatus.failed);
       await _cleanup();
       rethrow;
@@ -339,12 +376,22 @@ class WebRtcReceiverTransport {
     }
   }
 
+  /// §8 — handles incoming DataChannel messages.
+  ///
+  /// Binary messages are decompressed if the sender advertised
+  /// `"compressed": true` in the `file-meta` JSON.
   Future<void> _handleMessage(RTCDataChannelMessage message) async {
     try {
       if (message.isBinary) {
         if (_fileSink == null) return;
-        _fileSink!.add(message.binary);
-        _receivedBytes += message.binary.length;
+
+        // §8: decompress if the sender said so.
+        final bytes = _isCompressed
+            ? GZipDecoder().decodeBytes(message.binary)
+            : message.binary;
+
+        _fileSink!.add(bytes);
+        _receivedBytes += bytes.length;
 
         final now = DateTime.now();
         final delta = now.difference(_lastTick).inMilliseconds / 1000.0;
@@ -364,6 +411,8 @@ class WebRtcReceiverTransport {
           _fileName =
               sanitizeFileName(data['name'] as String? ?? 'received_file');
           _totalBytes = data['size'] as int? ?? 0;
+          // §8: read compression flag; default false for backward compat.
+          _isCompressed = (data['compressed'] as bool?) ?? false;
           _receivedBytes = 0;
           _lastBytes = 0;
           _lastTick = DateTime.now();
@@ -431,6 +480,9 @@ class WebRtcReceiverTransport {
   }
 
   Future<void> _cleanup() async {
+    _turnRefresher?.cancel(); // §9
+    _turnRefresher = null;
+    await _wakelockGuard.release(); // §6
     await _signalSub?.cancel();
     _signalSub = null;
     await _signaling?.dispose();
@@ -453,48 +505,5 @@ class WebRtcReceiverTransport {
       _completion.completeError(Exception('Cancelled by user'));
     }
     await _cleanup();
-  }
-
-  Map<String, dynamic> _buildIceConfiguration() {
-    final iceServers = <Map<String, dynamic>>[
-      {'urls': 'stun:stun.l.google.com:19302'},
-      {'urls': 'stun:stun1.l.google.com:19302'},
-      {'urls': 'stun:stun2.l.google.com:19302'},
-    ];
-    if (AppConstants.turnServerUrl.isNotEmpty) {
-      final mainTurnUrl = AppConstants.turnServerUrl;
-      final username = AppConstants.turnUsername;
-      final credential = AppConstants.turnCredential;
-
-      // 1. Standard UDP (turn:...) for maximum speed
-      final udpTurnMap = <String, dynamic>{'urls': mainTurnUrl};
-      if (username.isNotEmpty) udpTurnMap['username'] = username;
-      if (credential.isNotEmpty) udpTurnMap['credential'] = credential;
-      iceServers.add(udpTurnMap);
-
-      // 2. TCP Port 80 (turn:...?transport=tcp) for cellular NAT traversal
-      final tcpUrl = mainTurnUrl.contains('?')
-          ? '$mainTurnUrl&transport=tcp'
-          : '$mainTurnUrl?transport=tcp';
-      final tcpTurnMap = <String, dynamic>{'urls': tcpUrl};
-      if (username.isNotEmpty) tcpTurnMap['username'] = username;
-      if (credential.isNotEmpty) tcpTurnMap['credential'] = credential;
-      iceServers.add(tcpTurnMap);
-
-      // 3. TURNS / TLS Port 443 (turns:...:443?transport=tcp) for corporate HTTPS firewall traversal
-      final turnsBase = mainTurnUrl.replaceFirst('turn:', 'turns:');
-      final turnsUrl = turnsBase.replaceAll(':80', ':443');
-      final turnsTcpUrl = turnsUrl.contains('?')
-          ? '$turnsUrl&transport=tcp'
-          : '$turnsUrl?transport=tcp';
-      final turnsTurnMap = <String, dynamic>{'urls': turnsTcpUrl};
-      if (username.isNotEmpty) turnsTurnMap['username'] = username;
-      if (credential.isNotEmpty) turnsTurnMap['credential'] = credential;
-      iceServers.add(turnsTurnMap);
-    }
-    return {
-      'iceServers': iceServers,
-      'iceTransportPolicy': 'all',
-    };
   }
 }

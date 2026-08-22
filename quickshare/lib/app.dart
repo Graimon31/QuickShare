@@ -2,18 +2,23 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
+import 'package:quickshare/core/network/hotspot_lifecycle_guard.dart';
 import 'package:quickshare/core/router/app_router.dart';
 import 'package:quickshare/core/theme/app_theme.dart';
 
-class QuickShareApp extends StatefulWidget {
-  const QuickShareApp({super.key});
+class DirectDropApp extends StatefulWidget {
+  const DirectDropApp({super.key});
 
   @override
-  State<QuickShareApp> createState() => _QuickShareAppState();
+  State<DirectDropApp> createState() => _DirectDropAppState();
 }
 
-class _QuickShareAppState extends State<QuickShareApp> {
+class _DirectDropAppState extends State<DirectDropApp> {
   final _deepLinks = DeepLinkService();
+  // App-level rather than page-level: the hotspot outlives the screen that
+  // raised it — the transfer moves on to the progress route while the network
+  // stays up.
+  final _hotspotGuard = HotspotLifecycleGuard();
   StreamSubscription<InternetInvite>? _sub;
 
   @override
@@ -31,11 +36,13 @@ class _QuickShareAppState extends State<QuickShareApp> {
       AppRouter.router.go(q.toString());
     });
     _deepLinks.init();
+    _hotspotGuard.attach();
   }
 
   @override
   void dispose() {
     _sub?.cancel();
+    _hotspotGuard.detach();
     _deepLinks.dispose();
     super.dispose();
   }
@@ -43,10 +50,10 @@ class _QuickShareAppState extends State<QuickShareApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp.router(
-      title: 'QuickShare',
+      title: 'DirectDrop',
       theme: AppTheme.lightTheme(),
       darkTheme: AppTheme.darkTheme(),
-      // QuickShare's glass UI is intentionally dark-first across platforms.
+      // DirectDrop's glass UI is intentionally dark-first across platforms.
       // Keeping one mode prevents light Material surfaces from appearing
       // between dark transfer screens.
       themeMode: ThemeMode.dark,

@@ -37,7 +37,7 @@ class ServerlessQr {
   static ServerlessQr decode(String raw) {
     final trimmed = raw.trim();
     if (!looksLikeOne(trimmed)) {
-      throw const FormatException('not a serverless QuickShare QR code');
+      throw const FormatException('not a serverless DirectDrop QR code');
     }
     final body = base64Url.decode(
       base64Url.normalize(trimmed.substring(prefix.length)),

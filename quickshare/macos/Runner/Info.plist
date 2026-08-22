@@ -29,19 +29,19 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>QuickShare uses Bluetooth to send and receive files with nearby Macs without a network.</string>
+	<string>DirectDrop uses Bluetooth to send and receive files with nearby Macs without a network.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
-	<string>QuickShare uses Bluetooth to advertise file transfer availability to nearby devices.</string>
+	<string>DirectDrop uses Bluetooth to advertise file transfer availability to nearby devices.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>CFBundleURLName</key>
-			<string>com.yourorg.quickshare.sharelink</string>
+			<string>com.directdrop.app.sharelink</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>quickshare</string>
+				<string>directdrop</string>
 			</array>
 		</dict>
 	</array>

@@ -1,215 +1,184 @@
-# QuickShare — Архитектура и чейнджлог
+# DirectDrop — архитектура и решения
 
-> Developer Onboarding Guide. Все утверждения ниже сверены с кодом в `lib/` на 2026-08-09.
-
----
-
-## 1. Продуктовая концепция
-
-QuickShare — бессерверное (zero-server) кроссплатформенное приложение для прямой передачи файлов между macOS, iOS, Android, Windows и Linux. Flutter/Dart, Clean Architecture + BLoC.
-
-Инженерные принципы:
-
-1. **Автономия от серверов.** Приложение работает «из коробки», без поднятия собственного сигнального сервера или облачного реле. (В репозитории есть `signaling_server/` — это опциональный путь, а не обязательная зависимость; см. §6.)
-2. **Serverless WebRTC SDP-in-QR.** При передаче через интернет (LTE/5G) SDP Offer сжимается ZLib и зашивается прямо в QR-код. Телефон сканирует QR, распаковывает Offer и отправляет SDP Answer прямым HTTP POST на Mac.
-3. **Мульти-протокольный фоллбэк:**
-   - **Wi-Fi LAN** — высокоскоростной стриминг (QHTP / HTTP Range).
-   - **Internet P2P (Direct)** — проброс портов через UPnP / NAT-PMP.
-   - **Internet Relay (Fallback)** — TURN over UDP (:80), TURN over TCP (:80), TURNS over TLS (:443), с `'iceTransportPolicy': 'all'`.
-   - **Bluetooth** — отдельные транспорты для sender/receiver.
+> Сверено с кодом на 2026-08-16. Всё, что здесь написано, либо проверено
+> тестом, либо помечено как непроверенное. Предыдущая версия этого документа
+> описывала путь доставки SDP Answer через `POST /webrtc/answer`, которого
+> в коде больше нет — ни серверной, ни клиентской половины.
 
 ---
 
-## 2. Структура проекта
+## 1. Что это
 
-```
-lib/
-├── core/
-│   ├── constants/       app_constants.dart — TURN-дефолты, таймауты, диапазон портов
-│   ├── network/         auto_tunnel_service.dart, upnp_port_forwarder.dart,
-│   │                    network_info_service.dart — WAN IP, UPnP/NAT-PMP
-│   ├── webrtc/          sdp_compressor.dart — ZLib-сжатие + нормализация CRLF
-│   ├── utils/           app_logger.dart — сквозное логирование в quickshare.log
-│   ├── deep_link/       quickshare:// share-ссылки
-│   ├── di/              service_locator.dart
-│   └── router/, theme/, errors/, permissions/
-├── features/
-│   ├── sender/
-│   │   ├── data/
-│   │   │   ├── server/       local_http_server.dart — роут POST /webrtc/answer
-│   │   │   ├── transports/   webrtc_transfer_transport.dart, http_transfer_transport.dart,
-│   │   │   │                 bluetooth_transfer_transport.dart
-│   │   │   ├── indexer/      file_indexer.dart
-│   │   │   ├── qr/           qr_payload_encoder.dart
-│   │   │   └── repositories/ sender_repository_impl.dart — резолв внешнего WAN IP
-│   │   ├── domain/           entities, usecases, transports (интерфейсы)
-│   │   └── presentation/     sender_bloc.dart, qr_display_page.dart
-│   └── receiver/
-│       ├── data/
-│       │   ├── qr/           qr_payload_decoder.dart
-│       │   ├── transports/   webrtc_receiver_transport.dart, bluetooth_receiver_transport.dart
-│       │   ├── client/       qhtp_receiver_client.dart, http_file_downloader.dart
-│       │   └── store/        session_state_store.dart
-│       ├── domain/
-│       └── presentation/     receiver_bloc.dart, download_progress_page.dart (Wakelock)
-└── shared/
-    ├── models/               qr_payload.dart, bluetooth_qr_payload.dart
-    └── widgets/
-```
+Передача файлов напрямую между macOS, iOS, Android, Windows и Linux. Flutter,
+Clean Architecture + BLoC. Продуктовые требования, из которых следует всё
+остальное:
+
+1. **Своего сервера нет и не будет.** Приложение работает из коробки.
+2. **Обратного визуального канала нет.** Десктоп только показывает QR, камеру
+   не использует. Двусторонний QR отвергнут.
+3. **Работа из российских сетей**, приоритет TLS на 443 против DPI.
+4. **Рандеву за 3–5 секунд.**
+5. **Пять ОС.**
+6. **Посредник не видит метаданные.**
 
 ---
 
-## 3. Бессерверное WebRTC-рукопожатие (2-way handshake)
+## 2. Три транспорта
 
-```
-  macOS (Sender)                              iPhone (Receiver на LTE)
-  --------------                              ------------------------
-  1. createOffer() → сбор ICE-кандидатов
-     (ожидание gathering ~1 s)
-  2. ZLib-сжатие SDP Offer (SdpCompressor)
-  3. Резолв публичного WAN IP + UPnP
-     (AutoTunnelService)
-  4. Генерация QRPayload → экран Mac
-                                              5. Сканирование QR-кода
-                                              6. ZLib-распаковка + нормализация CRLF
-                                              7. setRemoteDescription(Offer)
-                                              8. createAnswer() → setLocalDescription
-                                              9. POST http://<WAN_IP>:<port>/webrtc/answer
- 10. LocalHttpServer принимает POST
-     (роут исключён из auth-проверки)
- 11. WebRtcTransferTransport.handleDirectAnswer(sdp, type)
- --------------------------------------------------------------------------
-            === Открытие DataChannel → передача файла чанками ===
-```
+### 2.1. QHTP v2 — локальная сеть
 
-Ключевые параметры канала (`AppConstants`): чанк `16 384` B, backpressure по `bufferedAmount` — `262 144` B (256 KB).
+`shelf`-сервер на первом свободном порту 8000–9000, биндится на
+`InternetAddress.anyIPv4` — то есть слушает **все** интерфейсы, включая
+поднятый позже хотспот. Манифест, `Range`, докачка через `.qs.partial`, три
+ретрая на элемент, idle-таймаут 30 минут, bearer-токен из QR.
 
----
+**Порядок на приёмнике:** скачали → **проверили** → переименовали. Именно в
+этом порядке. Проверяется размер всегда и SHA-256, если манифест его несёт.
+При несовпадении партиал удаляется, ретрай начинается с нуля.
 
-## 4. Чейнджлог внесённых исправлений
+### 2.2. Serverless WebRTC — интернет
 
-### 4.1. Разрешение `port == 0` для SDP QR-кодов
+Оффер в QR (`QS1` + 16-байтный seed + `CompactSdp`), ответ обратно через
+публичные Nostr-релеи на WSS:443, запечатанный ChaCha20-Poly1305 на ключе
+HKDF от seed, с отпечатком оффера как AAD.
 
-- **Файл:** [qr_payload.dart:136](lib/shared/models/qr_payload.dart#L136)
-- **Проблема:** `isValid` строго требовал `port > 0`, из-за чего SDP-payload отвергался сканером с `Invalid QR Code`.
-- **Решение:** условие ослаблено до
-  `(mode == 'webrtc-sdp' || (sdpOffer != null && sdpOffer!.isNotEmpty) || port > 0)`.
-- **⚠️ Важно для нового разработчика:** это защитная валидация, а **не** описание рантайма. Порт в SDP-режиме используется по-настоящему: ресивер строит из него endpoint `http://${payload.ip}:${payload.port}/webrtc/answer` ([receiver_bloc.dart:168](lib/features/receiver/presentation/bloc/receiver_bloc.dart#L168)). Фактически туда попадает захардкоженный `3000` из dummy-сессии, где никто не слушает — см. §6, дефект C.
+Замер 2026-08-13 с целевой сети: полный круг подписка → публикация → доставка
+за **115–168 мс** на `nos.lol`, `nostr.mom`, `relay.primal.net`. Два релея из
+пяти в том же прогоне не ответили — поэтому фан-аут это штатный режим, а не
+страховка.
 
-### 4.2. Резолв публичного WAN IP компьютера
+### 2.3. Локальный хотспот — нет общей сети
 
-- **Файл:** [sender_repository_impl.dart:259](lib/features/sender/data/repositories/sender_repository_impl.dart#L259)
-- **Проблема:** в QR зашивался LAN IP Mac (`192.168.x.x`), недоступный телефону на LTE.
-- **Решение:** `AutoTunnelService().getPublicIpAddress()` + `checkServerlessReachability()`. Если UPnP отработал — берутся его `publicIp` / `externalPort`, иначе публичный IP, иначе `session.localIp`.
-
-### 4.3. Принудительная нормализация CRLF (`\r\n`)
-
-- **Файл:** [sdp_compressor.dart](lib/core/webrtc/sdp_compressor.dart)
-- **Проблема:** нативный C++ парсер Google LibWebRTC на iOS падал с `SessionDescription is NULL` при Unix-переводах строк.
-- **Решение:** в `decompress()` — `sdp.replaceAll(RegExp(r'\r?\n'), '\r\n')` (RFC 8866) плюс гарантированный завершающий `\r\n`.
-
-### 4.4. Исправление BUNDLE-групп (`MID='0' matching no m= section`)
-
-- **Файл:** [sdp_compressor.dart](lib/core/webrtc/sdp_compressor.dart)
-- **Проблема:** регулярный фильтр вырезал секцию `m=audio` (несущую `a=mid:0`), но оставлял `a=group:BUNDLE 0` в заголовке сессии — парсер iOS отклонял Offer.
-- **Решение:** переход на беспотерьное `zlib`-сжатие полного SDP (`zlib.encode` → `base64Url` без padding), целостность BUNDLE-групп сохраняется. Фоллбэк — plain base64, если zlib недоступен.
-
-### 4.5. Сквозное логирование (`AppLogger`)
-
-- **Файлы:** [app_logger.dart](lib/core/utils/app_logger.dart), [main.dart](lib/main.dart)
-- Пишет события WebRTC, генерацию SDP и сетевые ответы с таймстемпами в `quickshare.log` (папка Documents на iOS/macOS) и дублирует в `flutter logs`. Есть чтение и очистка лога из кода (`readLog()`, `clear()`).
-
-### 4.6. Защита от засыпания экрана (`WakelockPlus`)
-
-- **Файлы:** [download_progress_page.dart](lib/features/receiver/presentation/pages/download_progress_page.dart), [local_http_server.dart](lib/features/sender/data/server/local_http_server.dart)
-- `WakelockPlus.enable()` на время передачи (и на приёмнике, и на отправителе), `disable()` — по завершении/отмене. В UI приёмника показывается предупреждающая плашка.
+`startLocalOnlyHotspot` на Android, `NEHotspotConfiguration` на iOS. Хостом
+всегда Android или десктоп. Два QR подряд: `WIFI:` для системной камеры, затем
+локатор QHTP.
 
 ---
 
-## 5. Конфигурация (dart-define)
+## 3. Решения, принятые по замерам
 
-| Переменная | Дефолт | Назначение |
+Каждое из них меняло направление работы, поэтому записано с числами.
+
+### 3.1. Потолок ICE-gathering: 1 с → 6 с
+
+В serverless-режиме оффер запекается в QR и trickle-канала нет: кандидат,
+пришедший позже, не опаздывает — он теряется. TURN-хендшейк по TLS на целевой
+сети занимал **557–1040 мс** только до ответа. Секундный потолок выбрасывал
+relay-кандидата практически всегда, то есть ломал ровно те сессии, ради
+которых relay и нужен. Теперь выход досрочный: как только gathering завершён
+или появился relay.
+
+### 3.2. Пул STUN вместо одного хоста
+
+Не потому что какой-то мёртв, а потому что замеры противоречат друг другу в
+зависимости от VPN. `stun.l.google.com` не отвечает без туннеля и отвечает за
+244 мс со split-tunnel VPN; российские хосты наоборот.
+
+### 3.3. TURN-хост по умолчанию был мёртв
+
+`openrelay.metered.ca` не резолвится — NXDOMAIN с 1.1.1.1 и с 8.8.8.8, при
+живом `metered.ca`. Каждая сборка с этим дефолтом не имела relay-пути вообще.
+Заменён на `standard.relay.metered.ca`. **Валидность открытых кредов не
+подтверждена.**
+
+### 3.4. VPN превращает cone NAT в симметричный
+
+Один и тот же `natfilter.py`, одна машина, один сокет:
+
+| STUN | без VPN | с VPN |
 |---|---|---|
-| `QUICKSHARE_TURN_URL` | `turn:openrelay.metered.ca:80` | Базовый TURN; из него автоматически строятся варианты TCP:80 и TURNS TLS:443 |
-| `QUICKSHARE_TURN_USER` | `openrelaymodule` | TURN username |
-| `QUICKSHARE_TURN_PASS` | `openrelaymodule` | TURN credential |
-| `QUICKSHARE_SIGNALING_URL` | `ws://localhost:3000` | Опциональный сигнальный сервер (не нужен в SDP-in-QR режиме) |
+| stun.sipnet.ru | 195.170.199.10:16242 | 195.170.199.10:34415 |
+| stun.fitauto.ru | 195.170.199.10:16242 | 195.170.199.10:30684 |
+| stun.cloudflare.com | 195.170.199.10:16242 | 212.34.142.83:46251 |
 
-STUN-серверы захардкожены: `stun.l.google.com:19302`, `stun1`, `stun2`.
+Без VPN — endpoint-independent mapping, hole punching достижим. С VPN — разные
+внешние адреса и порты, прямое соединение не встаёт. Отсюда: **при включённом
+VPN relay обязателен**, а не опционален.
 
-`LocalHttpServer._bindServer()` выбирает первый свободный порт в диапазоне `serverPortMin=8000 … serverPortMax=9000` (на практике — 8000).
+### 3.5. R8 выключен
 
-**Но в serverless-режиме в QR попадает `3000`**, потому что `SenderBloc._makeDummySession()` захардкодил `serverPort: 3000` ([sender_bloc.dart:186](lib/features/sender/presentation/bloc/sender_bloc.dart#L186)) — это зеркало дефолтного signaling URL `ws://localhost:3000`, а не порт файлового сервера. См. §6, дефект C.
+Разбор релизного APK: нативные `.so` × 3 ABI — 94.4 МБ (94%), dex — 2.5 МБ
+(2%), ресурсы — 0.5 МБ. R8 режет только dex. После включения 101.9 → 102.1 МБ,
+dex 2.54 → 3.28 МБ. Размер решается `--split-per-abi`: **40.5 МБ arm64** против
+102. Правила оставлены, включается одной строкой после прогона на устройстве.
+
+### 3.6. MQTT удалён
+
+Брокеров MQTT на 443 не существует: `broker.emqx.io:443` и
+`test.mosquitto.org:443` оказались веб-серверами, `mqtt.flespi.io:443` требует
+токен. Оставшиеся сидят на 8084/8081/8884, что не выполняет требование №3.
+Nostr закрывает ту же задачу на 443.
 
 ---
 
-## 6. Известные дефекты serverless-пути (открыты на 2026-08-09)
+## 4. Исправленные дефекты
 
-### A. Мангling SDP → `BUNDLE group contains a MID='0' matching no m= section` — ИСПРАВЛЕНО
-
-Исправлено в исходниках 09.08 в 04:23 (§4.4), но воспроизводилось на устройствах до 09.08, т.к. последняя сборка iOS была от 08.08 21:57. Новый билд установлен на iPhone 09.08.
-
-### B. Тонкий запас по ёмкости QR-кода — ИСПРАВЛЕНО
-
-`QRPayload.encode()` применял base64 к JSON, внутри которого `sdpOffer` **уже** был base64 от zlib. Двойное кодирование давало +33 % поверх несжимаемых данных.
-
-Замеры на SDP длины 7 672 (совпадает с реальными 7 622–8 366 из `quickshare.log`), лимит QR byte-mode v40 EC=L — **2 953**:
-
-| Схема | Размер | Запас |
+| Дефект | Симптом | Как исправлено |
 |---|---|---|
-| Старая (двойной base64) | 2 376 | 19 % |
-| Новая: `base64(zlib(json))`, сырой SDP внутри | 1 771 | 40 % |
-| Новая + `pruneCandidatesForQr()` | **1 460** | 50 % |
-
-**Блокирующим этот дефект не был** — реальные SDP влезали. Но 19 % запаса съедались при большем числе ICE-кандидатов, IPv6 или длинных именах файлов, и тогда `errorStateBuilder` в [qr_display_page.dart:197](lib/features/sender/presentation/pages/qr_display_page.dart#L197) показал бы `QR Render Error: …` вместо кода.
-
-Исправлено:
-- `QRPayload.encode()` — одно сжатие снаружи; `decode()` умеет читать и старый несжатый формат.
-- `SdpCompressor.pruneCandidatesForQr()` — отсев `typ host`, IPv6, `.local` (mDNS) и `169.254.*` кандидатов. Трогает **только** строки `a=candidate:`, m= секции и BUNDLE-группы не затрагиваются — ровно то, что сломал старый regex-фильтр.
-- `SdpCompressor.normalizeLineEndings()` выделен отдельно; `decompress()` распознаёт сырой SDP (`v=0`) и применяет к нему только нормализацию CRLF.
-- Guard-тест «QR payload for a full-size gathered offer stays inside QR capacity» падает, если payload снова перевалит за 2 953 или если из SDP исчезнут `a=group:BUNDLE 0` / `a=mid:0` / `m=application`.
-
-### C. Endpoint для SDP Answer не существует — ИСПРАВЛЕНО (блокирующий)
-
-Цепочка в `_startSendingInternal()` при `mode == TransportType.internet` ([sender_bloc.dart:249](lib/features/sender/presentation/bloc/sender_bloc.dart#L249)):
-
-1. `repository.startServer()` **не вызывается** — он есть только в Wi-Fi ветке (строка 346). `LocalHttpServer` не биндится вообще.
-2. `_registerWebRtcRoutes()` (роут `POST /webrtc/answer`) регистрируется только внутри `start()` и `startQhtpSession()` — то есть в этом сценарии не регистрируется никогда.
-3. В QR уходит `port: 3000` из dummy-сессии, приёмник строит `http://<WAN_IP>:3000/webrtc/answer`.
-4. На :3000 слушает Node-процесс из `signaling_server/` — это WebSocket-сервер, POST-роутов в `server.js` нет вовсе.
-
-Итог: SDP Answer с телефона уходил в 404, `handleDirectAnswer()` не вызывался, DataChannel не открывался. Рукопожатие из §3 не могло завершиться в принципе — независимо от фикса BUNDLE.
-
-Исправлено: в ветке `TransportType.internet` теперь вызывается `repository.startServer(file)`, и в `QRPayload` уходит `session.serverPort` реально забинденного сервера вместо захардкоженного 3000. Если бинд не удался — пишется `AppLogger.error` с тегом `SENDER_BLOC`, а не тихий провал.
-
-### D. `flutter run` маскирует провал установки
-
-`flutter run -d <udid> --release` вернул **exit code 0** при `Error running application on iPhone` (причина была — заблокированный экран). Опасно для CI-шагов, завязанных на код возврата.
+| «Проверка» SHA-256 ничего не проверяла | Побитый файл переименовывался и помечался готовым | Чексумма в манифест, сверка **до** rename; тест с перевёрнутым битом при совпадающей длине |
+| `fileSink` не закрывался в catch | Утечка хендла на попытку; буфер дописывался после расчёта offset | `finally` вокруг попытки |
+| `200` на Range-запрос принимался | Полное тело дописывалось в append — гарантированная порча | Явный отказ |
+| Переросший партиал | Клэмп правил переменную, а не файл | Партиал удаляется, элемент начинается заново |
+| `bytes=-500` | Отдавались **первые** 501 байт | Suffix-range по RFC; проверено запуском сервера |
+| `endOffset` без клэмпа | `Content-Length: 1000000000`, обрыв соединения | Клэмп к `size-1` |
+| UPnP-маппинг бессрочный | `NewLeaseDuration=0`, `DeletePortMapping` нигде | Конечный lease, `releaseAll`, вызов из `stopSharing` |
+| `_baseDir` пустой | `p.isWithin('', 'x')` истинно → относительный путь → файл в CWD процесса | Каталог резолвится заранее; `resolveTargetPath` отвергает пустой и относительный base |
+| `createRoom()` в serverless-ветке | 12-секундный столл и UPnP на пути, которому они не нужны | Отдельный `startSharingServerless()` |
+| Прогресс в serverless | Экран висел на `Connecting` весь трансфер | Подписка на `progressStream` |
+| `cleanExpiredStates` | Удалялся только JSON; гигабайты `.qs.partial` теряли единственную ссылку | Каскадное удаление с guard `p.isWithin`; 12 тестов |
+| `POST /webrtc/answer` | Неаутентифицированный роут на `anyIPv4` | Удалён вместе со всей обвязкой |
+| `network_security_config` | Cleartext на LAN зарезан **и в release, и в debug** | `usesCleartextTraffic` игнорируется на API 24+ при наличии NSC; конфиг переписан |
+| Release подписывался debug-ключом | Такой APK нельзя опубликовать | env → `key.properties` → **unsigned**, без тихого отката |
 
 ---
 
-## 7. Команды сборки и проверки
+## 5. Что не проверено
 
-Прогон тестов (56 тестов, все проходят — проверено 2026-08-09):
+Честный список, чтобы никто не принял его за проверенное.
+
+- **Весь нативный слой.** Kotlin компилируется в составе релиза, Swift не
+  собирался. `startLocalOnlyHotspot`, `NEHotspotConfiguration`, entitlement
+  `HotspotConfiguration` — ни разу не исполнялись.
+- **Эвристика имени интерфейса** `ap*`/`swlan*`/`wlan1` — лучшая доступная, но
+  вендорские прошивки могут называть иначе.
+- **Отсутствие R8-регрессий** — проверяется только на устройстве.
+- **Креды TURN.**
+- **Занятость `DirectDrop` и `com.directdrop.app`** в сторах и базах товарных
+  знаков.
+- **Serverless end-to-end.** `createPeerConnection` требует платформенных
+  каналов, под `flutter test` не поднимается. Нужен `integration_test` с
+  эмулятором.
+
+---
+
+## 6. Потолок продукта
+
+Не дефекты, а следствия требований и политик платформ.
+
+- **Гарантия доступности рандеву** недостижима без своей инфраструктуры.
+  Фан-аут снижает риск, не устраняет.
+- **Симметричный NAT с обеих сторон** без TURN не пробивается. С VPN это
+  обычный случай, а не редкий.
+- **BLE** — 182 байта на нотификацию. L2CAP CoC поднял бы порядок, гигабайты
+  всё равно не для него.
+- **Apple ↔ Android без общей сети** автоматически: AWDL закрыт, Wi-Fi Aware и
+  Wi-Fi Direct на iOS недоступны. Закрывается хотспотом в один тап, но не
+  zero-click.
+- **Фоновый приём по WebRTC на iOS** невозможен. Для LAN спасёт background
+  `URLSession` — не сделано.
+- **Отправка отсутствующему человеку** невозможна: без сервера негде хранить
+  ключи и негде лежать байтам.
+
+---
+
+## 7. Команды
 
 ```bash
-flutter test
+flutter test        # 180 тестов
+flutter analyze     # 0 замечаний
 ```
 
-Сборка релизного macOS-приложения:
-
-```bash
-flutter build macos
-```
-
-Сборка под iOS без подписи:
-
-```bash
-flutter build ios --no-codesign
-```
-
-Запуск на подключённом iPhone:
-
-```bash
-flutter run -d 00008110-001449080CF3801E --release
-```
+Диагностика сети — три read-only скрипта в корне репозитория: `netcheck.py`
+(тип отображения NAT, UPnP, живые STUN), `natfilter.py` (фильтрация по
+RFC 5780), `endpoints.py` (доступность точек обмена). Результаты
+интерпретировать с учётом состояния VPN — см. §3.4.

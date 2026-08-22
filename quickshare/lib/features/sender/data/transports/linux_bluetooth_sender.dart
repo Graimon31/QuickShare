@@ -13,7 +13,7 @@ typedef LinuxBluetoothStatus = void Function(String status, [String? error]);
 ///
 /// BlueZ exposes client APIs through most Flutter BLE plugins, but peripheral
 /// mode still requires registering a local GATT application over D-Bus. This
-/// class registers the QuickShare service/characteristics and an LE
+/// class registers the DirectDrop service/characteristics and an LE
 /// advertisement, then streams the selected file as Value notifications after
 /// the receiver writes START:<token> to the control characteristic.
 class LinuxBluetoothSender {
@@ -62,11 +62,11 @@ class LinuxBluetoothSender {
       final bus = DBusClient.system();
       _bus = bus;
 
-      final rootPath = DBusObjectPath('/com/yourorg/quickshare');
-      final servicePath = DBusObjectPath('/com/yourorg/quickshare/service');
-      final controlPath = DBusObjectPath('/com/yourorg/quickshare/control');
-      final metadataPath = DBusObjectPath('/com/yourorg/quickshare/metadata');
-      final dataPath = DBusObjectPath('/com/yourorg/quickshare/data');
+      final rootPath = DBusObjectPath('/com/directdrop/app');
+      final servicePath = DBusObjectPath('/com/directdrop/app/service');
+      final controlPath = DBusObjectPath('/com/directdrop/app/control');
+      final metadataPath = DBusObjectPath('/com/directdrop/app/metadata');
+      final dataPath = DBusObjectPath('/com/directdrop/app/data');
 
       final root = _GattRoot(rootPath);
       final service = _GattService(servicePath, rootPath, serviceUuid);
@@ -138,10 +138,10 @@ class LinuxBluetoothSender {
       );
 
       final advertisementRoot = _BleAdvertisementRoot(
-        DBusObjectPath('/com/yourorg/quickshare_advertisement'),
+        DBusObjectPath('/com/directdrop/app_advertisement'),
       );
       final advertisement = _BleAdvertisement(
-        DBusObjectPath('/com/yourorg/quickshare_advertisement/instance'),
+        DBusObjectPath('/com/directdrop/app_advertisement/instance'),
         serviceUuid: serviceUuid,
         localName: 'QuickShare-${token.substring(0, 8)}',
       );

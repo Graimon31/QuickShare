@@ -15,7 +15,7 @@ void main() {
   late MockDownloadFileUseCase mockDownloadFileUseCase;
   late MockReceiverRepository mockReceiverRepository;
 
-  final tPayload = QRPayload(
+  const tPayload = QRPayload(
     version: 1,
     ip: '192.168.1.100',
     port: 8080,
@@ -53,20 +53,20 @@ void main() {
   test('should emit QRParsed when valid QR code is scanned', () async {
     const rawQr = 'quickshare://192.168.1.100:8080/test.jpg';
     when(() => mockReceiverRepository.parseQRCode(rawQr))
-        .thenAnswer((_) async => Right(tPayload));
+        .thenAnswer((_) async => const Right(tPayload));
 
     receiverBloc.add(const QRCodeScanned(rawQr));
 
     await expectLater(
       receiverBloc.stream,
-      emitsInOrder([QRParsed(tPayload)]),
+      emitsInOrder([const QRParsed(tPayload)]),
     );
   });
 
   test('should emit ReceiverError when invalid QR code is scanned', () async {
     const rawQr = 'invalid_qr_string';
     when(() => mockReceiverRepository.parseQRCode(rawQr))
-        .thenAnswer((_) async => Left(const ServerFailure('Invalid QR format')));
+        .thenAnswer((_) async => const Left(ServerFailure('Invalid QR format')));
 
     receiverBloc.add(const QRCodeScanned(rawQr));
 

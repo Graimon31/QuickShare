@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:mime/mime.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
@@ -110,6 +111,11 @@ class FileIndexer {
     final List<QhtpItem> indexedItems = [];
     final Map<String, String> absPathMap = {};
 
+    // Hashing reads every byte a second time, so it is worth it for ordinary
+    // transfers and ruinous for the 500 GB ones this protocol also allows.
+    final withChecksums =
+        totalBytes <= AppConstants.qhtpChecksumMaxSessionBytes;
+
     for (int i = 0; i < rawItems.length; i++) {
       final id = (i + 1).toRadixString(16).padLeft(6, '0');
       final raw = rawItems[i];
@@ -119,6 +125,7 @@ class FileIndexer {
         size: raw.size,
         mtime: raw.mtime,
         mime: raw.mime,
+        sha256: withChecksums ? await _digestOf(File(raw.absPath)) : null,
       ));
       absPathMap[id] = raw.absPath;
     }
@@ -135,6 +142,20 @@ class FileIndexer {
       manifest: manifest,
       itemIdToAbsPathMap: absPathMap,
     );
+  }
+
+  /// `sha256:<hex>` over the file contents, or null if it could not be read.
+  ///
+  /// A file that vanishes between indexing and hashing is not worth failing
+  /// the whole session over — the receiver will get a 410 for it later and
+  /// report that item specifically.
+  Future<String?> _digestOf(File file) async {
+    try {
+      final digest = await sha256.bind(file.openRead()).first;
+      return 'sha256:$digest';
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<QhtpManifest> buildManifest({

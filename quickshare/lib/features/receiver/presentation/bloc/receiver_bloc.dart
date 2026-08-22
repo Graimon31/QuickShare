@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -9,8 +10,7 @@ import 'package:quickshare/features/receiver/domain/entities/qhtp_session_previe
 import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
-import 'package:quickshare/core/signaling/answer_channel.dart';
-import 'package:quickshare/core/signaling/mqtt_answer_channel.dart';
+import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -175,21 +175,6 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         return;
       }
 
-      if (payload.sdpOffer != null && payload.sdpOffer!.isNotEmpty) {
-        try {
-          final transport = WebRtcReceiverTransport();
-          final endpoint = 'http://${payload.ip}:${payload.port}/webrtc/answer';
-          final savedPath = await transport.receiveWithSdpOffer(
-            payload.sdpOffer!,
-            answerEndpointUrl: endpoint,
-          );
-          emit(DownloadComplete(savedPath, payload.fileName));
-        } catch (e) {
-          emit(ReceiverError('Serverless transfer failed: $e'));
-        }
-        return;
-      }
-
       if (payload.isQhtp) {
         // iOS has no writable ~/Downloads directory inside the sandbox. The
         // old fallback returned that path and QHTP then failed while trying
@@ -293,11 +278,20 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   /// involved, and the channel operator only ever sees opaque bytes.
   Future<void> _runServerlessTransfer(
       QRPayload payload, Emitter<ReceiverState> emit) async {
-    final channel = RacingAnswerChannel([MqttAnswerChannel()]);
+    final channel = buildRendezvousChannel();
+    StreamSubscription<WebRtcReceiveProgress>? progressSub;
     try {
       final qr = ServerlessQr.decode(payload.sdpOffer!);
       final topic = await qr.topic;
       final transport = WebRtcReceiverTransport();
+
+      // Without this the screen sat on "Connecting" for the whole transfer:
+      // the transport reported progress and nobody was listening.
+      progressSub = transport.progressStream.listen((p) {
+        if (p.phase == 'transferring') {
+          add(DownloadProgressUpdate(p.received, p.total, p.fileName));
+        }
+      });
 
       AppLogger.info(
           'Receiver: serverless offer with ${qr.offer.candidates.length} '
@@ -322,6 +316,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           error: e, stackTrace: st, tag: 'WEBRTC_RECEIVER');
       emit(ReceiverError('Serverless transfer failed: $e'));
     } finally {
+      await progressSub?.cancel();
       await channel.close();
     }
   }

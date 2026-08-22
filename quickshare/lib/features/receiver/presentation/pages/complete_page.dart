@@ -9,8 +9,7 @@ class CompletePage extends StatelessWidget {
   final String fileName;
   final String filePath;
 
-  const CompletePage({Key? key, required this.fileName, required this.filePath})
-      : super(key: key);
+  const CompletePage({super.key, required this.fileName, required this.filePath});
 
   @override
   Widget build(BuildContext context) {
@@ -76,7 +75,7 @@ class CompletePage extends StatelessWidget {
                         borderRadius: BorderRadius.circular(14),
                       ),
                       child: const Center(
-                        child: const Text('Open',
+                        child: Text('Open',
                             style: TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.w700,

@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -65,10 +67,25 @@ class QhtpItemState {
 }
 
 class SessionStateStore {
+  /// Where session records live. Injected so the one part of this app that
+  /// deletes files can be tested against a scratch directory instead of the
+  /// user's own.
+  ///
+  /// Optional rather than required: production has exactly one answer for it,
+  /// and making it required would force every construction site to become
+  /// async for no gain. Tests pass a temp directory and get the real
+  /// filesystem — worth more than an in-memory stand-in here, because the bugs
+  /// this code can have are path bugs.
+  final String? _storeDirectoryOverride;
+
+  SessionStateStore({String? storeDirectory})
+      : _storeDirectoryOverride = storeDirectory;
+
   /// Directory path for storing session state files
   Future<String> _getStoreDir() async {
-    final appDir = await getApplicationSupportDirectory();
-    final dir = Directory(p.join(appDir.path, 'qhtp_sessions'));
+    final root = _storeDirectoryOverride ??
+        (await getApplicationSupportDirectory()).path;
+    final dir = Directory(p.join(root, 'qhtp_sessions'));
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
@@ -136,24 +153,85 @@ class SessionStateStore {
     }
   }
 
-  /// Clean up states older than 24 hours (RESUME_STATE_TTL_MS)
-  Future<void> cleanExpiredStates() async {
+  /// Deletes abandoned sessions and — the part that actually matters — the
+  /// partial downloads they were tracking.
+  ///
+  /// Removing the bookkeeping alone would be worse than doing nothing: the
+  /// `.qs.partial` files live inside the app sandbox, nothing else on the
+  /// device knows about them, and the state file was the only record of where
+  /// they are. An interrupted 10 GB transfer would leave 10 GB stranded with no
+  /// way to find it again short of the user reinstalling the app.
+  ///
+  /// So the state is read first, its partials are removed, and only then is the
+  /// record itself dropped. A state whose files cannot be deleted is left
+  /// alone to be retried on the next sweep rather than orphaned.
+  ///
+  /// Returns the number of bytes reclaimed, for the log.
+  Future<int> cleanExpiredStates({
+    Duration ttl = const Duration(hours: 24),
+  }) async {
+    var reclaimed = 0;
     try {
-      final dirPath = await _getStoreDir();
-      final dir = Directory(dirPath);
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final ttl = 24 * 60 * 60 * 1000; // 24 hours
+      final dir = Directory(await _getStoreDir());
+      if (!await dir.exists()) return 0;
+      final cutoff = DateTime.now().subtract(ttl);
 
       await for (final entity in dir.list()) {
-        if (entity is File && entity.path.endsWith('.json')) {
-          final stat = await entity.stat();
-          if (now - stat.modified.millisecondsSinceEpoch > ttl) {
-            await entity.delete();
-          }
-        }
+        if (entity is! File || !entity.path.endsWith('.json')) continue;
+        final stat = await entity.stat();
+        if (stat.modified.isAfter(cutoff)) continue;
+
+        reclaimed += await _deletePartialsOf(entity);
+        await entity.delete();
       }
     } catch (e) {
-      // Best effort cleanup
+      // Best effort: a failed sweep must never stop the app from starting.
+      debugPrint('Session cleanup failed: $e');
     }
+    if (reclaimed > 0) {
+      debugPrint('Session cleanup reclaimed $reclaimed bytes');
+    }
+    return reclaimed;
+  }
+
+  /// Removes the `.qs.partial` files belonging to one expired state file.
+  ///
+  /// Completed items are deliberately left alone — those are files the user
+  /// asked for and already has.
+  Future<int> _deletePartialsOf(File stateFile) async {
+    var reclaimed = 0;
+    try {
+      final jsonMap =
+          jsonDecode(await stateFile.readAsString()) as Map<String, dynamic>;
+      final baseDir = jsonMap['baseDir'] as String?;
+      final items = jsonMap['items'] as Map<String, dynamic>? ?? {};
+      if (baseDir == null || baseDir.isEmpty) return 0;
+
+      for (final raw in items.values) {
+        final item = QhtpItemState.fromJson(raw as Map<String, dynamic>);
+        if (item.status == 'completed') continue;
+
+        final finalPath = item.finalPath ??
+            p.joinAll([
+              baseDir,
+              ...item.path.split('/').where((segment) => segment.isNotEmpty),
+            ]);
+        final partial = File('$finalPath.qs.partial');
+        if (!await partial.exists()) continue;
+
+        // Guard against a state file that points outside the directory it
+        // claims: this deletes files, so a malformed record must not be able
+        // to aim it somewhere else.
+        if (!p.isWithin(baseDir, partial.path)) {
+          debugPrint('Refusing to delete ${partial.path}: outside $baseDir');
+          continue;
+        }
+        reclaimed += await partial.length();
+        await partial.delete();
+      }
+    } catch (e) {
+      debugPrint('Could not clean partials for ${stateFile.path}: $e');
+    }
+    return reclaimed;
   }
 }

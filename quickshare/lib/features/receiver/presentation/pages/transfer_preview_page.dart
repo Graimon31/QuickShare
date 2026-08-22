@@ -145,7 +145,7 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.inter(
-                        color: Colors.white.withOpacity(0.9),
+                        color: Colors.white.withValues(alpha: 0.9),
                         fontSize: 18,
                         fontWeight: FontWeight.w600,
                       ),
@@ -190,7 +190,7 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                     Text(
                       'Starting file transfer…',
                       style: GoogleFonts.inter(
-                        color: Colors.white.withOpacity(0.6),
+                        color: Colors.white.withValues(alpha: 0.6),
                         fontSize: 14,
                       ),
                     ),

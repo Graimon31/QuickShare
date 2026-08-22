@@ -27,7 +27,7 @@ class AnimatedGradientButton extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
           boxShadow: [
             BoxShadow(
-              color: gradient.colors.last.withOpacity(0.3),
+              color: gradient.colors.last.withValues(alpha: 0.3),
               blurRadius: 8,
               offset: const Offset(0, 4),
             ),

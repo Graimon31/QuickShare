@@ -22,7 +22,7 @@ a=sctp-port:5000''';
       expect(compressed.length, lessThan(sampleSdp.length));
 
       final decompressed = SdpCompressor.decompress(compressed);
-      final expectedCrlf = sampleSdp.replaceAll(RegExp(r'\r?\n'), '\r\n') + '\r\n';
+      final expectedCrlf = '${sampleSdp.replaceAll(RegExp(r'\r?\n'), '\r\n')}\r\n';
       expect(decompressed, equals(expectedCrlf));
     });
 

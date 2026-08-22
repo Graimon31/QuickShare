@@ -73,14 +73,14 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       return Right(payload);
     } catch (e) {
       debugPrint('Error details: $e');
-      return Left(FileFailure('Invalid QR Code'));
+      return const Left(FileFailure('Invalid QR Code'));
     }
   }
 
   @override
   Future<Either<Failure, bool>> checkServerAvailability(
       String ip, int port, String token) async {
-    if (!validatePrivateIp(ip)) return Left(NetworkFailure('Invalid IP'));
+    if (!validatePrivateIp(ip)) return const Left(NetworkFailure('Invalid IP'));
     try {
       final response = await dio.get(
         'http://$ip:$port/v2/health',
@@ -93,7 +93,7 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       if (response.statusCode == 200) {
         return const Right(true);
       }
-      return Left(ServerFailure('Server not available'));
+      return const Left(ServerFailure('Server not available'));
     } catch (e) {
       // Fallback check legacy /info route
       try {
@@ -108,15 +108,16 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
         );
         if (legacyRes.statusCode == 200) return const Right(true);
       } catch (_) {}
-      return Left(NetworkFailure('Connection failed. Please check network.'));
+      return const Left(NetworkFailure('Connection failed. Please check network.'));
     }
   }
 
   @override
   Future<Either<Failure, QhtpSessionPreview>> fetchQhtpSessionPreview(
       QRPayload payload) async {
-    if (!validatePrivateIp(payload.ip))
-      return Left(NetworkFailure('Invalid IP'));
+    if (!validatePrivateIp(payload.ip)) {
+      return const Left(NetworkFailure('Invalid IP'));
+    }
     try {
       final response = await dio.get(
         'http://${payload.ip}:${payload.port}/v2/session',
@@ -142,7 +143,7 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       ));
     } catch (e) {
       debugPrint('Error details: $e');
-      return Left(NetworkFailure('Failed to connect to sender.'));
+      return const Left(NetworkFailure('Failed to connect to sender.'));
     }
   }
 
@@ -152,11 +153,12 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
     void Function(int received, int total)? onProgress,
   }) async {
     if (payload.fileSize > AppConstants.maxFileSizeBytes) {
-      return Left(FileFailure(
+      return const Left(FileFailure(
           'File too large (max ${AppConstants.maxFileSizeBytes ~/ 1024 ~/ 1024 ~/ 1024} GB)'));
     }
-    if (!validatePrivateIp(payload.ip))
-      return Left(NetworkFailure('Invalid IP'));
+    if (!validatePrivateIp(payload.ip)) {
+      return const Left(NetworkFailure('Invalid IP'));
+    }
     try {
       final tempDir = await getTemporaryDirectory();
       final tempPath = sanitizePath(payload.fileName, tempDir.path);
@@ -171,7 +173,7 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       return Right(resultPath);
     } catch (e) {
       debugPrint('Error details: $e');
-      return Left(NetworkFailure('Download failed. Please try again.'));
+      return const Left(NetworkFailure('Download failed. Please try again.'));
     }
   }
 
@@ -181,8 +183,9 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
     String targetDir, {
     void Function(QhtpProgress progress)? onProgress,
   }) async {
-    if (!validatePrivateIp(payload.ip))
-      return Left(NetworkFailure('Invalid IP'));
+    if (!validatePrivateIp(payload.ip)) {
+      return const Left(NetworkFailure('Invalid IP'));
+    }
     return qhtpClient.downloadSession(
       payload: payload,
       targetBaseDir: targetDir,
@@ -195,7 +198,7 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       String filePath, String expectedChecksum) async {
     try {
       final file = File(filePath);
-      if (!await file.exists()) return Left(FileFailure('File not found'));
+      if (!await file.exists()) return const Left(FileFailure('File not found'));
 
       final stream = file.openRead();
       final hash = await sha256.bind(stream).first;
@@ -207,10 +210,10 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       if (computed == expected) {
         return const Right(true);
       }
-      return Left(FileFailure('Checksum verification failed'));
+      return const Left(FileFailure('Checksum verification failed'));
     } catch (e) {
       debugPrint('Error details: $e');
-      return Left(FileFailure('Failed to verify checksum.'));
+      return const Left(FileFailure('Failed to verify checksum.'));
     }
   }
 
@@ -244,7 +247,7 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       return Right(finalPath);
     } catch (e) {
       debugPrint('Error details: $e');
-      return Left(FileFailure('Failed to save file.'));
+      return const Left(FileFailure('Failed to save file.'));
     }
   }
 

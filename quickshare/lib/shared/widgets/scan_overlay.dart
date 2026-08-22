@@ -1,16 +1,4 @@
 import 'dart:math' as math;
-import 'dart:ui'
-    show
-        Canvas,
-        Color,
-        MaskFilter,
-        Paint,
-        Path,
-        PathMetric,
-        Rect,
-        RRect,
-        Size,
-        BlurStyle;
 
 import 'package:flutter/material.dart';
 
@@ -161,7 +149,7 @@ class _ScanOverlayPainter extends CustomPainter {
       maskPath,
       Paint()
         ..color = ScanOverlayTokens.maskColor
-            .withOpacity(ScanOverlayTokens.maskOpacity),
+            .withValues(alpha: ScanOverlayTokens.maskOpacity),
     );
   }
 
@@ -182,7 +170,7 @@ class _ScanOverlayPainter extends CustomPainter {
         1 - success * ScanOverlayTokens.cornerSuccessCompression;
 
     final cornerPaint = Paint()
-      ..color = cornerColor.withOpacity(opacity)
+      ..color = cornerColor.withValues(alpha: opacity)
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeWidth = success > 0
@@ -230,11 +218,11 @@ class _ScanOverlayPainter extends CustomPainter {
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
         colors: [
-          ScanOverlayTokens.scanlineGlowColor.withOpacity(0),
-          ScanOverlayTokens.scanlineGlowColor.withOpacity(0.05),
-          ScanOverlayTokens.scanlineGlowColor.withOpacity(0.20),
-          ScanOverlayTokens.scanlineGlowColor.withOpacity(0.05),
-          ScanOverlayTokens.scanlineGlowColor.withOpacity(0),
+          ScanOverlayTokens.scanlineGlowColor.withValues(alpha: 0),
+          ScanOverlayTokens.scanlineGlowColor.withValues(alpha: 0.05),
+          ScanOverlayTokens.scanlineGlowColor.withValues(alpha: 0.20),
+          ScanOverlayTokens.scanlineGlowColor.withValues(alpha: 0.05),
+          ScanOverlayTokens.scanlineGlowColor.withValues(alpha: 0),
         ],
         stops: const [0, 0.3, 0.5, 0.7, 1],
       ).createShader(trailRect);
@@ -244,7 +232,7 @@ class _ScanOverlayPainter extends CustomPainter {
     );
 
     final glowPaint = Paint()
-      ..color = ScanOverlayTokens.scanlineGlowColor.withOpacity(0.55)
+      ..color = ScanOverlayTokens.scanlineGlowColor.withValues(alpha: 0.55)
       ..strokeWidth = ScanOverlayTokens.scanlineGlowWidth
       ..strokeCap = StrokeCap.round
       ..maskFilter = const MaskFilter.blur(
@@ -262,7 +250,7 @@ class _ScanOverlayPainter extends CustomPainter {
     final progress = ((success - 0.2) / 0.8).clamp(0.0, 1.0).toDouble();
     if (progress == 0) return;
 
-    final half = ScanOverlayTokens.successCheckSize / 2;
+    const half = ScanOverlayTokens.successCheckSize / 2;
     final checkPath = Path()
       ..moveTo(center.dx - half, center.dy)
       ..lineTo(center.dx - half * 0.2, center.dy + half * 0.52)
@@ -270,7 +258,7 @@ class _ScanOverlayPainter extends CustomPainter {
     final metric = checkPath.computeMetrics().first;
     final visiblePath = metric.extractPath(0, metric.length * progress);
     final checkPaint = Paint()
-      ..color = ScanOverlayTokens.successColor.withOpacity(progress)
+      ..color = ScanOverlayTokens.successColor.withValues(alpha: progress)
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round

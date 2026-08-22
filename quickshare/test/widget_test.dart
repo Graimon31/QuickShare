@@ -7,10 +7,10 @@ void main() {
     await sl.reset();
   });
 
-  testWidgets('QuickShareApp smoke test', (WidgetTester tester) async {
+  testWidgets('DirectDropApp smoke test', (WidgetTester tester) async {
     await ServiceLocator.init();
-    await tester.pumpWidget(const QuickShareApp());
-    expect(find.byType(QuickShareApp), findsOneWidget);
+    await tester.pumpWidget(const DirectDropApp());
+    expect(find.byType(DirectDropApp), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 200));
   });
 }
