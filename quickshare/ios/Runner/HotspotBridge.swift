@@ -99,8 +99,6 @@ class HotspotBridge: NSObject {
         case NEHotspotConfigurationError.systemConfiguration.rawValue:
             return "A configuration profile on this device controls Wi-Fi and "
                 + "blocks joining networks from apps."
-        case NEHotspotConfigurationError.unsupported.rawValue:
-            return "This device or iOS version cannot join networks from an app."
         default:
             return "Could not join the network: \(error.localizedDescription)"
         }

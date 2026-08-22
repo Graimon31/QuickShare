@@ -2,19 +2,5 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!--
-	  Lets the app join the Wi-Fi network the sender raised, via
-	  NEHotspotConfigurationManager. This is the escape hatch from the network
-	  fallback screen: when a VPN or symmetric NAT blocks the internet path,
-	  the Android side hosts a local-only hotspot and the iPhone joins it.
-
-	  The capability must also be enabled for the App ID in the Apple Developer
-	  portal ("Hotspot Configuration") and be present in the provisioning
-	  profile. Without that the build still succeeds and apply() fails at
-	  runtime with a permission error — HotspotBridge surfaces that message
-	  verbatim rather than hiding it.
-	-->
-	<key>com.apple.developer.networking.HotspotConfiguration</key>
-	<true/>
 </dict>
 </plist>
