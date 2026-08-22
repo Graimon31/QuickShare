@@ -10,6 +10,7 @@ import 'package:quickshare/core/utils/mime_compression.dart';
 import 'package:quickshare/core/utils/wakelock_guard.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
+import 'package:quickshare/core/webrtc/send_buffer.dart';
 import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/network/auto_tunnel_service.dart';
@@ -48,6 +49,27 @@ class WebRtcTransferTransport implements TransferTransport {
 
   bool _remoteDescriptionSet = false;
   final _gathering = IceGatheringTracker();
+
+  /// How long ICE may sit in `disconnected` before the session is written off.
+  /// Long enough for the routine blips a relayed path produces, short enough
+  /// that a dead transfer does not look alive indefinitely.
+  static const _iceRecoveryGrace = Duration(seconds: 20);
+  Timer? _iceRecoveryTimer;
+
+  /// Our own running total of bytes handed to the data channel and not yet
+  /// reported as drained.
+  ///
+  /// `RTCDataChannel.bufferedAmount` cannot be used on its own for flow
+  /// control: it is a value cached on the Dart side that only moves when the
+  /// native layer pushes a `dataChannelBufferedAmountChange` event across the
+  /// platform channel, and it starts at zero. A tight send loop reads that
+  /// stale zero, concludes there is room, and sends again — so the real SCTP
+  /// queue grows unchecked until libwebrtc hits its hard 16 MiB send-buffer
+  /// ceiling and closes the channel mid-transfer.
+  ///
+  /// Counting locally on every send makes backpressure immediate; the platform
+  /// event then corrects the estimate downward as bytes actually leave.
+  int _queuedBytes = 0;
 
   final _degradationController = StreamController<RelayLimitExceeded>.broadcast();
 
@@ -117,6 +139,9 @@ class WebRtcTransferTransport implements TransferTransport {
 
       _peerConnection = await createPeerConnection(await _iceConfiguration());
       await _startTurnRefresher(); // §9
+      // The room-based path had no ICE state handler at all, so a dropped
+      // connection here was even quieter than in the serverless one.
+      _peerConnection!.onIceConnectionState = _onIceStateChanged;
 
       _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
         if (candidate.candidate == null) return;
@@ -131,6 +156,8 @@ class WebRtcTransferTransport implements TransferTransport {
       final dataChannelDict = RTCDataChannelInit()..ordered = true;
       _dataChannel =
           await _peerConnection!.createDataChannel('fileTransfer', dataChannelDict);
+
+      _trackBufferedAmount(_dataChannel!);
 
       _dataChannel!.onDataChannelState = (RTCDataChannelState state) {
         debugPrint('WebRTC sender DataChannel state: $state');
@@ -226,17 +253,13 @@ class WebRtcTransferTransport implements TransferTransport {
         _gathering.observe(candidate);
       };
 
-      _peerConnection!.onIceConnectionState = (state) {
-        AppLogger.info('Serverless sender ICE state: $state',
-            tag: 'WEBRTC_SENDER');
-        if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
-          _statusController.add(TransferStatus.failed);
-        }
-      };
+      _peerConnection!.onIceConnectionState = _onIceStateChanged;
 
       final dataChannelDict = RTCDataChannelInit()..ordered = true;
       _dataChannel = await _peerConnection!
           .createDataChannel('fileTransfer', dataChannelDict);
+
+      _trackBufferedAmount(_dataChannel!);
 
       _dataChannel!.onDataChannelState = (RTCDataChannelState state) {
         AppLogger.info('Serverless sender DataChannel state: $state',
@@ -379,33 +402,101 @@ class WebRtcTransferTransport implements TransferTransport {
             : Uint8List.fromList(chunk);
 
         _dataChannel!.send(RTCDataChannelMessage.fromBinary(payload));
+        _queuedBytes += payload.length;
         bytesSent += bytesToRead;
 
         _progressController.add(bytesSent / totalBytes);
 
-        const maxBufferedAmount = AppConstants.webRtcMaxBufferedAmount;
-        while (_dataChannel?.bufferedAmount != null &&
-            _dataChannel!.bufferedAmount! > maxBufferedAmount) {
-          await Future.delayed(const Duration(milliseconds: 50));
-        }
+        await SendBuffer.waitForRoom(
+          bufferedAmount: () => _queuedBytes,
+          isOpen: _isChannelOpen,
+          limit: AppConstants.webRtcMaxBufferedAmount,
+        );
       }
 
       await raf.close();
 
       // Drain before complete so the receiver is not short-changed.
-      while (_dataChannel?.bufferedAmount != null &&
-          _dataChannel!.bufferedAmount! > 0) {
-        await Future.delayed(const Duration(milliseconds: 50));
-      }
+      await SendBuffer.waitUntilEmpty(
+        bufferedAmount: () => _queuedBytes,
+        isOpen: _isChannelOpen,
+      );
 
       _dataChannel!
           .send(RTCDataChannelMessage(jsonEncode({'type': 'complete'})));
       await Future.delayed(const Duration(milliseconds: 300));
       _statusController.add(TransferStatus.completed);
+    } on TransferStalled catch (e) {
+      // Reported separately from a generic failure because the cause is
+      // different in kind: nothing threw, the far side simply stopped
+      // consuming. Before this existed the loop just kept waiting and the UI
+      // sat on its last percentage forever.
+      AppLogger.error('Transfer stalled: $e', tag: 'WEBRTC_SENDER');
+      _statusController.add(TransferStatus.failed);
     } catch (e) {
       debugPrint('WebRTC send failed: $e');
       _statusController.add(TransferStatus.failed);
     }
+  }
+
+  /// Keeps [_queuedBytes] honest using the native layer's own figure.
+  ///
+  /// The event is authoritative but late; the local counter is immediate but
+  /// only ever grows. Together they give a number that reacts at once to a
+  /// send and still settles back down as the queue actually drains.
+  void _trackBufferedAmount(RTCDataChannel channel) {
+    _queuedBytes = 0;
+    channel.onBufferedAmountChange = (currentAmount, changedAmount) {
+      _queuedBytes = currentAmount;
+    };
+  }
+
+  /// Fails the transfer when ICE reaches a state it will not come back from.
+  ///
+  /// `disconnected` deliberately does not fail: on a relay path under a VPN it
+  /// appears routinely and recovers on its own within seconds, and treating it
+  /// as fatal would abort healthy transfers. It only starts a grace period —
+  /// if the connection has not come back by the time it expires, the transfer
+  /// is declared dead rather than left hanging.
+  ///
+  /// Previously only `failed` was handled, so a connection that went
+  /// `disconnected` and stayed there left the send loop waiting on a buffer
+  /// nobody was draining, with the UI frozen on its last percentage.
+  void _onIceStateChanged(RTCIceConnectionState state) {
+    AppLogger.info('Sender ICE state: $state', tag: 'WEBRTC_SENDER');
+
+    switch (state) {
+      case RTCIceConnectionState.RTCIceConnectionStateConnected:
+      case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+        _iceRecoveryTimer?.cancel();
+        _iceRecoveryTimer = null;
+      case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
+        _iceRecoveryTimer?.cancel();
+        _iceRecoveryTimer = Timer(_iceRecoveryGrace, () {
+          AppLogger.error(
+              'ICE stayed disconnected for ${_iceRecoveryGrace.inSeconds}s — '
+              'giving up on this session',
+              tag: 'WEBRTC_SENDER');
+          _statusController.add(TransferStatus.failed);
+        });
+      case RTCIceConnectionState.RTCIceConnectionStateFailed:
+      case RTCIceConnectionState.RTCIceConnectionStateClosed:
+        _iceRecoveryTimer?.cancel();
+        _iceRecoveryTimer = null;
+        _statusController.add(TransferStatus.failed);
+      default:
+        break;
+    }
+  }
+
+  /// Whether the channel is still in a state that can carry bytes.
+  ///
+  /// `null` counts as open: the channel is created before the first send and
+  /// a missing state must not be read as a closed one.
+  bool _isChannelOpen() {
+    final state = _dataChannel?.state;
+    if (_dataChannel == null) return false;
+    return state == null || state == RTCDataChannelState.RTCDataChannelOpen;
   }
 
   @override
@@ -415,6 +506,8 @@ class WebRtcTransferTransport implements TransferTransport {
     // this unconditionally is free when there is nothing to release and means
     // a future caller cannot forget.
     await AutoTunnelService().releasePortMappings();
+    _iceRecoveryTimer?.cancel();
+    _iceRecoveryTimer = null;
     _turnRefresher?.cancel(); // §9
     _turnRefresher = null;
     await _wakelockGuard.release(); // §6
