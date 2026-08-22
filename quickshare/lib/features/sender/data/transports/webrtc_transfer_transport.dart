@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
@@ -11,6 +10,7 @@ import 'package:quickshare/core/utils/wakelock_guard.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/core/webrtc/send_buffer.dart';
+import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/network/auto_tunnel_service.dart';
@@ -70,6 +70,13 @@ class WebRtcTransferTransport implements TransferTransport {
   /// Counting locally on every send makes backpressure immediate; the platform
   /// event then corrects the estimate downward as bytes actually leave.
   int _queuedBytes = 0;
+
+  /// Every file in this session.
+  ///
+  /// The transport used to take a single [FileMetadata] because the wire
+  /// protocol could only express one; it now carries a manifest, so the list
+  /// is the real unit of work. Single-file callers still pass one item.
+  List<FileMetadata>? _sessionFiles;
 
   final _degradationController = StreamController<RelayLimitExceeded>.broadcast();
 
@@ -163,7 +170,7 @@ class WebRtcTransferTransport implements TransferTransport {
         debugPrint('WebRTC sender DataChannel state: $state');
         if (state == RTCDataChannelState.RTCDataChannelOpen) {
           _statusController.add(TransferStatus.transferring);
-          unawaited(_sendFileInChunks(file));
+          unawaited(_sendFilesInChunks([file]));
         }
       };
 
@@ -235,8 +242,12 @@ class WebRtcTransferTransport implements TransferTransport {
   /// is running — which is the normal case — and the second one asks the
   /// router for a port mapping with an unlimited lease that nothing ever
   /// removes. Neither is of any use once the answer travels out-of-band.
-  Future<void> startSharingServerless(FileMetadata file) async {
+  Future<void> startSharingServerless(FileMetadata file,
+      {List<FileMetadata>? files}) async {
     try {
+      // `files` is the real session; `file` stays in the signature because it
+      // also carries the name and size the QR/preview screens display.
+      _sessionFiles = files ?? [file];
       _statusController.add(TransferStatus.connecting);
       await _wakelockGuard.acquire(); // §6
 
@@ -291,9 +302,13 @@ class WebRtcTransferTransport implements TransferTransport {
         'session ${file.size} bytes',
         tag: 'WEBRTC_SENDER');
 
-    if (!relayLimitAllows(path, file.size)) {
+    // The whole session, not just the first file: ten photos through a relay
+    // cost ten photos' worth of somebody else's bandwidth.
+    final sessionBytes =
+        (_sessionFiles ?? [file]).fold<int>(0, (sum, f) => sum + f.size);
+    if (!relayLimitAllows(path, sessionBytes)) {
       final blocked =
-          RelayLimitExceeded(file.size, AppConstants.maxRelayTransferBytes);
+          RelayLimitExceeded(sessionBytes, AppConstants.maxRelayTransferBytes);
       AppLogger.warning(
           'Refusing to start: $blocked. Not a single byte was sent.',
           tag: 'WEBRTC_SENDER');
@@ -305,7 +320,7 @@ class WebRtcTransferTransport implements TransferTransport {
     }
 
     _statusController.add(TransferStatus.transferring);
-    await _sendFileInChunks(file);
+    await _sendFilesInChunks(_sessionFiles ?? [file]);
   }
 
   Future<void> handleDirectAnswer(String sdp, String type) async {
@@ -363,58 +378,77 @@ class WebRtcTransferTransport implements TransferTransport {
     _signalingClient?.sendOffer({'sdp': offer.sdp, 'type': offer.type});
   }
 
-  /// §8 — sends the file over the DataChannel with optional gzip compression.
+  /// Sends every file in the session, newest protocol.
   ///
-  /// Compression is skipped for already-compressed formats (JPEG, MP4, ZIP…).
-  /// The receiver learns whether compression is active from the `compressed`
-  /// field in the `file-meta` JSON message.
-  Future<void> _sendFileInChunks(FileMetadata fileMetadata) async {
+  /// A manifest first, then each file framed by `file-start`/`file-end`, then
+  /// `complete`. Progress is reported across the whole session rather than per
+  /// file, so a ten-photo send does not snap back to 0% ten times.
+  ///
+  /// §8: compression is decided per item and skipped for already-compressed
+  /// formats (JPEG, HEIC, MP4, ZIP…), which is also what keeps photos and
+  /// videos bit-identical on arrival.
+  Future<void> _sendFilesInChunks(List<FileMetadata> files) async {
     try {
-      final file = File(fileMetadata.path);
-      final totalBytes = await file.length();
-      var bytesSent = 0;
-
-      // §8: decide whether to compress this payload.
-      final compress =
-          shouldCompressForTransfer(fileMetadata.mimeType, fileMetadata.name);
-
-      final metadataJson = jsonEncode({
-        'type': 'file-meta',
-        'name': fileMetadata.name,
-        'size': totalBytes,
-        'mime': fileMetadata.mimeType,
-        'compressed': compress, // §8
-      });
-      _dataChannel!.send(RTCDataChannelMessage(metadataJson));
-
-      const chunkSize = AppConstants.webRtcChunkSizeBytes;
-      final raf = await file.open(mode: FileMode.read);
-
-      while (bytesSent < totalBytes) {
-        final bytesToRead = (totalBytes - bytesSent < chunkSize)
-            ? (totalBytes - bytesSent)
-            : chunkSize;
-        final chunk = await raf.read(bytesToRead);
-
-        // §8: compress the chunk if applicable.
-        final payload = compress
-            ? Uint8List.fromList(GZipEncoder().encode(chunk)!)
-            : Uint8List.fromList(chunk);
-
-        _dataChannel!.send(RTCDataChannelMessage.fromBinary(payload));
-        _queuedBytes += payload.length;
-        bytesSent += bytesToRead;
-
-        _progressController.add(bytesSent / totalBytes);
-
-        await SendBuffer.waitForRoom(
-          bufferedAmount: () => _queuedBytes,
-          isOpen: _isChannelOpen,
-          limit: AppConstants.webRtcMaxBufferedAmount,
-        );
+      final items = <TransferItem>[];
+      for (final f in files) {
+        items.add(TransferItem(
+          name: f.name,
+          size: await File(f.path).length(),
+          mimeType: f.mimeType,
+          compressed: shouldCompressForTransfer(f.mimeType, f.name),
+        ));
       }
 
-      await raf.close();
+      final sessionBytes = items.fold<int>(0, (sum, i) => sum + i.size);
+      _dataChannel!
+          .send(RTCDataChannelMessage(TransferProtocol.buildManifest(items)));
+      AppLogger.info(
+          'Sending ${items.length} file(s), $sessionBytes bytes total',
+          tag: 'WEBRTC_SENDER');
+
+      const chunkSize = AppConstants.webRtcChunkSizeBytes;
+      var sessionSent = 0;
+
+      for (var index = 0; index < files.length; index++) {
+        final item = items[index];
+        _dataChannel!.send(
+            RTCDataChannelMessage(TransferProtocol.buildFileStart(index)));
+
+        final raf = await File(files[index].path).open(mode: FileMode.read);
+        var fileSent = 0;
+        try {
+          while (fileSent < item.size) {
+            final bytesToRead = (item.size - fileSent < chunkSize)
+                ? (item.size - fileSent)
+                : chunkSize;
+            final chunk = await raf.read(bytesToRead);
+
+            final payload = item.compressed
+                ? Uint8List.fromList(GZipEncoder().encode(chunk)!)
+                : Uint8List.fromList(chunk);
+
+            _dataChannel!.send(RTCDataChannelMessage.fromBinary(payload));
+            _queuedBytes += payload.length;
+            fileSent += bytesToRead;
+            sessionSent += bytesToRead;
+
+            if (sessionBytes > 0) {
+              _progressController.add(sessionSent / sessionBytes);
+            }
+
+            await SendBuffer.waitForRoom(
+              bufferedAmount: () => _queuedBytes,
+              isOpen: _isChannelOpen,
+              limit: AppConstants.webRtcMaxBufferedAmount,
+            );
+          }
+        } finally {
+          await raf.close();
+        }
+
+        _dataChannel!
+            .send(RTCDataChannelMessage(TransferProtocol.buildFileEnd(index)));
+      }
 
       // Drain before complete so the receiver is not short-changed.
       await SendBuffer.waitUntilEmpty(
@@ -423,7 +457,7 @@ class WebRtcTransferTransport implements TransferTransport {
       );
 
       _dataChannel!
-          .send(RTCDataChannelMessage(jsonEncode({'type': 'complete'})));
+          .send(RTCDataChannelMessage(TransferProtocol.buildComplete()));
       await Future.delayed(const Duration(milliseconds: 300));
       _statusController.add(TransferStatus.completed);
     } on TransferStalled catch (e) {

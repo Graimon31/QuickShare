@@ -75,11 +75,11 @@ void main() {
 
   /// A file with content that would survive neither truncation nor a flipped
   /// byte unnoticed.
-  ({File file, String digest}) makePayload(int bytes) {
-    final random = Random(20260816);
+  ({File file, String digest}) makePayload(int bytes, {String? name}) {
+    final random = Random(20260816 + bytes);
     final data =
         Uint8List.fromList(List<int>.generate(bytes, (_) => random.nextInt(256)));
-    final file = File(p.join(workspace.path, 'payload.bin'))
+    final file = File(p.join(workspace.path, name ?? 'payload.bin'))
       ..writeAsBytesSync(data);
     return (file: file, digest: sha256.convert(data).toString());
   }
@@ -170,6 +170,108 @@ void main() {
     // nothing listened to this stream.
     expect(progressPhases, contains('transferring'));
     expect(progressPhases, contains('completed'));
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
+  testWidgets('several files cross one DataChannel and each lands intact',
+      (tester) async {
+    // The wire protocol used to carry exactly one file, so sending a folder or
+    // a batch of photos meant zipping them first — which defeats saving photos
+    // straight into the gallery on the far side. This is the manifest path.
+    final destination = Directory(p.join(workspace.path, 'incoming_multi'))
+      ..createSync();
+
+    // Deliberately mixed: one compressible, two that must pass through
+    // untouched (a photo and a video are the reason "no compression" matters).
+    final payloads = [
+      (name: 'notes.txt', bytes: 64 * 1024, mime: 'text/plain'),
+      (name: 'photo.jpg', bytes: 256 * 1024, mime: 'image/jpeg'),
+      (name: 'clip.mp4', bytes: 128 * 1024, mime: 'video/mp4'),
+    ];
+
+    final files = <FileMetadata>[];
+    final digests = <String, String>{};
+    for (final spec in payloads) {
+      final made = makePayload(spec.bytes, name: spec.name);
+      digests[spec.name] = made.digest;
+      files.add(FileMetadata(
+        name: spec.name,
+        path: made.file.path,
+        size: spec.bytes,
+        mimeType: spec.mime,
+      ));
+    }
+
+    final channel = _LoopbackAnswerChannel();
+    final sender = WebRtcTransferTransport();
+    final receiver = WebRtcReceiverTransport();
+    addTearDown(() async {
+      await sender.stopSharing();
+      await channel.close();
+    });
+
+    await sender.initialize();
+    await sender.startSharingServerless(files.first, files: files);
+
+    final offerSdp = await sender.createLocalOfferSdp();
+    expect(offerSdp, isNotNull);
+
+    final qr = ServerlessQr(
+      seed: SealedEnvelope.newSeed(),
+      offer: ServerlessQr.trimForQr(CompactSdp.fromSdp(offerSdp!)),
+    );
+    final topic = await qr.topic;
+    await channel.subscribe(topic);
+
+    channel.answers.listen((sealed) async {
+      final opened = await SealedEnvelope.open(
+        envelope: sealed,
+        seed: qr.seed,
+        offerFingerprint: qr.offerFingerprint,
+      );
+      await sender.handleDirectAnswer(
+          CompactSdp.fromBytes(opened).toSdp(isOffer: false), 'answer');
+    });
+
+    // Progress must climb across the session rather than restarting per file.
+    final fractions = <double>[];
+    final progressSub = receiver.progressStream.listen((e) {
+      if (e.total > 0) fractions.add(e.received / e.total);
+    });
+    addTearDown(progressSub.cancel);
+
+    await receiver.receiveWithSdpOffer(
+      qr.offer.toSdp(isOffer: true),
+      targetDir: destination.path,
+      deliverAnswer: (answerSdp) async {
+        await channel.publish(
+          topic,
+          await SealedEnvelope.seal(
+            plaintext:
+                ServerlessQr.trimForQr(CompactSdp.fromSdp(answerSdp)).toBytes(),
+            seed: qr.seed,
+            offerFingerprint: qr.offerFingerprint,
+          ),
+        );
+      },
+    );
+
+    final landed = receiver.receivedPaths;
+    expect(landed, hasLength(payloads.length),
+        reason: 'every manifest entry must produce a file');
+
+    for (final path in landed) {
+      final name = p.basename(path);
+      final bytes = File(path).readAsBytesSync();
+      expect(digests.containsKey(name), isTrue, reason: 'unexpected file $name');
+      expect(sha256.convert(bytes).toString(), equals(digests[name]),
+          reason: '$name arrived corrupted — byte-for-byte is the whole point '
+              'for photos and video');
+    }
+
+    expect(fractions, isNotEmpty);
+    expect(fractions.reduce((a, b) => a < b ? a : b), greaterThanOrEqualTo(0.0));
+    expect(fractions.last, closeTo(1.0, 0.001),
+        reason: 'session progress must finish at 100%, not per-file');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   testWidgets('an answer sealed for a different offer is refused',

@@ -14,6 +14,7 @@ import 'package:quickshare/core/webrtc/ice_servers.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/core/webrtc/idle_watchdog.dart';
 import 'package:quickshare/core/webrtc/sdp_compressor.dart';
+import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
 import 'package:quickshare/features/sender/data/signaling/webrtc_signaling_client.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
@@ -83,6 +84,23 @@ class WebRtcReceiverTransport {
 
   /// §8 — whether the incoming binary stream is gzip-compressed.
   bool _isCompressed = false;
+
+  /// The manifest for a multi-file session, and where we are inside it.
+  ///
+  /// Empty for a legacy single-file sender, which opens with `file-meta` and
+  /// never sends a manifest — that path is kept working rather than treated as
+  /// a protocol error, because an older build is not a broken peer.
+  List<TransferItem> _manifest = const [];
+
+  /// Absolute paths of everything written so far, in manifest order.
+  final List<String> _writtenPaths = [];
+
+  /// Bytes across the entire session, so progress does not snap back to zero
+  /// once per file.
+  int _sessionTotalBytes = 0;
+  int _sessionReceivedBytes = 0;
+
+  List<String> get receivedPaths => List.unmodifiable(_writtenPaths);
 
   /// §6 — keeps CPU/display alive during the transfer.
   final _wakelockGuard = WakelockGuard();
@@ -403,11 +421,26 @@ class WebRtcReceiverTransport {
     }
   }
 
+  /// Serialises message handling.
+  ///
+  /// `onMessage` is a `void` callback, so an async handler assigned to it is
+  /// invoked without ever being awaited: the next message starts running while
+  /// the previous one is parked on a flush or a close. With per-file framing
+  /// that is immediately fatal — `file-end` closes the sink while a chunk of
+  /// the same file is still being written, and the write lands on a closed
+  /// StreamSink. Chaining every message onto one future restores the ordering
+  /// the wire protocol already guarantees.
+  Future<void> _handlerChain = Future<void>.value();
+
+  void _handleMessage(RTCDataChannelMessage message) {
+    _handlerChain = _handlerChain.then((_) => _processMessage(message));
+  }
+
   /// §8 — handles incoming DataChannel messages.
   ///
   /// Binary messages are decompressed if the sender advertised
   /// `"compressed": true` in the `file-meta` JSON.
-  Future<void> _handleMessage(RTCDataChannelMessage message) async {
+  Future<void> _processMessage(RTCDataChannelMessage message) async {
     try {
       if (message.isBinary) {
         if (_fileSink == null) return;
@@ -420,27 +453,83 @@ class WebRtcReceiverTransport {
         _idleWatchdog?.kick();
         _fileSink!.add(bytes);
         _receivedBytes += bytes.length;
+        // Progress is reported across the whole session, so a ten-photo
+        // transfer does not snap back to 0% ten times.
+        _sessionReceivedBytes += bytes.length;
 
         final now = DateTime.now();
         final delta = now.difference(_lastTick).inMilliseconds / 1000.0;
         if (delta >= 0.5) {
-          _speedBps = ((_receivedBytes - _lastBytes) / delta).round();
+          _speedBps = ((_sessionReceivedBytes - _lastBytes) / delta).round();
           _lastTick = now;
-          _lastBytes = _receivedBytes;
+          _lastBytes = _sessionReceivedBytes;
         }
         _emit('transferring');
         return;
       }
 
       final data = jsonDecode(message.text) as Map<String, dynamic>;
-      switch (data['type']) {
-        case 'file-meta':
-        case 'metadata':
-          _fileName =
-              sanitizeFileName(data['name'] as String? ?? 'received_file');
-          _totalBytes = data['size'] as int? ?? 0;
-          // §8: read compression flag; default false for backward compat.
-          _isCompressed = (data['compressed'] as bool?) ?? false;
+      final type = data['type'] as String?;
+
+      switch (type) {
+        case TransferProtocol.manifest:
+          _manifest = TransferProtocol.parseManifest(data);
+          _sessionTotalBytes =
+              _manifest.fold<int>(0, (sum, i) => sum + i.size);
+          _sessionReceivedBytes = 0;
+          _writtenPaths.clear();
+          _totalBytes = _sessionTotalBytes;
+          _receivedBytes = 0;
+          _lastBytes = 0;
+          _lastTick = DateTime.now();
+          _fileName = _manifest.length == 1
+              ? sanitizeFileName(_manifest.first.name)
+              : '${_manifest.length} files';
+          _statusController.add(TransferStatus.transferring);
+          _emit('transferring');
+          _armIdleWatchdog();
+          AppLogger.info(
+              'Receiving ${_manifest.length} file(s), '
+              '$_sessionTotalBytes bytes total',
+              tag: 'WEBRTC_RECEIVER');
+
+        case TransferProtocol.fileStart:
+          final index = data['index'] as int?;
+          if (index == null || index < 0 || index >= _manifest.length) {
+            _fail('file-start referred to item $index, '
+                'which is not in a manifest of ${_manifest.length}');
+            return;
+          }
+          final item = _manifest[index];
+          _isCompressed = item.compressed;
+          _targetPath =
+              _uniquePath(resolveTargetPath(sanitizeFileName(item.name), _baseDir));
+          _fileSink = File(_targetPath!).openWrite();
+          _emit('transferring');
+
+        case TransferProtocol.fileEnd:
+          await _fileSink?.flush();
+          await _fileSink?.close();
+          _fileSink = null;
+          if (_targetPath != null) _writtenPaths.add(_targetPath!);
+
+        case TransferProtocol.legacyFileMeta:
+        case TransferProtocol.legacyMetadata:
+          // Single-file sender on an older build: synthesise a one-item
+          // manifest so everything downstream sees one shape.
+          final item = TransferItem(
+            name: data['name'] as String? ?? 'received_file',
+            size: data['size'] as int? ?? 0,
+            mimeType: data['mime'] as String? ?? 'application/octet-stream',
+            compressed: (data['compressed'] as bool?) ?? false,
+          );
+          _manifest = [item];
+          _sessionTotalBytes = item.size;
+          _sessionReceivedBytes = 0;
+          _writtenPaths.clear();
+          _fileName = sanitizeFileName(item.name);
+          _totalBytes = item.size;
+          _isCompressed = item.compressed;
           _receivedBytes = 0;
           _lastBytes = 0;
           _lastTick = DateTime.now();
@@ -448,37 +537,48 @@ class WebRtcReceiverTransport {
           _fileSink = File(_targetPath!).openWrite();
           _statusController.add(TransferStatus.transferring);
           _emit('transferring');
-          _idleWatchdog ??= IdleWatchdog(
-            timeout: _idleTimeout,
-            onTimeout: () => _fail(
-                'No data received for ${_idleTimeout.inSeconds}s — the '
-                'connection appears to have died'),
-          );
-          _idleWatchdog!.kick();
-          break;
+          _armIdleWatchdog();
 
-        case 'complete':
-        case 'file-complete':
+        case TransferProtocol.complete:
+        case TransferProtocol.legacyFileComplete:
+          // A legacy sender closes the only file here rather than with
+          // file-end, so flush whatever is still open.
           await _fileSink?.flush();
           await _fileSink?.close();
           _fileSink = null;
+          if (_targetPath != null && !_writtenPaths.contains(_targetPath)) {
+            _writtenPaths.add(_targetPath!);
+          }
           _idleWatchdog?.cancel();
-          if (_totalBytes > 0 && _receivedBytes < _totalBytes) {
-            _fail(
-                'Transfer completed prematurely: received $_receivedBytes of $_totalBytes bytes');
+
+          if (_sessionTotalBytes > 0 &&
+              _sessionReceivedBytes < _sessionTotalBytes) {
+            _fail('Transfer completed prematurely: received '
+                '$_sessionReceivedBytes of $_sessionTotalBytes bytes');
           } else {
             _statusController.add(TransferStatus.completed);
             _emit('completed');
             if (!_completion.isCompleted) {
-              _completion.complete(_targetPath ?? '');
+              _completion.complete(_writtenPaths.isNotEmpty
+                  ? _writtenPaths.first
+                  : (_targetPath ?? ''));
             }
             await _cleanup();
           }
-          break;
       }
     } catch (e) {
       _fail('Failed to write incoming file: $e');
     }
+  }
+
+  void _armIdleWatchdog() {
+    _idleWatchdog ??= IdleWatchdog(
+      timeout: _idleTimeout,
+      onTimeout: () => _fail(
+          'No data received for ${_idleTimeout.inSeconds}s — the '
+          'connection appears to have died'),
+    );
+    _idleWatchdog!.kick();
   }
 
   String _uniquePath(String path) {
@@ -498,8 +598,8 @@ class WebRtcReceiverTransport {
     _progressController.add(WebRtcReceiveProgress(
       phase: phase,
       fileName: _fileName,
-      received: _receivedBytes,
-      total: _totalBytes,
+      received: _sessionReceivedBytes,
+      total: _sessionTotalBytes,
       speedBps: _speedBps,
       detail: detail,
     ));
