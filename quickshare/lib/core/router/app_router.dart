@@ -109,39 +109,50 @@ class AppRouter {
                 sharedAxis: false,
               );
             },
-          ),
-          GoRoute(
-            path: 'fallback',
-            builder: (context, state) {
-              final extra = state.extra as Map<String, int?>?;
-              return NetworkFallbackPage(
-                sessionBytes: extra?['sessionBytes'],
-                limitBytes: extra?['limitBytes'],
-                onBack: () => context.go('/send'),
-                onUseLocalNetwork: () => context.go('/send'),
-                // iOS cannot raise a hotspot from inside an app, so the button
-                // is simply absent there rather than failing when tapped.
-                onCreateNetwork: LocalHotspotService().canHost
-                    ? () {
-                        context.read<SenderBloc>().add(StartLocalNetwork());
-                        context.go('/send/local-network');
-                      }
-                    : null,
-              );
-            },
-          ),
-          GoRoute(
-            path: 'local-network',
-            builder: (context, state) =>
-                LocalNetworkPage(onCancel: () => context.go('/send')),
-          ),
-          GoRoute(
-            path: 'qr',
-            pageBuilder: (context, state) => _qsPage(
-              state,
-              const QRDisplayPage(),
-              sharedAxis: true,
-            ),
+            // A relative path only resolves against its *parent* GoRoute, so
+            // `fallback`/`local-network`/`qr` have to be declared here, nested
+            // under `/send` — they used to sit as siblings of it in this same
+            // ShellRoute's list instead, which registered them nowhere at all
+            // (not at /send/fallback, not even at /fallback). Every
+            // `context.go('/send/qr')` and `context.go('/send/fallback')` call
+            // in the sender pages hit go_router's `errorBuilder` ("Page not
+            // found") instead of the real page.
+            routes: [
+              GoRoute(
+                path: 'fallback',
+                builder: (context, state) {
+                  final extra = state.extra as Map<String, int?>?;
+                  return NetworkFallbackPage(
+                    sessionBytes: extra?['sessionBytes'],
+                    limitBytes: extra?['limitBytes'],
+                    onBack: () => context.go('/send'),
+                    onUseLocalNetwork: () => context.go('/send'),
+                    // iOS cannot raise a hotspot from inside an app, so the
+                    // button is simply absent there rather than failing when
+                    // tapped.
+                    onCreateNetwork: LocalHotspotService().canHost
+                        ? () {
+                            context.read<SenderBloc>().add(StartLocalNetwork());
+                            context.go('/send/local-network');
+                          }
+                        : null,
+                  );
+                },
+              ),
+              GoRoute(
+                path: 'local-network',
+                builder: (context, state) =>
+                    LocalNetworkPage(onCancel: () => context.go('/send')),
+              ),
+              GoRoute(
+                path: 'qr',
+                pageBuilder: (context, state) => _qsPage(
+                  state,
+                  const QRDisplayPage(),
+                  sharedAxis: true,
+                ),
+              ),
+            ],
           ),
           GoRoute(
             path: '/send/bluetooth',
