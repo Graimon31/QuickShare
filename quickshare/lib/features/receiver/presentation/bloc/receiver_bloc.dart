@@ -14,6 +14,7 @@ import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
+import 'package:quickshare/core/utils/transfer_speed.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -134,8 +135,19 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   final DownloadFileUseCase downloadFileUseCase;
   final ReceiverRepository repository;
   QRPayload? _currentPayload;
-  DateTime? _lastUpdate;
-  int _lastReceived = 0;
+  /// Smooths the reported speed.
+  ///
+  /// Progress arrives once per 16 KB chunk, so measuring between consecutive
+  /// events divides by a sub-millisecond gap and produces readings that swing
+  /// between zero and tens of MB/s on a link running at a steady rate.
+  final _speedMeter = TransferSpeed();
+
+  /// Highest fraction shown so far this session.
+  ///
+  /// A progress ring that ticks backwards reads as data being lost. The
+  /// underlying counters only ever grow, so anything lower than what was
+  /// already displayed is noise, not news.
+  double _progressFloor = 0;
   int _transferAttempt = 0;
 
   ReceiverBloc({required this.downloadFileUseCase, required this.repository})
@@ -181,7 +193,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       _currentPayload = payload;
       final transferAttempt = ++_transferAttempt;
       emit(Connecting());
-      _lastUpdate = DateTime.now();
+      _speedMeter.reset();
+      _progressFloor = 0;
       if (payload.mode == QRPayloadDecoder.serverlessMode &&
           payload.sdpOffer != null) {
         await _runServerlessTransfer(payload, emit);
@@ -245,20 +258,17 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
 
     on<DownloadProgressUpdate>((event, emit) {
       if (_currentPayload == null) return;
-      final now = DateTime.now();
-      final diff = now.difference(_lastUpdate ?? now).inMilliseconds;
-      int speed = 0;
-      if (diff > 0) {
-        speed = ((event.received - _lastReceived) / (diff / 1000)).round();
-      }
-      _lastUpdate = now;
-      _lastReceived = event.received;
 
-      final progress = event.total > 0 ? event.received / event.total : 0.0;
+      final measured = _speedMeter.update(event.received);
+
+      final raw = event.total > 0 ? event.received / event.total : 0.0;
+      final progress = raw > _progressFloor ? raw : _progressFloor;
+      _progressFloor = progress;
+
       final name = event.fileName.isNotEmpty
           ? event.fileName
           : _currentPayload!.fileName;
-      emit(Downloading(progress, speed, name));
+      emit(Downloading(progress, (measured ?? 0).round(), name));
     });
 
     on<StartVerifying>((event, emit) {

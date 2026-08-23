@@ -28,6 +28,8 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>FLTEnableMergedPlatformUIThread</key>
+	<false/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>DirectDrop uses Bluetooth to send and receive files with nearby Macs without a network.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>

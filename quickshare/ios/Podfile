@@ -40,6 +40,16 @@ post_install do |installer|
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.1'
       config.build_settings['ONLY_ACTIVE_ARCH'] = 'YES'
+
+      # permission_handler compiles every permission group out by default —
+      # without this, Permission.camera.request() never reaches
+      # AVCaptureDevice.requestAccess at all: no system dialog, no Settings
+      # row, and the app reads that as permanently denied on the very first
+      # try. Enabled only for what lib/core/permissions/permission_service.dart
+      # actually calls (camera, for the QR scanner); everything else stays
+      # off rather than pulled in unused.
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] << 'PERMISSION_CAMERA=1'
     end
   end
 end
