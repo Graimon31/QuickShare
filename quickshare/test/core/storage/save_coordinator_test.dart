@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 import 'package:quickshare/core/storage/media_saver.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/save_coordinator.dart';
+import 'package:quickshare/core/storage/gallery_formats.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 
@@ -49,7 +50,10 @@ void main() {
     bool galleryFails = false,
   }) =>
       SaveCoordinator(
-        destination: SaveDestination(isDesktop: isDesktop),
+        destination: SaveDestination(
+          isDesktop: isDesktop,
+          gallery: const GalleryFormats(GalleryPlatform.ios),
+        ),
         saver: saver(galleryFails: galleryFails),
         cache: cache,
       );
@@ -102,6 +106,33 @@ void main() {
       expect(outcomes.map((o) => o.item.name),
           equals(['IMG_0.jpg', 'IMG_1.jpg', 'IMG_2.jpg']),
           reason: 'a failure has to name which item it was');
+    });
+
+    test('a photo the gallery refused is still offered somewhere to go',
+        () async {
+      // Reporting "could not be saved" and then deleting the cache copy on
+      // the way out loses the file outright. The library refusing it says
+      // nothing about whether the user wants it.
+      final items = [await cached('IMG_0.jpg', 'image/jpeg')];
+
+      final outcomes = await coordinator(isDesktop: false, galleryFails: true)
+          .runAutomatic(items);
+
+      expect(outcomes.single.failed, isTrue, reason: 'the reason is not hidden');
+      expect(outcomes.single.awaitingDecision, isTrue,
+          reason: 'and it can still be saved by hand');
+    });
+
+    test('a format the gallery would refuse is never handed to it', () async {
+      // The gallery is asked only about formats it stores, so this asks
+      // instead of failing and recovering.
+      final items = [await cached('movie.avi', 'video/x-msvideo')];
+
+      final outcomes = await coordinator(isDesktop: false).runAutomatic(items);
+
+      expect(galleryWrites, isEmpty);
+      expect(outcomes.single.failed, isFalse);
+      expect(outcomes.single.awaitingDecision, isTrue);
     });
   });
 

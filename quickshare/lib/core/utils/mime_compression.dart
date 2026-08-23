@@ -84,8 +84,16 @@ bool _alreadyCompressedExt(String ext) {
   const compressed = {
     // Images
     'jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif', 'avif',
+    // Camera RAW. Not obvious from the name, and no MIME type resolves for
+    // any of them, so without this a 60 MB frame off a DSLR gets a full gzip
+    // pass on the send path for nothing: the formats already carry their own
+    // lossless compression internally. Uncompressed TIFF is deliberately not
+    // here — that one really does shrink.
+    'dng', 'cr2', 'cr3', 'nef', 'arw', 'orf', 'raf', 'rw2', 'mrw', 'srf',
     // Video
     'mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v', 'wmv', 'flv', 'ts', 'mts',
+    'm2ts', '3gp', 'mpg', 'mpeg', 'vob', 'mxf', 'asf', 'ogv', 'f4v', 'divx',
+    'rm', 'rmvb',
     // Audio
     'mp3', 'aac', 'ogg', 'opus', 'flac', 'm4a', 'wma', 'wav', // wav is PCM but big
     // Archives

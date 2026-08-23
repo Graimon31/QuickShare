@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import 'package:quickshare/core/storage/gallery_formats.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 
 /// What should happen to an item once it has finished arriving.
@@ -30,16 +31,23 @@ class SaveDestination {
   /// machine, rather than only for the one the tests happen to run on.
   final bool isDesktop;
 
-  const SaveDestination({required this.isDesktop});
+  /// Which photo library, if any, is on the other side. On a phone this is
+  /// what actually separates "goes to the gallery" from "ask the user": iOS
+  /// and Android accept different formats, and neither accepts everything
+  /// that is recognisably a photo or a video.
+  final GalleryFormats gallery;
+
+  const SaveDestination({required this.isDesktop, required this.gallery});
 
   factory SaveDestination.forCurrentPlatform() => SaveDestination(
         isDesktop: !kIsWeb &&
             (Platform.isMacOS || Platform.isWindows || Platform.isLinux),
+        gallery: GalleryFormats.forCurrentPlatform(),
       );
 
   SaveIntent intentFor(ReceivedItem item) {
     if (isDesktop) return SaveIntent.automatic;
-    return item.kind == ReceivedKind.media ? SaveIntent.gallery : SaveIntent.ask;
+    return gallery.accepts(item) ? SaveIntent.gallery : SaveIntent.ask;
   }
 
   /// Whether anything in [items] needs the user to answer a question before

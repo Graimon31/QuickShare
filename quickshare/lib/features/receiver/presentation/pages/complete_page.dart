@@ -72,7 +72,15 @@ class _CompletePageState extends State<CompletePage> {
   List<SaveOutcome> get _pending =>
       _outcomes.where((o) => o.awaitingDecision).toList();
 
-  List<SaveOutcome> get _failures => _outcomes.where((o) => o.failed).toList();
+  /// Only the ones with nowhere left to go.
+  ///
+  /// A gallery that refused the file leaves it awaiting a decision instead,
+  /// and that is a question rather than a failure — calling it an error would
+  /// put a red icon on the most ordinary case there is, a video format the
+  /// photo library does not store, when all the user has to do is say where
+  /// to put it.
+  List<SaveOutcome> get _failures =>
+      _outcomes.where((o) => o.failed && !o.awaitingDecision).toList();
 
   int get _savedCount => _outcomes.where((o) => o.item.isSaved).length;
 

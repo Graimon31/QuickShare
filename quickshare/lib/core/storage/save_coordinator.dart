@@ -51,13 +51,30 @@ class SaveCoordinator {
         case SaveIntent.automatic:
           outcomes.add(await _attempt(item, () => saver.saveToDownloads(item)));
         case SaveIntent.gallery:
-          outcomes.add(await _attempt(item, () => saver.saveToGallery(item)));
+          outcomes.add(_survivable(
+              await _attempt(item, () => saver.saveToGallery(item))));
         case SaveIntent.ask:
           outcomes.add(SaveOutcome(item: item, awaitingDecision: true));
       }
     }
     return outcomes;
   }
+
+  /// A gallery that refuses the file is not the end of it.
+  ///
+  /// [GalleryFormats] keeps the obvious refusals from being attempted at all,
+  /// but it cannot be exhaustive — Matroska on Android depends on the codecs
+  /// inside it, and a library can also refuse for reasons that have nothing to
+  /// do with the format, such as a permission the user has since revoked.
+  /// Whatever the reason, the file is sitting in the cache and can still be
+  /// put somewhere the user picks, so a failed gallery write becomes the same
+  /// question a document would have asked. Without this the item was reported
+  /// as failed, offered no way to save it, and had its cache copy deleted on
+  /// the way out of the screen.
+  SaveOutcome _survivable(SaveOutcome outcome) => outcome.failed
+      ? SaveOutcome(
+          item: outcome.item, error: outcome.error, awaitingDecision: true)
+      : outcome;
 
   Future<SaveOutcome> _attempt(
       ReceivedItem item, Future<ReceivedItem> Function() save) async {

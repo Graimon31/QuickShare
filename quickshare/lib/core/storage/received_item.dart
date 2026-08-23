@@ -2,17 +2,13 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
-/// What kind of thing arrived, which decides where it can go next.
-enum ReceivedKind {
-  /// A photo or a video: on a phone it belongs in the gallery, where the
-  /// user's other photos are.
-  media,
-
-  /// Anything else: a document, an archive, a binary.
-  file,
-}
-
 /// One item sitting in the transfer cache, waiting to be kept or dropped.
+///
+/// Pure data: where it goes next is [SaveDestination]'s decision, and whether
+/// a photo library would take it is [GalleryFormats]'. This used to carry its
+/// own "is it media" verdict, which read as a fact about the file but was
+/// really a guess about the gallery — and the two are not the same thing on
+/// either phone platform.
 class ReceivedItem {
   /// Where it currently is — inside the transfer cache, not shared storage.
   final String cachePath;
@@ -34,11 +30,6 @@ class ReceivedItem {
 
   bool get isSaved => savedPath != null;
 
-  ReceivedKind get kind =>
-      isMediaMimeType(mimeType) || _looksLikeMediaExtension(name)
-          ? ReceivedKind.media
-          : ReceivedKind.file;
-
   ReceivedItem copyWith({String? savedPath}) => ReceivedItem(
         cachePath: cachePath,
         name: name,
@@ -54,40 +45,7 @@ class ReceivedItem {
         mimeType: mimeType,
       );
 
-  /// Whether a MIME type names something that belongs in a photo library.
-  ///
-  /// Deliberately narrower than `image/*` — an SVG or a PDF preview is an
-  /// image by MIME type but not something any gallery will accept, and a
-  /// failed gallery write is worse than an honest "save as file".
-  static bool isMediaMimeType(String mimeType) {
-    final type = mimeType.toLowerCase();
-    if (type.startsWith('video/')) return true;
-    if (!type.startsWith('image/')) return false;
-    return const {
-      'image/jpeg',
-      'image/jpg',
-      'image/png',
-      'image/gif',
-      'image/heic',
-      'image/heif',
-      'image/webp',
-      'image/tiff',
-      'image/bmp',
-      'image/x-adobe-dng',
-    }.contains(type);
-  }
-
-  /// Fallback for a sender that sent no usable MIME type.
-  static bool _looksLikeMediaExtension(String name) {
-    const extensions = {
-      '.jpg', '.jpeg', '.png', '.gif', '.heic', '.heif', '.webp',
-      '.tiff', '.tif', '.bmp', '.dng',
-      '.mp4', '.mov', '.m4v', '.avi', '.mkv', '.webm', '.3gp', //
-    };
-    return extensions.contains(p.extension(name).toLowerCase());
-  }
-
   @override
-  String toString() => 'ReceivedItem($name, $size bytes, $kind'
+  String toString() => 'ReceivedItem($name, $size bytes'
       '${isSaved ? ', saved' : ', unsaved'})';
 }
