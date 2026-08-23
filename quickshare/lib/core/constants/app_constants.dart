@@ -159,8 +159,31 @@ class AppConstants {
   static const String deepLinkScheme = 'directdrop';
   static const String deepLinkHost = 'join';
 
-  static const int webRtcChunkSizeBytes = 16384;
-  static const int webRtcMaxBufferedAmount = 262144; // 256 KB datachannel backpressure
+  /// How much payload goes into one DataChannel message, and how much may be
+  /// queued before the send loop waits.
+  ///
+  /// Both were measured rather than guessed, on a loopback connection where
+  /// the network cannot be the limit (integration_test/throughput_benchmark.dart,
+  /// 128 MB, disk reading three orders of magnitude faster than any of these):
+  ///
+  ///   chunk    window    throughput
+  ///   16 KB    256 KB     4.8 MB/s   <- what shipped
+  ///   64 KB    256 KB     5.9 MB/s
+  ///   16 KB      4 MB    17.4 MB/s
+  ///   64 KB      4 MB    26.4 MB/s   <- here
+  ///   64 KB      8 MB    27.8 MB/s
+  ///
+  /// The window is what mattered; the chunk size is worth a further 50% on top
+  /// of it. Going to 8 MB buys another 5% and is not taken: libwebrtc kills the
+  /// channel at a 16 MiB SCTP send buffer — which this app has already hit once
+  /// — and `_queuedBytes` is a local estimate that the platform event corrects
+  /// only afterwards, so the real queue can run ahead of it. 4 MB keeps four
+  /// times that headroom.
+  ///
+  /// 64 KB messages are inside the 256 KB libwebrtc negotiates, and both ends
+  /// of a transfer are this same app.
+  static const int webRtcChunkSizeBytes = 65536;
+  static const int webRtcMaxBufferedAmount = 4194304; // 4 MB
   static const int maxFileSizeBytes = 2 * 1024 * 1024 * 1024; // 2 GB limit
   static const int qhtpSessionTimeoutSeconds = 1800; // 30 min for heavy transfers
   static const int qhtpPayloadVersion = 2;

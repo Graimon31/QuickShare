@@ -199,4 +199,69 @@ void main() {
       expect(peak, lessThanOrEqualTo(262144 + 16384));
     });
   });
+
+  group('event-driven waking', () {
+    test('wakes on the drain signal without waiting out the poll interval',
+        () async {
+      // The measured ceiling: with a 256 KB window and a 50 ms poll, polling
+      // alone caps throughput at ~5 MB/s no matter what the link can carry.
+      var queued = 500000;
+      final drained = Completer<void>();
+
+      final started = DateTime.now();
+      final done = SendBuffer.waitForRoom(
+        bufferedAmount: () => queued,
+        isOpen: () => true,
+        limit: 262144,
+        onDrain: () => drained.future,
+        pollInterval: const Duration(seconds: 5), // would dominate if polled
+        stallTimeout: const Duration(seconds: 30),
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      queued = 0;
+      drained.complete();
+      await done;
+
+      expect(DateTime.now().difference(started).inSeconds, lessThan(2),
+          reason: 'a 5 s poll must not be what ends the wait');
+    });
+
+    test('the poll still ends the wait when no drain event ever comes',
+        () async {
+      // Some platforms report buffered amounts late or not at all; depending
+      // solely on an event that never fires would be a hang.
+      var queued = 500000;
+      final never = Completer<void>();
+
+      final done = SendBuffer.waitForRoom(
+        bufferedAmount: () => queued,
+        isOpen: () => true,
+        limit: 262144,
+        onDrain: () => never.future,
+        pollInterval: const Duration(milliseconds: 5),
+        stallTimeout: const Duration(seconds: 30),
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      queued = 0;
+      await done;
+    });
+
+    test('stall detection still fires with a drain signal that never comes',
+        () async {
+      final never = Completer<void>();
+      await expectLater(
+        SendBuffer.waitForRoom(
+          bufferedAmount: () => 999999,
+          isOpen: () => true,
+          limit: 100,
+          onDrain: () => never.future,
+          pollInterval: const Duration(milliseconds: 1),
+          stallTimeout: const Duration(milliseconds: 40),
+        ),
+        throwsA(isA<TransferStalled>()),
+      );
+    });
+  });
 }

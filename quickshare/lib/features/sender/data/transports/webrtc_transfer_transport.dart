@@ -71,6 +71,9 @@ class WebRtcTransferTransport implements TransferTransport {
   /// event then corrects the estimate downward as bytes actually leave.
   int _queuedBytes = 0;
 
+  /// Pending waiter for [_awaitDrain], completed by the buffered-amount event.
+  Completer<void>? _drainWaiter;
+
   /// Every file in this session.
   ///
   /// The transport used to take a single [FileMetadata] because the wire
@@ -454,6 +457,7 @@ class WebRtcTransferTransport implements TransferTransport {
       await SendBuffer.waitUntilEmpty(
         bufferedAmount: () => _queuedBytes,
         isOpen: _isChannelOpen,
+        onDrain: _awaitDrain,
       );
 
       _dataChannel!
@@ -480,9 +484,27 @@ class WebRtcTransferTransport implements TransferTransport {
   /// send and still settles back down as the queue actually drains.
   void _trackBufferedAmount(RTCDataChannel channel) {
     _queuedBytes = 0;
+    _drainWaiter = null;
     channel.onBufferedAmountChange = (currentAmount, changedAmount) {
       _queuedBytes = currentAmount;
+      if (currentAmount <= AppConstants.webRtcMaxBufferedAmount) {
+        final waiter = _drainWaiter;
+        _drainWaiter = null;
+        if (waiter != null && !waiter.isCompleted) waiter.complete();
+      }
     };
+  }
+
+  /// Completes the next time the platform reports the send buffer has room.
+  ///
+  /// The send loop used to learn that only by polling every 50 ms, which put a
+  /// hard ceiling on throughput at one window per poll — 4.8 MB/s measured
+  /// against a predicted 5.0, on loopback, with no network involved. Waking on
+  /// the event removes the ceiling; the poll stays underneath as a backstop
+  /// for platforms that report late or not at all.
+  Future<void> _awaitDrain() {
+    final waiter = _drainWaiter ??= Completer<void>();
+    return waiter.future;
   }
 
   /// Fails the transfer when ICE reaches a state it will not come back from.
