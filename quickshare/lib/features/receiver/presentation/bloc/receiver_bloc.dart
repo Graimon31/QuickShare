@@ -9,7 +9,8 @@ import 'package:quickshare/features/receiver/domain/usecases/download_file_useca
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
 import 'package:quickshare/features/receiver/domain/entities/qhtp_session_preview.dart';
 import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
-import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
+import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart'
+    show TransferCancelledBySender, WebRtcReceiveProgress, WebRtcReceiverTransport;
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/storage/received_item.dart';
@@ -352,9 +353,18 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         items: items,
       ));
     } catch (e, st) {
-      AppLogger.error('Serverless transfer failed',
-          error: e, stackTrace: st, tag: 'WEBRTC_RECEIVER');
-      emit(ReceiverError('Serverless transfer failed: $e'));
+      // A cancellation is not a fault, and calling it one sends the user
+      // looking for a network problem that never existed. A genuine
+      // connection failure still reads as one.
+      if (e is TransferCancelledBySender) {
+        AppLogger.info('Sender cancelled the transfer', tag: 'WEBRTC_RECEIVER');
+        emit(const ReceiverError('The sender cancelled the transfer',
+            canRetry: false));
+      } else {
+        AppLogger.error('Serverless transfer failed',
+            error: e, stackTrace: st, tag: 'WEBRTC_RECEIVER');
+        emit(ReceiverError('Serverless transfer failed: $e'));
+      }
     } finally {
       await progressSub?.cancel();
       await channel.close();

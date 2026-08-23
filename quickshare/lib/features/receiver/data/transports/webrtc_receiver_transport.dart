@@ -20,6 +20,18 @@ import 'package:quickshare/features/sender/data/signaling/webrtc_signaling_clien
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
+/// Raised when the sender deliberately stopped the transfer.
+///
+/// Separate from a generic failure so the screen can say "the sender
+/// cancelled" instead of "connection error" — the two are the same silence on
+/// the wire but mean opposite things to whoever is watching.
+class TransferCancelledBySender implements Exception {
+  const TransferCancelledBySender();
+
+  @override
+  String toString() => 'the sender cancelled the transfer';
+}
+
 /// Progress for a link-based (WebRTC) receive.
 class WebRtcReceiveProgress {
   final String phase; // 'connecting' | 'transferring' | 'completed' | 'failed'
@@ -84,6 +96,10 @@ class WebRtcReceiverTransport {
 
   /// §8 — whether the incoming binary stream is gzip-compressed.
   bool _isCompressed = false;
+
+  /// Set when the sender announced it was stopping, so the ICE teardown that
+  /// follows is not reported a second time as a connection error.
+  bool _cancelledBySender = false;
 
   /// The manifest for a multi-file session, and where we are inside it.
   ///
@@ -169,6 +185,12 @@ class WebRtcReceiverTransport {
       _statusController.add(TransferStatus.connecting);
       await _wakelockGuard.acquire(); // §6
 
+      // This path returns a completer of its own; `_completion` belongs to the
+      // room-based receive() and nothing here awaits it. _fail() still
+      // completes it, so without a handler every serverless failure surfaces
+      // as an unhandled async error alongside the real one.
+      unawaited(_completion.future.then((_) {}, onError: (Object _) {}));
+
       // Resolve the destination before anything can arrive. Leaving this unset
       // used to make resolveTargetPath() return a bare relative name, which
       // put the incoming file in the process working directory — read-only
@@ -238,7 +260,12 @@ class WebRtcReceiverTransport {
         } else if (status == TransferStatus.failed) {
           sub.cancel();
           if (!completer.isCompleted) {
-            completer.completeError(Exception('Serverless WebRTC transfer failed'));
+            // This is what the caller actually awaits, so the distinction
+            // between a deliberate stop and a broken connection has to survive
+            // here too — `_completion` carries it, but nothing awaits that one.
+            completer.completeError(_cancelledBySender
+                ? const TransferCancelledBySender()
+                : Exception('Serverless WebRTC transfer failed'));
           }
         }
       });
@@ -257,6 +284,11 @@ class WebRtcReceiverTransport {
               'reaching a completed or failed state');
         },
       );
+    } on TransferCancelledBySender {
+      // Deliberate, and already reported. Re-wrapping it as a generic failure
+      // here would undo the distinction the whole message exists to make.
+      await _wakelockGuard.release(); // §6
+      rethrow;
     } catch (e) {
       await _wakelockGuard.release(); // §6
       _statusController.add(TransferStatus.failed);
@@ -539,6 +571,18 @@ class WebRtcReceiverTransport {
           _emit('transferring');
           _armIdleWatchdog();
 
+        case TransferProtocol.cancelled:
+          // Deliberate stop: react now rather than waiting out the disconnect
+          // grace period, and say what actually happened.
+          AppLogger.info('Sender cancelled the transfer',
+              tag: 'WEBRTC_RECEIVER');
+          await _fileSink?.flush();
+          await _fileSink?.close();
+          _fileSink = null;
+          _cancelledBySender = true;
+          _idleWatchdog?.cancel();
+          _fail('The sender cancelled the transfer');
+
         case TransferProtocol.complete:
         case TransferProtocol.legacyFileComplete:
           // A legacy sender closes the only file here rather than with
@@ -617,6 +661,10 @@ class WebRtcReceiverTransport {
   void _onIceStateChanged(RTCIceConnectionState state) {
     AppLogger.info('Receiver ICE state: $state', tag: 'WEBRTC_RECEIVER');
 
+    // A cancelled session tears its connection down by design; reporting that
+    // as a fault would overwrite the real reason with a misleading one.
+    if (_cancelledBySender) return;
+
     switch (state) {
       case RTCIceConnectionState.RTCIceConnectionStateConnected:
       case RTCIceConnectionState.RTCIceConnectionStateCompleted:
@@ -643,7 +691,9 @@ class WebRtcReceiverTransport {
     _statusController.add(TransferStatus.failed);
     _emit('failed', detail: reason);
     if (!_completion.isCompleted) {
-      _completion.completeError(Exception(reason));
+      _completion.completeError(_cancelledBySender
+          ? const TransferCancelledBySender()
+          : Exception(reason));
     }
     _cleanup();
   }

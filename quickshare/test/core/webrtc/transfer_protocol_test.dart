@@ -93,6 +93,14 @@ void main() {
           equals({'type': 'file-end', 'index': 3}));
     });
 
+    test('cancellation is its own message, not a silent disconnect', () {
+      // The receiver has to be able to tell a deliberate stop from a dropped
+      // network, and to react at once rather than after a grace period.
+      expect(jsonDecode(TransferProtocol.buildCancelled()),
+          equals({'type': 'cancelled'}));
+      expect(TransferProtocol.cancelled, isNot(equals(TransferProtocol.complete)));
+    });
+
     test('complete needs no payload', () {
       expect(jsonDecode(TransferProtocol.buildComplete()),
           equals({'type': 'complete'}));

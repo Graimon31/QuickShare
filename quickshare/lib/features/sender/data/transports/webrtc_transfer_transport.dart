@@ -536,6 +536,27 @@ class WebRtcTransferTransport implements TransferTransport {
   @override
   Future<void> stopSharing() async {
     _statusController.add(TransferStatus.cancelled);
+
+    // Tell the far side before tearing anything down. Without this the
+    // receiver only sees the channel go quiet, which is indistinguishable
+    // from a dropped network — it would sit through its whole disconnect
+    // grace period and then report a connection error for what was actually
+    // somebody pressing Cancel.
+    //
+    // Best-effort: if the channel is already gone there is nobody to tell,
+    // and failing to send a courtesy message must not block the teardown.
+    try {
+      if (_isChannelOpen()) {
+        _dataChannel?.send(RTCDataChannelMessage(TransferProtocol.buildCancelled()));
+        // The frame is only queued by send(); give it a moment on the wire
+        // before the channel closes underneath it.
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+    } catch (e) {
+      AppLogger.warning('Could not announce cancellation: $e',
+          tag: 'WEBRTC_SENDER');
+    }
+
     // Only the LAN/room flow ever asks the router for a mapping, but calling
     // this unconditionally is free when there is nothing to release and means
     // a future caller cannot forget.

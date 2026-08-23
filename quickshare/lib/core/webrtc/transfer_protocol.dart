@@ -32,6 +32,15 @@ class TransferProtocol {
   static const fileEnd = 'file-end';
   static const complete = 'complete';
 
+  /// The sender is stopping on purpose.
+  ///
+  /// Without it the receiver cannot tell "the person on the other end pressed
+  /// Cancel" from "the network dropped": both look like the channel going
+  /// quiet, and the receiver has to sit through its disconnect grace period
+  /// before saying anything at all. A deliberate stop should be immediate and
+  /// should say so.
+  static const cancelled = 'cancelled';
+
   /// Older single-file openers, both spellings that have shipped.
   static const legacyFileMeta = 'file-meta';
   static const legacyMetadata = 'metadata';
@@ -53,6 +62,8 @@ class TransferProtocol {
       jsonEncode({'type': fileEnd, 'index': index});
 
   static String buildComplete() => jsonEncode({'type': complete});
+
+  static String buildCancelled() => jsonEncode({'type': cancelled});
 
   /// Parses a manifest body into its items.
   ///

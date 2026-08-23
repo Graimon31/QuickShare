@@ -119,10 +119,27 @@ class QRReady extends SenderState {
   final TransportType mode;
   final String? webLinkUrl;
 
-  const QRReady(this.qrData, this.session, this.mode, {this.webLinkUrl});
+  /// How many files this session carries, and how many bytes in total.
+  ///
+  /// [session] describes only the first one — it predates the manifest and
+  /// still exists because the LAN path is built around a single
+  /// [TransferSession]. Showing that alone made a multi-file send look like a
+  /// single-file one, which read as "only one of my files is going".
+  final int itemCount;
+  final int totalBytes;
+
+  const QRReady(
+    this.qrData,
+    this.session,
+    this.mode, {
+    this.webLinkUrl,
+    this.itemCount = 1,
+    this.totalBytes = 0,
+  });
 
   @override
-  List<Object?> get props => [qrData, session, mode, webLinkUrl];
+  List<Object?> get props =>
+      [qrData, session, mode, webLinkUrl, itemCount, totalBytes];
 }
 
 /// Bluetooth is advertising and waiting for a receiver that scanned [qrData].
@@ -447,7 +464,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
               'internet connection and try again.');
         }
 
-        emit(QRReady(qrPayloadData, _makeDummySession(file), mode));
+        final session = _sessionFiles ?? [file];
+        emit(QRReady(
+          qrPayloadData,
+          _makeDummySession(file),
+          mode,
+          itemCount: session.length,
+          totalBytes: session.fold<int>(0, (sum, f) => sum + f.size),
+        ));
       } catch (e) {
         debugPrint('WebRTC init error: $e');
         await _closeAnswerChannel();

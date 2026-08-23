@@ -307,7 +307,9 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                           child: Column(
                             children: [
                               Text(
-                                state.session.fileMetadata.name,
+                                state.itemCount > 1
+                                    ? '${state.itemCount} files'
+                                    : state.session.fileMetadata.name,
                                 style: GoogleFonts.inter(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w600,
@@ -316,7 +318,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                'Total size: ${_formatBytes(state.session.fileMetadata.size)}',
+                                'Total size: ${_formatBytes(state.totalBytes > 0 ? state.totalBytes : state.session.fileMetadata.size)}',
                                 style: GoogleFonts.inter(
                                   fontSize: 15,
                                   fontWeight: FontWeight.w700,

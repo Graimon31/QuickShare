@@ -274,6 +274,98 @@ void main() {
         reason: 'session progress must finish at 100%, not per-file');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  testWidgets('cancelling on the sender reaches the receiver as a cancellation',
+      (tester) async {
+    // Pressing Cancel and losing the network look identical on the wire — the
+    // channel simply stops carrying data. Without an explicit message the
+    // receiver waits out its disconnect grace period and then reports a
+    // connection error for something that was a deliberate choice.
+    final destination = Directory(p.join(workspace.path, 'incoming_cancel'))
+      ..createSync();
+    final payload = makePayload(4 * 1024 * 1024, name: 'big.bin');
+
+    final channel = _LoopbackAnswerChannel();
+    final sender = WebRtcTransferTransport();
+    final receiver = WebRtcReceiverTransport();
+    addTearDown(() async {
+      await sender.stopSharing();
+      await channel.close();
+    });
+
+    await sender.initialize();
+    await sender.startSharingServerless(FileMetadata(
+      name: 'big.bin',
+      path: payload.file.path,
+      size: 4 * 1024 * 1024,
+      mimeType: 'application/octet-stream',
+    ));
+
+    final offerSdp = await sender.createLocalOfferSdp();
+    expect(offerSdp, isNotNull);
+
+    final qr = ServerlessQr(
+      seed: SealedEnvelope.newSeed(),
+      offer: ServerlessQr.trimForQr(CompactSdp.fromSdp(offerSdp!)),
+    );
+    final topic = await qr.topic;
+    await channel.subscribe(topic);
+
+    channel.answers.listen((sealed) async {
+      final opened = await SealedEnvelope.open(
+        envelope: sealed,
+        seed: qr.seed,
+        offerFingerprint: qr.offerFingerprint,
+      );
+      await sender.handleDirectAnswer(
+          CompactSdp.fromBytes(opened).toSdp(isOffer: false), 'answer');
+    });
+
+    // Cancel as soon as bytes are actually moving, so this exercises a
+    // mid-transfer stop rather than a teardown before anything started.
+    final started = Completer<void>();
+    final progressSub = receiver.progressStream.listen((e) {
+      if (e.phase == 'transferring' && !started.isCompleted) started.complete();
+    });
+    addTearDown(progressSub.cancel);
+
+    // The error handler is attached here, at creation, rather than after the
+    // cancellation: the failure lands while the test is still awaiting other
+    // things, and a Future that errors with nothing listening is reported as
+    // an unhandled async error regardless of who checks it later.
+    Object? thrown;
+    final receiving = receiver
+        .receiveWithSdpOffer(
+          qr.offer.toSdp(isOffer: true),
+          targetDir: destination.path,
+          deliverAnswer: (answerSdp) async {
+            await channel.publish(
+              topic,
+              await SealedEnvelope.seal(
+                plaintext: ServerlessQr.trimForQr(CompactSdp.fromSdp(answerSdp))
+                    .toBytes(),
+                seed: qr.seed,
+                offerFingerprint: qr.offerFingerprint,
+              ),
+            );
+          },
+        )
+        .then<void>((_) {})
+        .catchError((Object e) => thrown = e);
+
+    await started.future.timeout(const Duration(seconds: 30));
+    final cancelledAt = DateTime.now();
+    await sender.stopSharing();
+    await receiving.timeout(const Duration(seconds: 10));
+
+    // The distinction is the whole point: a named cancellation rather than a
+    // generic failure...
+    expect(thrown, isA<TransferCancelledBySender>());
+
+    // ...and it arrives at once, instead of after the 20-second grace period
+    // a real disconnect is given.
+    expect(DateTime.now().difference(cancelledAt).inSeconds, lessThan(10));
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
   testWidgets('an answer sealed for a different offer is refused',
       (tester) async {
     // A relay carries the whole world's traffic. Anything not sealed under this
