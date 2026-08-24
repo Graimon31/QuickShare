@@ -11,6 +11,7 @@ import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.da
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart'
     show TransferCancelledBySender, WebRtcReceiveProgress, WebRtcReceiverTransport;
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
+import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
@@ -157,6 +158,10 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   double _progressFloor = 0;
   int _transferAttempt = 0;
 
+  /// The direct Wi-Fi link to the sender, when this pairing supports one.
+  final PeerLinkService _peerLink = const PeerLinkService();
+  bool _directLinkOpen = false;
+
   ReceiverBloc({required this.downloadFileUseCase, required this.repository})
       : super(ReceiverInitial()) {
     on<StartScanning>((event, emit) => emit(Scanning()));
@@ -219,8 +224,13 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         final session = await const TransferCache().sessionDirectory();
         if (transferAttempt != _transferAttempt) return;
 
+        // Prefer a direct Wi-Fi link to the sender when one can be had. The
+        // QHTP session is the same either way — only the address changes.
+        final route = await _directRouteOrGiven(payload);
+        if (transferAttempt != _transferAttempt) return;
+
         final result = await repository.receiveQhtpSession(
-          payload,
+          route,
           session.path,
           onProgress: (QhtpProgress qp) {
             if (transferAttempt != _transferAttempt) return;
@@ -232,6 +242,10 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
             }
           },
         );
+
+        // The link has done its job either way; holding the radio open past
+        // the transfer is nobody's benefit.
+        await _closeDirectLink();
 
         if (transferAttempt != _transferAttempt) return;
         result.fold(
@@ -305,10 +319,66 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
 
     on<CancelDownload>((event, emit) {
       _transferAttempt++;
+      unawaited(_closeDirectLink());
       repository.cancelDownload();
       _currentPayload = null;
       emit(ReceiverInitial());
     });
+  }
+
+  /// Closes the direct link, if one was ever opened.
+  ///
+  /// Guarded on having opened one rather than called unconditionally: cancel
+  /// runs on every abandoned scan, and reaching for a platform channel to
+  /// tear down something that was never built is both pointless and, in a
+  /// plain unit test with no binding, an outright failure.
+  Future<void> _closeDirectLink() async {
+    if (!_directLinkOpen) return;
+    _directLinkOpen = false;
+    await _peerLink.stop();
+  }
+
+  /// Swaps the sender's LAN address for a direct Wi-Fi link, if one comes up.
+  ///
+  /// Nothing in the QR code says whether the sender is offering this: both
+  /// ends derive the same name from the session token they already share, so
+  /// an older sender simply is not there to be found and the LAN address is
+  /// used as before.
+  ///
+  /// The returned payload points at localhost, where the native side is
+  /// forwarding to the sender's QHTP port. Everything downstream — the
+  /// client, the manifest, resume, checksums — is unchanged and unaware.
+  Future<QRPayload> _directRouteOrGiven(QRPayload payload) async {
+    if (!PeerLinkService.isSupported) return payload;
+    try {
+      final port = await _peerLink.join(
+        serviceName: PeerLinkService.serviceNameFor(payload.token),
+        timeout: const Duration(seconds: 6),
+      );
+      _directLinkOpen = true;
+      AppLogger.info('Taking the direct Wi-Fi link to the sender',
+          tag: 'PEERLINK');
+      return QRPayload(
+        version: payload.version,
+        ip: '127.0.0.1',
+        port: port,
+        token: payload.token,
+        fileName: payload.fileName,
+        fileSize: payload.fileSize,
+        checksum: payload.checksum,
+        sessionId: payload.sessionId,
+        mode: payload.mode,
+        sdpOffer: payload.sdpOffer,
+        itemCount: payload.itemCount,
+      );
+    } on PeerLinkException catch (e) {
+      // Expected whenever the sender is on another platform, is an older
+      // build, or the two are already on one network: the LAN address in the
+      // QR is then the right answer anyway.
+      AppLogger.info('No direct Wi-Fi link, using the address in the QR: $e',
+          tag: 'PEERLINK');
+      return payload;
+    }
   }
 
   /// Serverless path: the QR carries a compact offer and a seed. We answer it,

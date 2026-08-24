@@ -46,6 +46,19 @@ class PeerLinkService {
   static bool get isSupported =>
       !kIsWeb && (Platform.isIOS || Platform.isMacOS);
 
+  /// The name this session advertises under, derived from its own token.
+  ///
+  /// Nothing new goes in the QR code: both ends already hold the session
+  /// token, so both can work out the same name without being told it. A
+  /// prefix of it is enough to be unique among the handful of transfers
+  /// within radio range, and short enough to stay well inside the 63 bytes a
+  /// Bonjour instance name allows.
+  static String serviceNameFor(String sessionToken) {
+    final cleaned = sessionToken.replaceAll(RegExp('[^A-Za-z0-9]'), '');
+    final stem = cleaned.length > 16 ? cleaned.substring(0, 16) : cleaned;
+    return 'dd-$stem';
+  }
+
   /// Progress and failures from the native side, for logging and the UI.
   Stream<Map<Object?, Object?>> get events => _events
       .receiveBroadcastStream()

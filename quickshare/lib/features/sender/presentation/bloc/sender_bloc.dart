@@ -17,6 +17,7 @@ import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:archive/archive_io.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
+import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
@@ -327,13 +328,20 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   StreamSubscription<RelayLimitExceeded>? _relayBlockedSubscription;
 
   final LocalHotspotService hotspot;
+
+  /// Offers the running QHTP session over direct Wi-Fi as well as the LAN.
+  final PeerLinkService peerLink;
   List<String>? _currentPaths;
 
   AnswerChannel? _answerChannel;
   StreamSubscription<Uint8List>? _answerSubscription;
 
-  SenderBloc({required this.repository, LocalHotspotService? hotspotService})
-      : hotspot = hotspotService ?? LocalHotspotService(),
+  SenderBloc({
+    required this.repository,
+    LocalHotspotService? hotspotService,
+    PeerLinkService? peerLinkService,
+  })  : hotspot = hotspotService ?? LocalHotspotService(),
+        peerLink = peerLinkService ?? const PeerLinkService(),
         super(SenderInitial()) {
     on<PickFile>(_onPickFile);
     on<PickMedia>(_onPickMedia);
@@ -726,6 +734,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       (failure) async => emit(SenderError(failure.message)),
       (session) async {
         _currentFile = session.fileMetadata;
+        await _offerOverDirectWiFi(session);
         final qrResult = await repository.generateQRPayload(session);
         qrResult.fold(
           (failure) => emit(SenderError(failure.message)),
@@ -735,6 +744,29 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         );
       },
     );
+  }
+
+  /// Also serves this session over a direct Wi-Fi link, where one is possible.
+  ///
+  /// Purely additive: the QHTP server is already listening and the QR already
+  /// names the LAN address, so a receiver that cannot use the direct link is
+  /// unaffected. What it buys is the pairing nothing else covers — an iPhone
+  /// and a Mac with no network between them, which until now had only
+  /// Bluetooth at 13 KB/s.
+  ///
+  /// Best effort by design. If the link will not come up, the transfer still
+  /// works over whatever network there is, and saying so in the log is the
+  /// right amount of noise for something nobody asked for.
+  Future<void> _offerOverDirectWiFi(TransferSession session) async {
+    if (!PeerLinkService.isSupported) return;
+    try {
+      await peerLink.host(
+        serviceName: PeerLinkService.serviceNameFor(session.authToken),
+        localPort: session.serverPort,
+      );
+    } on PeerLinkException catch (e) {
+      AppLogger.info('No direct Wi-Fi link this time: $e', tag: 'PEERLINK');
+    }
   }
 
   Future<void> _cleanupTempZipIfNeeded(FileMetadata? metadata) async {
@@ -829,6 +861,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await hotspot.stopHosting();
     await _cleanupTempZipIfNeeded(_currentFile);
     await repository.stopServer();
+    await peerLink.stop();
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -875,6 +908,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   Future<void> _onTransferCompleted(
       TransferCompleted event, Emitter<SenderState> emit) async {
     await repository.stopServer();
+    await peerLink.stop();
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -894,6 +928,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       TransferFailed event, Emitter<SenderState> emit) async {
     await _cleanupTempZipIfNeeded(_currentFile);
     await repository.stopServer();
+    await peerLink.stop();
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -914,6 +949,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await _activeBluetoothTransport?.stopSharing();
     _activeBluetoothTransport = null;
     await repository.stopServer();
+    await peerLink.stop();
     if (repository is SenderRepositoryImpl) {
       (repository as SenderRepositoryImpl).dispose();
     }
