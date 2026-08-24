@@ -149,11 +149,9 @@ class _SettingsPageState extends State<SettingsPage> {
                 ],
               ),
             ),
-            if (_transfers.isNotEmpty) ...[
-              const SizedBox(height: 24),
-              _sectionTitle('Last transfers'),
-              _transferCard(),
-            ],
+            const SizedBox(height: 24),
+            _sectionTitle('Last transfers'),
+            _transferCard(),
           ],
         ),
       ),
@@ -175,6 +173,22 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         child: Column(
           children: [
+            // Shown even when there is nothing yet. Hiding the section made an
+            // empty history indistinguishable from a build without the
+            // feature, which is exactly the question somebody asked while
+            // looking at this screen.
+            if (_transfers.isEmpty)
+              const ListTile(
+                leading: Icon(Icons.history_rounded,
+                    color: AppColors.textSecondary),
+                title: Text('No transfers yet',
+                    style: TextStyle(color: AppColors.textPrimary)),
+                subtitle: Text(
+                  'A transfer appears here once it finishes.',
+                  style:
+                      TextStyle(color: AppColors.textSecondary, fontSize: 12),
+                ),
+              ),
             for (final report in _transfers) ...[
               ListTile(
                 leading: Icon(
