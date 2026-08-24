@@ -1,6 +1,12 @@
 import Foundation
 import Network
 
+#if os(macOS)
+import CoreWLAN
+#else
+import UIKit
+#endif
+
 #if canImport(FlutterMacOS)
 import FlutterMacOS
 #else
@@ -56,6 +62,10 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
   private var excludedInterfaces: [NWInterface] = []
   private let pathMonitor = NWPathMonitor()
 
+  /// Watches specifically for a Wi-Fi path, so the app can say why a transfer
+  /// is about to be slow instead of just being slow.
+  private let wifiMonitor = NWPathMonitor(requiredInterfaceType: .wifi)
+
   /// Held open only long enough to let the direct path appear before settling
   /// for whatever else can reach the peer.
   private var graceTimer: DispatchWorkItem?
@@ -71,6 +81,7 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
       self.excludedInterfaces = path.availableInterfaces.filter(Self.isTunnel)
     }
     pathMonitor.start(queue: queue)
+    wifiMonitor.start(queue: queue)
   }
 
   public static func register(with registrar: FlutterPluginRegistrar) {
@@ -133,9 +144,64 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
       stop()
       result(nil)
 
+    case "wifiReady":
+      // Not "is the radio on" — that has no public answer on iOS. What can be
+      // asked is whether a Wi-Fi path exists at all, which is the same
+      // question from the transfer's point of view: no Wi-Fi path, no direct
+      // link, and the file falls back to Bluetooth at a fraction of the speed.
+      result(wifiPathAvailable)
+
+    case "enableWifi":
+      result(turnWifiOn())
+
+    case "openWifiSettings":
+      result(openSettings())
+
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  // MARK: Wi-Fi
+
+  /// Whether the system currently has a usable Wi-Fi path.
+  private var wifiPathAvailable: Bool {
+    wifiMonitor.currentPath.status == .satisfied
+  }
+
+  /// Turns the radio on where the platform allows it.
+  ///
+  /// macOS does, through CoreWLAN — and doing it silently is right there,
+  /// since nothing is interrupted and no network is joined. iOS does not, at
+  /// any price: there is no public API, and the private URL scheme that used
+  /// to work is grounds for rejection. All that is left there is to take the
+  /// user to Settings and say plainly why.
+  private func turnWifiOn() -> Bool {
+    #if os(macOS)
+    guard let interface = CWWiFiClient.shared().interface() else { return false }
+    do {
+      try interface.setPower(true)
+      return true
+    } catch {
+      // A sandboxed app may be refused. Not worth an error — the caller falls
+      // back to asking the user, which was always the iOS path anyway.
+      return false
+    }
+    #else
+    return false
+    #endif
+  }
+
+  private func openSettings() -> Bool {
+    #if os(macOS)
+    return false
+    #else
+    guard let url = URL(string: UIApplication.openSettingsURLString) else {
+      return false
+    }
+    DispatchQueue.main.async { UIApplication.shared.open(url) }
+    return true
+    #endif
   }
 
   // MARK: Host

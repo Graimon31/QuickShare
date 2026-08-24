@@ -114,6 +114,52 @@ class PeerLinkService {
     }
   }
 
+  /// Whether a Wi-Fi path exists for the direct link to run over.
+  ///
+  /// Deliberately not "is the radio switched on": iOS has no public answer to
+  /// that, and it is not quite the question anyway. What matters to a transfer
+  /// is whether Wi-Fi can carry it — and if it cannot, the file goes over
+  /// Bluetooth at a fraction of the speed, which is worth saying out loud
+  /// before it happens rather than leaving as a mystery afterwards.
+  Future<bool> get wifiReady async {
+    if (!isSupported) return false;
+    try {
+      return await _channel.invokeMethod<bool>('wifiReady') ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  /// Turns the Wi-Fi radio on, where the platform allows an app to.
+  ///
+  /// True only if it actually happened. macOS allows it and nothing is
+  /// disturbed by doing so; iOS does not, at any price, so there the answer is
+  /// always false and the caller should offer [openWifiSettings] instead.
+  Future<bool> enableWifi() async {
+    if (!isSupported) return false;
+    try {
+      return await _channel.invokeMethod<bool>('enableWifi') ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  /// Opens the system settings, for the platforms that will not do it for us.
+  Future<bool> openWifiSettings() async {
+    if (!isSupported) return false;
+    try {
+      return await _channel.invokeMethod<bool>('openWifiSettings') ?? false;
+    } on PlatformException {
+      return false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   Future<void> stop() async {
     if (!isSupported) return;
     try {

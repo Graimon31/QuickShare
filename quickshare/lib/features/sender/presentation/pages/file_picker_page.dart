@@ -12,6 +12,7 @@ import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/core/media/media_library.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/pages/media_picker_page.dart';
+import 'package:quickshare/features/sender/presentation/widgets/wifi_speed_prompt.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class FilePickerPage extends StatefulWidget {
@@ -84,6 +85,19 @@ class _FilePickerPageState extends State<FilePickerPage> {
             mode: _selectedMode,
           ));
     }
+  }
+
+  /// Picking Bluetooth is the moment to ask about Wi-Fi, not the moment the
+  /// files are already chosen.
+  ///
+  /// The direct link is what makes this mode fast, and it needs the Wi-Fi
+  /// radio awake — not a network, just the radio. Asking here means the answer
+  /// is settled before anything is selected, and a "no" simply leaves the
+  /// transfer where it has always been: on Bluetooth, slowly.
+  Future<void> _selectMode(TransportType type) async {
+    setState(() => _selectedMode = type);
+    if (type != TransportType.bluetooth) return;
+    await const WifiSpeedPrompt().ask(context);
   }
 
   Future<void> _pickFolder() async {
@@ -361,7 +375,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
         child: InkWell(
-          onTap: () => setState(() => _selectedMode = type),
+          onTap: () => _selectMode(type),
           borderRadius: BorderRadius.circular(16),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
