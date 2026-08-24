@@ -303,6 +303,14 @@ Future<void> _addOne(
 class SenderBloc extends Bloc<SenderEvent, SenderState> {
   final SenderRepository repository;
   StreamSubscription<double>? _progressSubscription;
+
+  /// Progress of the direct-Wi-Fi route offered beside a Bluetooth session.
+  ///
+  /// Its own subscription because the Bluetooth branch has already claimed
+  /// [_progressSubscription] for the radio. Both are live at once by design:
+  /// only one of them will ever carry bytes, and which one is not known until
+  /// the receiver decides.
+  StreamSubscription<double>? _fastPathSubscription;
   StreamSubscription<TransferStatus>? _statusSubscription;
 
   FileMetadata? _currentFile;
@@ -793,6 +801,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
             serviceName: PeerLinkService.serviceNameFor(sessionToken),
             localPort: session.serverPort,
           );
+          // Without this the sender screen sits on its QR code while the
+          // file goes out over the fast route and finishes — no progress, no
+          // completion, nothing to say it worked. Functionally fine and
+          // indistinguishable from a hung app, which is not a distinction
+          // worth asking anyone to make.
+          _fastPathSubscription?.cancel();
+          _fastPathSubscription =
+              repository.transferProgress.listen((progress) {
+            add(TransferProgressEvent(progress));
+            if (progress >= 1.0) add(TransferCompleted());
+          });
+
           AppLogger.info(
               'Bluetooth is advertising; the file is also on the direct '
               'Wi-Fi link at :${session.serverPort}',
@@ -920,6 +940,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await _cleanupTempZipIfNeeded(_currentFile);
     await repository.stopServer();
     await peerLink.stop();
+    await _fastPathSubscription?.cancel();
+    _fastPathSubscription = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -967,6 +989,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       TransferCompleted event, Emitter<SenderState> emit) async {
     await repository.stopServer();
     await peerLink.stop();
+    await _fastPathSubscription?.cancel();
+    _fastPathSubscription = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -987,6 +1011,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await _cleanupTempZipIfNeeded(_currentFile);
     await repository.stopServer();
     await peerLink.stop();
+    await _fastPathSubscription?.cancel();
+    _fastPathSubscription = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -1008,6 +1034,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _activeBluetoothTransport = null;
     await repository.stopServer();
     await peerLink.stop();
+    await _fastPathSubscription?.cancel();
+    _fastPathSubscription = null;
     if (repository is SenderRepositoryImpl) {
       (repository as SenderRepositoryImpl).dispose();
     }

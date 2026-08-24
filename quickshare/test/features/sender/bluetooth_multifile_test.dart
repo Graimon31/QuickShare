@@ -20,11 +20,25 @@ import 'package:path/path.dart' as p;
 
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
+import 'package:quickshare/core/network/peer_link_service.dart';
+import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
+import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 
 class _MockSenderRepository extends Mock implements SenderRepository {}
+
+/// Stands in for the native side, which does not exist under `flutter test`.
+class _FakePeerLink extends PeerLinkService {
+  const _FakePeerLink();
+
+  @override
+  Future<void> host({required String serviceName, required int localPort}) async {}
+
+  @override
+  Future<void> stop() async {}
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -81,6 +95,47 @@ void main() {
     final call = nativeCalls.firstWhere((c) => c.method == 'startAdvertising');
     return (call.arguments as Map)['filePath'] as String;
   }
+
+  test('progress on the fast path moves the sender off its QR code', () async {
+    // The file went out over the direct link, finished, and the sender screen
+    // sat on its QR the whole time — no progress, no completion, nothing to
+    // say it had worked. Reported as "the QR never changed", and it is
+    // indistinguishable from a hung app.
+    final progress = StreamController<double>.broadcast();
+    addTearDown(progress.close);
+    when(() => repository.transferProgress)
+        .thenAnswer((_) => progress.stream);
+    when(() => repository.startQhtpTransfer(any(),
+            authToken: any(named: 'authToken')))
+        .thenAnswer((_) async => Right(TransferSession(
+              id: 'fast-path',
+              fileMetadata: const FileMetadata(
+                name: 'holiday.mov',
+                path: '/tmp/holiday.mov',
+                size: 1000,
+                mimeType: 'video/quicktime',
+              ),
+              serverPort: 8000,
+              authToken: 'tok',
+              localIp: '127.0.0.1',
+              startedAt: DateTime.now(),
+            )));
+
+    final bloc = SenderBloc(
+      repository: repository,
+      peerLinkService: const _FakePeerLink(),
+    );
+    addTearDown(bloc.close);
+    final advertising = bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
+    bloc.add(StartQhtpSend([write('holiday.mov').path],
+        mode: TransportType.bluetooth));
+    await advertising.timeout(const Duration(seconds: 20));
+
+    final moved = bloc.stream.firstWhere((s) => s is Transferring);
+    progress.add(0.5);
+    await expectLater(moved.timeout(const Duration(seconds: 10)),
+        completes);
+  });
 
   test('the fast path accepts the token the receiver actually has', () async {
     // The receiver on the far side of a Bluetooth session holds one token:
