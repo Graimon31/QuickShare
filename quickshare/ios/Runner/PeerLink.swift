@@ -52,6 +52,27 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
   private var joinResult: FlutterResult?
   private var joinTimeout: DispatchWorkItem?
 
+  /// Interfaces this link must never travel over, discovered at startup.
+  private var excludedInterfaces: [NWInterface] = []
+  private let pathMonitor = NWPathMonitor()
+
+  /// Held open only long enough to let the direct path appear before settling
+  /// for whatever else can reach the peer.
+  private var graceTimer: DispatchWorkItem?
+  private var fallbackCandidate: (endpoint: NWEndpoint, interfaces: [NWInterface])?
+
+  override init() {
+    super.init()
+    // Which interfaces exist is not something to guess at connect time: a VPN
+    // comes and goes, and its tunnel is exactly the path that must not be
+    // taken. Watch continuously and keep the exclusion list current.
+    pathMonitor.pathUpdateHandler = { [weak self] path in
+      guard let self else { return }
+      self.excludedInterfaces = path.availableInterfaces.filter(Self.isTunnel)
+    }
+    pathMonitor.start(queue: queue)
+  }
+
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = PeerLinkPlugin()
     #if canImport(FlutterMacOS)
@@ -124,7 +145,7 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
     forwardToPort = localPort
 
     do {
-      let listener = try NWListener(using: Self.peerParameters())
+      let listener = try NWListener(using: self.peerParameters())
       listener.service = NWListener.Service(name: serviceName, type: Self.serviceType)
 
       listener.newConnectionHandler = { [weak self] incoming in
@@ -172,21 +193,32 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
 
     let browser = NWBrowser(
       for: .bonjour(type: Self.serviceType, domain: nil),
-      using: Self.peerParameters()
+      using: self.peerParameters()
     )
     browser.browseResultsChangedHandler = { [weak self] results, _ in
       guard let self, self.peerEndpoint == nil else { return }
       for found in results {
         guard case let .service(name, _, _, _) = found.endpoint, name == serviceName else { continue }
-        self.peerEndpoint = found.endpoint
-        self.peerInterface = found.interfaces.first { Self.isPeerToPeer($0) }
-        self.emit([
-          "type": "peerFound",
-          "service": serviceName,
-          "interface": self.peerInterface?.name ?? "none",
-          "interfaces": found.interfaces.map(\.name).joined(separator: ","),
-        ])
-        self.openLocalDoor()
+
+        let direct = found.interfaces.first(where: Self.isPeerToPeer)
+        if direct == nil {
+          // Seen, but not yet on the direct path. Taking it now is how a
+          // transfer between two devices in one room ends up going out to a
+          // VPN server, or down a USB cable, at a fraction of the speed the
+          // radio would give. Bonjour answers over the direct link a moment
+          // later than over an established route, so hold the first sighting
+          // aside and give that moment a chance.
+          if self.fallbackCandidate == nil {
+            self.fallbackCandidate = (found.endpoint, found.interfaces)
+            self.startGracePeriod(serviceName: serviceName)
+          }
+          continue
+        }
+
+        self.settle(on: found.endpoint,
+                    interface: direct,
+                    seenOn: found.interfaces,
+                    serviceName: serviceName)
         return
       }
     }
@@ -199,6 +231,44 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
     self.browser = browser
   }
 
+  /// Waits briefly for the direct path before accepting a lesser one.
+  private func startGracePeriod(serviceName: String) {
+    graceTimer?.cancel()
+    let timer = DispatchWorkItem { [weak self] in
+      guard let self, self.peerEndpoint == nil,
+            let candidate = self.fallbackCandidate else { return }
+      // No direct path appeared. Connect anyway rather than failing: a slower
+      // link beats telling the user the other device is not there. The VPN is
+      // still excluded outright below, so this is a route around it, never
+      // through it.
+      self.settle(on: candidate.endpoint,
+                  interface: nil,
+                  seenOn: candidate.interfaces,
+                  serviceName: serviceName)
+    }
+    graceTimer = timer
+    queue.asyncAfter(deadline: .now() + .milliseconds(2500), execute: timer)
+  }
+
+  private func settle(on endpoint: NWEndpoint,
+                      interface: NWInterface?,
+                      seenOn interfaces: [NWInterface],
+                      serviceName: String) {
+    graceTimer?.cancel()
+    graceTimer = nil
+    peerEndpoint = endpoint
+    peerInterface = interface
+    emit([
+      "type": "peerFound",
+      "service": serviceName,
+      "direct": interface != nil,
+      "interface": interface?.name ?? "none",
+      "seenOn": interfaces.map(\.name).joined(separator: ","),
+      "excluded": excludedInterfaces.map(\.name).joined(separator: ","),
+    ])
+    openLocalDoor()
+  }
+
   /// Opens the localhost port Dart will point the QHTP client at.
   private func openLocalDoor() {
     do {
@@ -208,7 +278,7 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
         guard let self, let endpoint = self.peerEndpoint else { return }
         let peer = NWConnection(
           to: endpoint,
-          using: Self.peerParameters(pinnedTo: self.peerInterface)
+          using: self.peerParameters(pinnedTo: self.peerInterface)
         )
         self.bridge(local, peer)
       }
@@ -284,6 +354,9 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
   }
 
   private func stopJoining() {
+    graceTimer?.cancel()
+    graceTimer = nil
+    fallbackCandidate = nil
     localListener?.cancel()
     localListener = nil
     browser?.cancel()
@@ -307,6 +380,16 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
     interface.name.hasPrefix("awdl") || interface.name.hasPrefix("llw")
   }
 
+  /// A VPN or other tunnel. Never a valid path for a link that exists
+  /// precisely because the two devices can reach each other without one.
+  private static func isTunnel(_ interface: NWInterface) -> Bool {
+    interface.type == .other &&
+      (interface.name.hasPrefix("utun") ||
+       interface.name.hasPrefix("ipsec") ||
+       interface.name.hasPrefix("ppp") ||
+       interface.name.hasPrefix("tun"))
+  }
+
   /// Parameters that let the system bring up peer-to-peer Wi-Fi.
   ///
   /// `includePeerToPeer` only *permits* the peer-to-peer path; it does not
@@ -319,11 +402,19 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
   /// So when the peer was actually found on an AWDL interface, the connection
   /// is pinned to it. Nothing is lost by being explicit — that interface
   /// exists precisely because the two devices can talk directly.
-  private static func peerParameters(pinnedTo interface: NWInterface? = nil) -> NWParameters {
+  private func peerParameters(pinnedTo interface: NWInterface? = nil) -> NWParameters {
     let parameters = NWParameters.tcp
     parameters.includePeerToPeer = true
     if let interface {
       parameters.requiredInterface = interface
+    }
+    // Belt as well as braces. Pinning says where to go; this says where not
+    // to, and it holds even when no direct interface was offered to pin to.
+    // Without it a link between two devices in the same room can be routed
+    // into a VPN tunnel and out to a server somewhere, which is both absurdly
+    // slow and the opposite of what "direct" is supposed to mean.
+    if !excludedInterfaces.isEmpty {
+      parameters.prohibitedInterfaces = excludedInterfaces
     }
     if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
       // Bulk transfer in one direction: waiting to coalesce small writes only
