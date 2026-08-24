@@ -1,8 +1,10 @@
 import 'dart:io';
 
+import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// Where an incoming transfer lands before the user decides to keep it.
@@ -36,6 +38,54 @@ class TransferCache {
     final dir = Directory(p.join(root.path, _folderName));
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
+  }
+
+  /// A directory of its own for one incoming session.
+  ///
+  /// The transports that deliver a *set* of things — a QHTP folder, a
+  /// multi-file Bluetooth batch — need to know afterwards which entries were
+  /// theirs, and the only honest way to answer that is to have given them
+  /// somewhere nobody else was writing. Listing the shared cache root instead
+  /// would sweep up another transfer's files that are still waiting for their
+  /// own decision, and then offer to save or delete them.
+  Future<Directory> sessionDirectory() async {
+    final root = await directory();
+    final stamp = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+    final dir = Directory(p.join(root.path, 's_$stamp'));
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
+  }
+
+  /// Whatever a session left behind in its own directory, as items to decide
+  /// about.
+  ///
+  /// Read from the filesystem rather than from a transport's own bookkeeping,
+  /// because the transports disagree about what they can report: QHTP
+  /// delivers whatever the sender picked — a flat set of files, or a folder
+  /// with a thousand things under it — and the native Bluetooth channel hands
+  /// back one path. The directory listing is the one description all of them
+  /// agree on.
+  ///
+  /// Top level only, sorted by name: a folder is one item to decide about,
+  /// not a thousand.
+  static List<ReceivedItem> itemsIn(Directory session) {
+    try {
+      final entries = session.listSync(followLinks: false)
+        ..sort((a, b) => p
+            .basename(a.path)
+            .toLowerCase()
+            .compareTo(p.basename(b.path).toLowerCase()));
+      return [
+        for (final entity in entries)
+          ReceivedItem.fromCacheEntity(
+            entity,
+            lookupMimeType(entity.path) ?? 'application/octet-stream',
+          ),
+      ];
+    } on FileSystemException catch (e) {
+      AppLogger.warning('Could not list a received session: $e', tag: 'CACHE');
+      return const [];
+    }
   }
 
   /// Total bytes currently held, for the settings screen.
@@ -99,8 +149,16 @@ class TransferCache {
             tag: 'CACHE');
         continue;
       }
-      final file = File(path);
       try {
+        // A QHTP session can deliver a folder, so what is being discarded is
+        // not always a single file.
+        final directory = Directory(path);
+        if (await directory.exists()) {
+          freed += await _measure(directory);
+          await directory.delete(recursive: true);
+          continue;
+        }
+        final file = File(path);
         if (await file.exists()) {
           freed += await file.length();
           await file.delete();
@@ -109,11 +167,47 @@ class TransferCache {
         AppLogger.warning('Could not discard $path: $e', tag: 'CACHE');
       }
     }
+    await _pruneEmptySessions(dir);
     if (freed > 0) {
-      AppLogger.info('Discarded ${paths.length} unsaved item(s), $freed bytes',
+      AppLogger.info('Discarded ${paths.length} item(s), $freed bytes',
           tag: 'CACHE');
     }
     return freed;
+  }
+
+  /// Removes session directories that have nothing left in them.
+  ///
+  /// They cost no space to speak of, but a cache root filling up with empty
+  /// folders is the kind of thing a user finds in a storage breakdown and
+  /// reasonably reads as a leak.
+  static Future<void> _pruneEmptySessions(Directory root) async {
+    try {
+      await for (final entity in root.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        if (!p.basename(entity.path).startsWith('s_')) continue;
+        if (await entity.list(followLinks: false).isEmpty) {
+          await entity.delete();
+        }
+      }
+    } on FileSystemException {
+      // Housekeeping; never worth failing a discard over.
+    }
+  }
+
+  /// Bytes held under [directory], following the tree.
+  static Future<int> _measure(Directory directory) async {
+    var total = 0;
+    await for (final entity
+        in directory.list(recursive: true, followLinks: false)) {
+      if (entity is File) {
+        try {
+          total += await entity.length();
+        } on FileSystemException {
+          // Vanished between listing and measuring; it occupies nothing.
+        }
+      }
+    }
+    return total;
   }
 
   /// Human-readable size for the settings screen.

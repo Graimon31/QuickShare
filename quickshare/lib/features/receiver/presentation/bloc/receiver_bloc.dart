@@ -1,9 +1,8 @@
 import 'dart:async';
-import 'dart:io' show File, Platform;
+import 'dart:io' show File;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:mime/mime.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/receiver/domain/usecases/download_file_usecase.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
@@ -62,10 +61,16 @@ class DownloadCompleted extends ReceiverEvent {
   final String filePath;
   final String? fileName;
 
-  const DownloadCompleted(this.filePath, {this.fileName});
+  /// What arrived, still in the transfer cache, for the completion screen to
+  /// place. Empty only for a transport that has nothing to hand over.
+  final List<ReceivedItem> items;
+
+  const DownloadCompleted(this.filePath,
+      {this.fileName, this.items = const []});
 
   @override
-  List<Object> get props => [filePath, if (fileName != null) fileName!];
+  List<Object> get props =>
+      [filePath, if (fileName != null) fileName!, items];
 }
 
 class DownloadFailed extends ReceiverEvent {
@@ -112,9 +117,10 @@ class DownloadComplete extends ReceiverState {
 
   /// Everything that arrived, still sitting in the transfer cache.
   ///
-  /// Empty for the transports that have not been moved onto the cache yet
-  /// (QHTP, Bluetooth), which still write straight to their destination; the
-  /// completion screen falls back to [filePath] in that case.
+  /// Every transport fills this now — Wi-Fi, Bluetooth and the serverless
+  /// WebRTC path all stage into the cache and let the completion screen place
+  /// what they delivered. Empty only if the session left nothing behind, in
+  /// which case the screen falls back to [filePath].
   final List<ReceivedItem> items;
 
   const DownloadComplete(this.filePath, this.fileName,
@@ -203,19 +209,19 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       }
 
       if (payload.isQhtp) {
-        // iOS has no writable ~/Downloads directory inside the sandbox. The
-        // old fallback returned that path and QHTP then failed while trying
-        // to create it (Operation not permitted). Documents is writable and
-        // is also the directory used by the repository's final save step.
-        final targetDir = Platform.isIOS
-            ? (await getApplicationDocumentsDirectory()).path
-            : (await getDownloadsDirectory())?.path ??
-                (await getTemporaryDirectory()).path;
+        // Wi-Fi lands in the transfer cache like every other transport, in a
+        // directory of its own so its entries can be told from another
+        // session's afterwards. It used to write straight into Documents on
+        // iOS and Downloads elsewhere, which meant a photo received over the
+        // local network never reached the photo library and a document was
+        // never asked about — the placement rule simply did not run for this
+        // path.
+        final session = await const TransferCache().sessionDirectory();
         if (transferAttempt != _transferAttempt) return;
 
         final result = await repository.receiveQhtpSession(
           payload,
-          targetDir,
+          session.path,
           onProgress: (QhtpProgress qp) {
             if (transferAttempt != _transferAttempt) return;
             if (qp.phase == 'verifying') {
@@ -233,6 +239,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           (result) => add(DownloadCompleted(
             result.preferredResultPath,
             fileName: result.displayName,
+            items: TransferCache.itemsIn(session),
           )),
         );
         return;
@@ -253,7 +260,15 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       if (transferAttempt != _transferAttempt) return;
       result.fold(
         (failure) => add(DownloadFailed(failure.message)),
-        (path) => add(DownloadCompleted(path)),
+        (path) => add(DownloadCompleted(
+          path,
+          items: [
+            ReceivedItem.fromCacheFile(
+              File(path),
+              lookupMimeType(path) ?? 'application/octet-stream',
+            ),
+          ],
+        )),
       );
     });
 
@@ -281,7 +296,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       if (payload == null) return;
       final name = event.fileName ??
           (payload.isQhtp ? 'Received files' : payload.fileName);
-      emit(DownloadComplete(event.filePath, name));
+      emit(DownloadComplete(event.filePath, name, items: event.items));
     });
 
     on<DownloadFailed>((event, emit) {
@@ -325,7 +340,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       // Everything lands in the transfer cache first, on every platform.
       // Where it goes afterwards is the completion screen's decision, and on
       // a phone that decision belongs to the user.
-      final cacheDir = await const TransferCache().directory();
+      final cacheDir = await const TransferCache().sessionDirectory();
 
       final savedPath = await transport.receiveWithSdpOffer(
         qr.offer.toSdp(isOffer: true),

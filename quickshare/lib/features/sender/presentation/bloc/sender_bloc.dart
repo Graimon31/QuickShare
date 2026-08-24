@@ -550,10 +550,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       // carries a manifest now. Zipping is still the only way to preserve a
       // *directory* tree, and it would also defeat saving photos into the
       // recipient's gallery, so it is reserved for the case that needs it.
+      //
+      // Bluetooth is excluded because its native channel sends exactly one
+      // file and has no manifest: it took `files.first` and the rest of the
+      // selection was dropped without a word. Bundling below is not as good
+      // as a manifest — the recipient gets a .zip rather than photos in their
+      // gallery — but it does send what the user picked.
       final allPlainFiles =
           event.paths.every((path) => FileSystemEntity.isFileSync(path));
 
-      if (allPlainFiles && event.paths.length > 1) {
+      if (mode == TransportType.internet &&
+          allPlainFiles &&
+          event.paths.length > 1) {
         final files = <FileMetadata>[];
         for (final path in event.paths) {
           files.add(FileMetadata(
@@ -589,7 +597,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           mimeType: lookupMimeType(filePath) ?? 'application/octet-stream',
           size: size,
         );
-        _sessionFiles = [targetMetadata];
       } else {
         emit(ServerStarting());
         String? zipPath;
@@ -637,6 +644,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       }
 
       _currentFile = targetMetadata;
+      // Both branches above end with exactly one thing to send, and this has
+      // to be said for both: leaving the previous send's list in place made
+      // the next transfer offer a manifest of files it was not sending.
+      _sessionFiles = [targetMetadata];
       await _startSendingInternal(targetMetadata, mode, emit);
       return;
     }

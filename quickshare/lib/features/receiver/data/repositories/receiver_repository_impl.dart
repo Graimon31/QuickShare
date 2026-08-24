@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
+import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
@@ -15,8 +16,6 @@ import 'package:quickshare/features/receiver/domain/entities/qhtp_session_previe
 import 'package:quickshare/features/receiver/data/client/http_file_downloader.dart';
 import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
-import 'package:quickshare/core/di/service_locator.dart';
-import 'package:quickshare/core/permissions/permission_service.dart';
 
 class ReceiverRepositoryImpl implements ReceiverRepository {
   final HttpFileDownloader downloader;
@@ -221,13 +220,14 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
   Future<Either<Failure, String>> saveToFinalLocation(
       String tempPath, String fileName) async {
     try {
-      if (Platform.isAndroid) {
-        await sl<PermissionService>().requestStorage();
-      }
-      final downloadDir = await getDownloadsDirectory();
-      final finalDir = Platform.isIOS
-          ? (await getApplicationDocumentsDirectory()).path
-          : downloadDir?.path ?? (await getTemporaryDirectory()).path;
+      // The transfer cache, not shared storage. Where the file ends up is the
+      // completion screen's decision — gallery, Downloads, or somewhere the
+      // user picks — and it cannot make that decision about a file this
+      // method has already written into Documents behind its back.
+      //
+      // No storage permission is requested here for the same reason: nothing
+      // outside the app's own cache is being written yet.
+      final finalDir = (await const TransferCache().sessionDirectory()).path;
 
       final safeName = sanitizeFileName(fileName);
       String destPath = p.join(finalDir, safeName);

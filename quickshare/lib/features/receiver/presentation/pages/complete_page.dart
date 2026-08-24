@@ -22,9 +22,8 @@ class CompletePage extends StatefulWidget {
 
   /// Everything that arrived, still in the transfer cache.
   ///
-  /// Empty for the transports not yet moved onto the cache (QHTP, Bluetooth),
-  /// which write straight to their destination; the screen then just reports
-  /// [filePath] as before.
+  /// Empty only when a session left nothing behind; the screen then just
+  /// reports [filePath].
   final List<ReceivedItem> items;
 
   final SaveCoordinator? coordinator;
@@ -117,7 +116,7 @@ class _CompletePageState extends State<CompletePage> {
     if (_leaving) return;
     _leaving = true;
     if (_outcomes.isNotEmpty) {
-      await _coordinator.discardUnsaved(_outcomes);
+      await _coordinator.discardSession(_outcomes);
     }
     if (mounted) context.go(route);
   }

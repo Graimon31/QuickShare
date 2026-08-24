@@ -50,6 +50,9 @@ class GalleryFormats {
   }
 
   bool accepts(ReceivedItem item) {
+    // No photo library takes a folder, whatever is inside it.
+    if (item.isDirectory) return false;
+
     final extensions = _extensions;
     if (extensions.isEmpty) return false;
 

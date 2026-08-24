@@ -149,30 +149,49 @@ void main() {
     });
   });
 
-  group('discardUnsaved', () {
-    test('removes what was never saved and keeps what was', () async {
+  group('discardSession', () {
+    test('clears the staging area, saved and abandoned alike', () async {
       final saved = (await cached('photo.jpg', 'image/jpeg'))
           .copyWith(savedPath: '/somewhere/photo.jpg');
       final abandoned = await cached('contract.pdf', 'application/pdf');
 
-      final freed = await coordinator(isDesktop: false).discardUnsaved([
+      final freed = await coordinator(isDesktop: false).discardSession([
         SaveOutcome(item: saved),
         SaveOutcome(item: abandoned, awaitingDecision: true),
       ]);
 
       expect(freed, greaterThan(0));
-      expect(File(abandoned.cachePath).existsSync(), isFalse);
-      expect(File(saved.cachePath).existsSync(), isTrue,
-          reason: 'a saved item is finished with, not garbage');
+      expect(File(abandoned.cachePath).existsSync(), isFalse,
+          reason: 'declined, so nobody wants it');
+      expect(File(saved.cachePath).existsSync(), isFalse,
+          reason: 'the user has this file somewhere permanent already; a '
+              'second copy in the cache is what makes the app grow');
     });
 
-    test('a session where everything was saved frees nothing', () async {
-      final saved = (await cached('a.jpg', 'image/jpeg'))
-          .copyWith(savedPath: '/somewhere/a.jpg');
+    test('a session with nothing in it frees nothing', () async {
       expect(
-        await coordinator(isDesktop: true).discardUnsaved([SaveOutcome(item: saved)]),
+        await coordinator(isDesktop: true).discardSession(const []),
         equals(0),
       );
+    });
+
+    test('a received folder goes as a whole', () async {
+      // QHTP can deliver a tree, and discarding it one leaf at a time would
+      // leave the structure behind.
+      final folder = Directory(p.join((await cache.directory()).path, 'Trip'))
+        ..createSync(recursive: true);
+      File(p.join(folder.path, 'a.jpg')).writeAsStringSync('x' * 100);
+      Directory(p.join(folder.path, 'nested')).createSync();
+      File(p.join(folder.path, 'nested', 'b.jpg')).writeAsStringSync('y' * 50);
+
+      final freed = await coordinator(isDesktop: false).discardSession([
+        SaveOutcome(
+          item: ReceivedItem.fromCacheEntity(folder, 'inode/directory'),
+        ),
+      ]);
+
+      expect(freed, equals(150));
+      expect(folder.existsSync(), isFalse);
     });
   });
 }

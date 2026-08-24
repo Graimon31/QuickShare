@@ -20,12 +20,21 @@ class ReceivedItem {
   /// Where it ended up once saved, if it has been.
   final String? savedPath;
 
+  /// Whether this is a folder rather than a single file.
+  ///
+  /// A QHTP session can deliver a whole tree, and a folder is never a gallery
+  /// item however many photos are inside it: no photo library takes a
+  /// directory, and flattening one into its leaves would scatter a structure
+  /// the sender deliberately kept.
+  final bool isDirectory;
+
   const ReceivedItem({
     required this.cachePath,
     required this.name,
     required this.size,
     required this.mimeType,
     this.savedPath,
+    this.isDirectory = false,
   });
 
   bool get isSaved => savedPath != null;
@@ -36,6 +45,7 @@ class ReceivedItem {
         size: size,
         mimeType: mimeType,
         savedPath: savedPath ?? this.savedPath,
+        isDirectory: isDirectory,
       );
 
   static ReceivedItem fromCacheFile(File file, String mimeType) => ReceivedItem(
@@ -45,7 +55,45 @@ class ReceivedItem {
         mimeType: mimeType,
       );
 
+  /// Either a file or a folder, whichever [entity] turns out to be.
+  ///
+  /// Used by the transports that hand back a directory listing rather than a
+  /// list of files — QHTP delivers whatever the sender picked, which may be a
+  /// folder with a thousand things in it.
+  static ReceivedItem fromCacheEntity(FileSystemEntity entity, String mimeType) {
+    if (entity is Directory) {
+      return ReceivedItem(
+        cachePath: entity.path,
+        name: p.basename(entity.path),
+        size: _treeSize(entity),
+        mimeType: 'inode/directory',
+        isDirectory: true,
+      );
+    }
+    return fromCacheFile(File(entity.path), mimeType);
+  }
+
+  static int _treeSize(Directory directory) {
+    var total = 0;
+    try {
+      for (final entity
+          in directory.listSync(recursive: true, followLinks: false)) {
+        if (entity is File) {
+          try {
+            total += entity.lengthSync();
+          } on FileSystemException {
+            // Vanished between listing and measuring.
+          }
+        }
+      }
+    } on FileSystemException {
+      // Unreadable; reporting nothing beats refusing to show the item.
+    }
+    return total;
+  }
+
   @override
   String toString() => 'ReceivedItem($name, $size bytes'
+      '${isDirectory ? ', folder' : ''}'
       '${isSaved ? ', saved' : ', unsaved'})';
 }

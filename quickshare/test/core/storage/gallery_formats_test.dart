@@ -162,6 +162,20 @@ void main() {
     });
   });
 
+  test('a folder is never a gallery item, whatever it is called', () {
+    // A QHTP session can deliver a whole tree, and a folder named
+    // "holiday.mov" would otherwise read as a video.
+    const folder = ReceivedItem(
+      cachePath: '/cache/incoming/s_1/holiday.mov',
+      name: 'holiday.mov',
+      size: 4096,
+      mimeType: 'inode/directory',
+      isDirectory: true,
+    );
+    expect(ios.accepts(folder), isFalse);
+    expect(android.accepts(folder), isFalse);
+  });
+
   test('desktop has no gallery and accepts nothing', () {
     const none = GalleryFormats(GalleryPlatform.none);
     for (final name in ['shot.jpg', 'clip.mp4', 'notes.txt']) {

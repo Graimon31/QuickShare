@@ -71,11 +71,7 @@ class MediaSaver {
     if (!await target.exists()) await target.create(recursive: true);
 
     final destination = _uniquePath(p.join(target.path, item.name));
-    try {
-      await File(item.cachePath).copy(destination);
-    } on FileSystemException catch (e) {
-      throw SaveFailed(item, e.message);
-    }
+    await _place(item, destination);
     AppLogger.info('Saved ${item.name} to $destination', tag: 'SAVE');
     return item.copyWith(savedPath: destination);
   }
@@ -85,19 +81,44 @@ class MediaSaver {
     final dir = Directory(directory);
     if (!await dir.exists()) await dir.create(recursive: true);
     final destination = _uniquePath(p.join(directory, item.name));
+    await _place(item, destination);
+    return item.copyWith(savedPath: destination);
+  }
+
+  /// Copies one item to [destination], folder and all if that is what it is.
+  Future<void> _place(ReceivedItem item, String destination) async {
     try {
-      await File(item.cachePath).copy(destination);
+      if (item.isDirectory) {
+        await _copyTree(Directory(item.cachePath), Directory(destination));
+      } else {
+        await File(item.cachePath).copy(destination);
+      }
     } on FileSystemException catch (e) {
       throw SaveFailed(item, e.message);
     }
-    return item.copyWith(savedPath: destination);
+  }
+
+  /// Recreates [source] under [target], keeping the structure the sender
+  /// chose to send.
+  static Future<void> _copyTree(Directory source, Directory target) async {
+    await target.create(recursive: true);
+    await for (final entity in source.list(followLinks: false)) {
+      final destination = p.join(target.path, p.basename(entity.path));
+      if (entity is Directory) {
+        await _copyTree(entity, Directory(destination));
+      } else if (entity is File) {
+        await entity.copy(destination);
+      }
+      // Links are skipped: a link into the cache would dangle the moment the
+      // cache is cleared, which is worse than not copying it.
+    }
   }
 
   /// Never silently overwrites something already there.
   static String _uniquePath(String path) {
     var candidate = path;
     var counter = 1;
-    while (File(candidate).existsSync()) {
+    while (File(candidate).existsSync() || Directory(candidate).existsSync()) {
       final ext = p.extension(path);
       final stem = p.basenameWithoutExtension(path);
       candidate = p.join(p.dirname(path), '$stem ($counter)$ext');

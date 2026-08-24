@@ -108,6 +108,77 @@ void main() {
     });
   });
 
+  group('session directories', () {
+    test('every session gets one of its own', () async {
+      final a = await cache.sessionDirectory();
+      final b = await cache.sessionDirectory();
+
+      expect(a.path, isNot(equals(b.path)),
+          reason: 'two transfers must not write into the same staging area');
+      expect(a.existsSync(), isTrue);
+      expect(p.isWithin((await cache.directory()).path, a.path), isTrue,
+          reason: 'still inside the cache, so discard will accept it');
+    });
+
+    test('itemsIn reports what a session left, top level only', () async {
+      final session = await cache.sessionDirectory();
+      File(p.join(session.path, 'b.jpg')).writeAsStringSync('12345');
+      final folder = Directory(p.join(session.path, 'A trip'))..createSync();
+      File(p.join(folder.path, 'inner.mp4')).writeAsStringSync('1234567890');
+
+      final items = TransferCache.itemsIn(session);
+
+      expect(items.map((i) => i.name), equals(['A trip', 'b.jpg']),
+          reason: 'sorted by name, and the folder is one item not two');
+      expect(items.first.isDirectory, isTrue);
+      expect(items.first.size, equals(10), reason: 'the whole tree');
+      expect(items.last.isDirectory, isFalse);
+      expect(items.last.mimeType, equals('image/jpeg'));
+    });
+
+    test('itemsIn on a session that produced nothing is empty', () async {
+      expect(TransferCache.itemsIn(await cache.sessionDirectory()), isEmpty);
+    });
+
+    test('discarding a session leaves no empty folder behind', () async {
+      final session = await cache.sessionDirectory();
+      final file = File(p.join(session.path, 'a.bin'))
+        ..writeAsStringSync('12345');
+
+      await cache.discard([file.path]);
+
+      expect(session.existsSync(), isFalse,
+          reason: 'an empty staging folder still shows up in a storage '
+              'breakdown and reads as a leak');
+    });
+
+    test('a session still holding something is left alone', () async {
+      final session = await cache.sessionDirectory();
+      final kept = File(p.join(session.path, 'keep.bin'))
+        ..writeAsStringSync('12345');
+      final dropped = File(p.join(session.path, 'drop.bin'))
+        ..writeAsStringSync('12345');
+
+      await cache.discard([dropped.path]);
+
+      expect(kept.existsSync(), isTrue);
+      expect(session.existsSync(), isTrue);
+    });
+
+    test('discard removes a whole received folder', () async {
+      final session = await cache.sessionDirectory();
+      final folder = Directory(p.join(session.path, 'Trip'))..createSync();
+      File(p.join(folder.path, 'a.jpg')).writeAsStringSync('x' * 40);
+      Directory(p.join(folder.path, 'day 2')).createSync();
+      File(p.join(folder.path, 'day 2', 'b.jpg')).writeAsStringSync('y' * 60);
+
+      final freed = await cache.discard([folder.path]);
+
+      expect(freed, equals(100), reason: 'the whole tree counts');
+      expect(folder.existsSync(), isFalse);
+    });
+  });
+
   group('formatBytes', () {
     test('keeps small sizes in bytes', () {
       expect(TransferCache.formatBytes(0), equals('0 B'));

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_transport.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
@@ -84,11 +85,25 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     });
 
     try {
-      final path = await _transport.connect(device.id);
+      // Into the transfer cache, like every other transport: a Bluetooth
+      // transfer used to write straight into Documents on iOS and Downloads
+      // elsewhere, so a photo sent this way never reached the gallery and a
+      // document was never asked about.
+      final session = await const TransferCache().sessionDirectory();
+      final path = await _transport.connect(device.id, targetDir: session.path);
       if (!mounted) return;
       setState(() {
         _phase = _Phase.completed;
         _savedPath = path;
+      });
+      // The completion screen owns placement — gallery, Downloads, or a
+      // question — so this page hands over rather than declaring itself done.
+      final items = TransferCache.itemsIn(session);
+      if (!mounted) return;
+      context.go('/receive/complete', extra: {
+        'filePath': path,
+        'fileName': items.length == 1 ? items.single.name : _fileName,
+        'items': items,
       });
     } catch (e) {
       if (!mounted) return;

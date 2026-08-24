@@ -100,18 +100,21 @@ class SaveCoordinator {
     return outcomes;
   }
 
-  /// Drops whatever was never saved, when a session is walked away from.
+  /// Empties the session's staging area, once the user is done with it.
   ///
-  /// Only the unsaved ones: an item already copied to Downloads or handed to
-  /// the gallery is finished with, and its cache copy is dead weight either
-  /// way — but deleting a *saved* item's cache copy here would be indistinguishable
-  /// from deleting the item itself if the save had silently failed.
-  Future<int> discardUnsaved(Iterable<SaveOutcome> outcomes) {
-    final orphans = [
-      for (final o in outcomes)
-        if (!o.item.isSaved) o.item.cachePath,
-    ];
-    if (orphans.isEmpty) return Future.value(0);
-    return cache.discard(orphans);
+  /// Everything goes, saved and unsaved alike. The unsaved ones were declined
+  /// — that is the "left without saving" case, and keeping them would be
+  /// keeping files nobody asked for. The saved ones already exist somewhere
+  /// permanent, so their cache copy is a second copy of a file the user has;
+  /// leaving it behind is how an app quietly grows to hold a gigabyte of
+  /// duplicates that only a restart clears.
+  ///
+  /// Saved means verified, which is what makes this safe to do: a gallery
+  /// write that failed throws, and a copy that failed throws, so nothing gets
+  /// here with [ReceivedItem.savedPath] set unless the write came back clean.
+  Future<int> discardSession(Iterable<SaveOutcome> outcomes) {
+    final paths = [for (final o in outcomes) o.item.cachePath];
+    if (paths.isEmpty) return Future.value(0);
+    return cache.discard(paths);
   }
 }

@@ -133,4 +133,46 @@ void main() {
       expect(p.dirname(saved.savedPath!), equals(target));
     });
   });
+
+  group('folders', () {
+    ReceivedItem cachedFolder(String name) {
+      final folder = Directory(p.join(cacheDir.path, name))
+        ..createSync(recursive: true);
+      File(p.join(folder.path, 'top.txt')).writeAsStringSync('a');
+      final nested = Directory(p.join(folder.path, 'day 2'))..createSync();
+      File(p.join(nested.path, 'deep.txt')).writeAsStringSync('bb');
+      return ReceivedItem.fromCacheEntity(folder, 'inode/directory');
+    }
+
+    test('a received folder is copied whole, structure and all', () async {
+      // QHTP sends whatever the sender picked; a folder arrives as a folder
+      // and has to leave as one.
+      final target = p.join(workspace.path, 'chosen');
+      final saved = await saverWith().saveTo(cachedFolder('Trip'), target);
+
+      expect(Directory(saved.savedPath!).existsSync(), isTrue);
+      expect(File(p.join(saved.savedPath!, 'top.txt')).existsSync(), isTrue);
+      expect(File(p.join(saved.savedPath!, 'day 2', 'deep.txt')).existsSync(),
+          isTrue);
+    });
+
+    test('a folder goes to Downloads like anything else', () async {
+      final saved = await saverWith().saveToDownloads(cachedFolder('Trip'));
+
+      expect(Directory(saved.savedPath!).existsSync(), isTrue);
+      expect(p.dirname(saved.savedPath!), equals(downloads.path));
+    });
+
+    test('an existing folder of the same name is never written into',
+        () async {
+      Directory(p.join(downloads.path, 'Trip')).createSync();
+      File(p.join(downloads.path, 'Trip', 'mine.txt')).writeAsStringSync('!');
+
+      final saved = await saverWith().saveToDownloads(cachedFolder('Trip'));
+
+      expect(p.basename(saved.savedPath!), equals('Trip (1)'));
+      expect(File(p.join(downloads.path, 'Trip', 'mine.txt')).existsSync(),
+          isTrue, reason: 'the folder that was already there is untouched');
+    });
+  });
 }

@@ -123,14 +123,19 @@ class BluetoothReceiverTransport {
 
   /// Connects to [deviceId] and resolves with the saved file path once the
   /// transfer completes.
-  Future<String> connect(String deviceId) async {
+  ///
+  /// [targetDir] is where the bytes land. Callers pass a transfer-cache
+  /// session directory: what arrives is not the user's yet, and the decision
+  /// about where it belongs is made once the transfer is finished.
+  Future<String> connect(String deviceId, {String? targetDir}) async {
     final completer = Completer<String>();
     _completion = completer;
 
-    final dir = Platform.isIOS
-        ? (await getApplicationDocumentsDirectory()).path
-        : (await getDownloadsDirectory())?.path ??
-            (await getTemporaryDirectory()).path;
+    final dir = targetDir ??
+        (Platform.isIOS
+            ? (await getApplicationDocumentsDirectory()).path
+            : (await getDownloadsDirectory())?.path ??
+                (await getTemporaryDirectory()).path);
     await _method
         .invokeMethod('connect', {'deviceId': deviceId, 'targetDir': dir});
     return completer.future;
