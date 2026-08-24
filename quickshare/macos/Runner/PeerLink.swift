@@ -44,6 +44,8 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
   private var localListener: NWListener?
   private var browser: NWBrowser?
   private var peerEndpoint: NWEndpoint?
+  /// The AWDL interface the peer was seen on, when it was seen on one.
+  private var peerInterface: NWInterface?
   private var bridges: [Bridge] = []
 
   private var forwardToPort: UInt16 = 0
@@ -177,7 +179,13 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
       for found in results {
         guard case let .service(name, _, _, _) = found.endpoint, name == serviceName else { continue }
         self.peerEndpoint = found.endpoint
-        self.emit(["type": "peerFound", "service": serviceName])
+        self.peerInterface = found.interfaces.first { Self.isPeerToPeer($0) }
+        self.emit([
+          "type": "peerFound",
+          "service": serviceName,
+          "interface": self.peerInterface?.name ?? "none",
+          "interfaces": found.interfaces.map(\.name).joined(separator: ","),
+        ])
         self.openLocalDoor()
         return
       }
@@ -198,7 +206,10 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
 
       listener.newConnectionHandler = { [weak self] local in
         guard let self, let endpoint = self.peerEndpoint else { return }
-        let peer = NWConnection(to: endpoint, using: Self.peerParameters())
+        let peer = NWConnection(
+          to: endpoint,
+          using: Self.peerParameters(pinnedTo: self.peerInterface)
+        )
         self.bridge(local, peer)
       }
 
@@ -290,10 +301,30 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
     bridges.removeAll()
   }
 
+  /// Whether an interface is Apple's peer-to-peer Wi-Fi rather than an
+  /// ordinary network.
+  private static func isPeerToPeer(_ interface: NWInterface) -> Bool {
+    interface.name.hasPrefix("awdl") || interface.name.hasPrefix("llw")
+  }
+
   /// Parameters that let the system bring up peer-to-peer Wi-Fi.
-  private static func peerParameters() -> NWParameters {
+  ///
+  /// `includePeerToPeer` only *permits* the peer-to-peer path; it does not
+  /// choose it. Left to itself the system takes whatever route already
+  /// reaches the peer, and on a machine with a VPN up that route can be the
+  /// tunnel — a transfer between two devices in the same room going out to a
+  /// VPN server and back. Measured that way: 1.0 MB/s, with `awdl0` carrying
+  /// no traffic at all while 53 MB went out over `utun18`.
+  ///
+  /// So when the peer was actually found on an AWDL interface, the connection
+  /// is pinned to it. Nothing is lost by being explicit — that interface
+  /// exists precisely because the two devices can talk directly.
+  private static func peerParameters(pinnedTo interface: NWInterface? = nil) -> NWParameters {
     let parameters = NWParameters.tcp
     parameters.includePeerToPeer = true
+    if let interface {
+      parameters.requiredInterface = interface
+    }
     if let tcp = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
       // Bulk transfer in one direction: waiting to coalesce small writes only
       // adds latency to the far side's next request.
@@ -325,6 +356,7 @@ private final class Bridge {
   private let onClose: (Bridge) -> Void
 
   private var readyCount = 0
+  private var finishedDirections = 0
   private var closed = false
 
   init(a: NWConnection, b: NWConnection, queue: DispatchQueue, onClose: @escaping (Bridge) -> Void) {
@@ -362,6 +394,11 @@ private final class Bridge {
     source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
       guard let self, !self.closed else { return }
 
+      if error != nil {
+        self.cancel()
+        return
+      }
+
       if let data, !data.isEmpty {
         // `.contentProcessed` is the backpressure: the next read only starts
         // once this write has been handed off, so a slow side cannot make the
@@ -370,6 +407,8 @@ private final class Bridge {
           guard let self, !self.closed else { return }
           if sendError != nil {
             self.cancel()
+          } else if isComplete {
+            self.halfClose(sink)
           } else {
             self.pump(from: source, to: sink)
           }
@@ -377,12 +416,34 @@ private final class Bridge {
         return
       }
 
-      if isComplete || error != nil {
-        self.cancel()
+      if isComplete {
+        self.halfClose(sink)
       } else {
         self.pump(from: source, to: sink)
       }
     }
+  }
+
+  /// Passes on the end of one direction without killing the other.
+  ///
+  /// Tearing both connections down the moment either side said it was done
+  /// cost the tail of every transfer: `cancel()` discards whatever is still
+  /// queued, so the last bytes handed to the link never went out. Over
+  /// loopback the queue drains instantly and it never showed; over the air a
+  /// 64 MB transfer arrived 768 KB short and then hung waiting for the rest.
+  ///
+  /// TCP can close one direction at a time, which is exactly what is wanted
+  /// here: flush what is queued, send the FIN, and let the other direction
+  /// finish on its own terms.
+  private func halfClose(_ sink: NWConnection) {
+    sink.send(content: nil, contentContext: .finalMessage, isComplete: true,
+              completion: .contentProcessed { [weak self] _ in
+      guard let self else { return }
+      self.finishedDirections += 1
+      if self.finishedDirections >= 2 {
+        self.cancel()
+      }
+    })
   }
 
   func cancel() {
