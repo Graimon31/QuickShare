@@ -112,6 +112,40 @@ class QhtpReceiverClient {
     return resolvedPath;
   }
 
+  /// Uses the directory the caller asked for, when it can actually be
+  /// written to.
+  ///
+  /// This used to ignore [requested] outright on iOS and always write into
+  /// Documents, guarding against an older caller passing a `~/Downloads` path
+  /// that the sandbox forbids. It also silently overrode every caller with
+  /// somewhere better in mind: transfers are staged in the app cache now, and
+  /// a Wi-Fi transfer on a phone landed in Documents regardless — so it never
+  /// reached the gallery, was never asked about, and was never cleaned up.
+  /// The bug was invisible to any test that did not run on a real device,
+  /// because `Platform.isIOS` is false everywhere else.
+  ///
+  /// The guard is kept, as a check rather than an assumption: a path outside
+  /// the sandbox fails here instead of part-way through a transfer.
+  static Future<String> _resolveTargetDir(String requested) async {
+    try {
+      final dir = Directory(requested);
+      if (!await dir.exists()) await dir.create(recursive: true);
+
+      // Proven, not assumed. Creating a directory can succeed where writing
+      // into it does not.
+      final probe = File(p.join(dir.path, '.qs_write_probe'));
+      await probe.writeAsBytes(const [0]);
+      await probe.delete();
+
+      return dir.path;
+    } on FileSystemException catch (e) {
+      final fallback = (await getApplicationDocumentsDirectory()).path;
+      debugPrint('QHTP: $requested is not writable ($e); '
+          'falling back to $fallback');
+      return fallback;
+    }
+  }
+
   QhtpReceiveResult deriveReceiveResult(
     QhtpManifest manifest,
     String targetBaseDir,
@@ -239,16 +273,7 @@ class QhtpReceiverClient {
         return const Left(FileFailure('Session size exceeds max limit of 500 GB'));
       }
 
-      // Keep the transport safe even if another caller supplies the old
-      // iOS ~/Downloads path. iOS only permits writing inside the app's
-      // sandbox; Documents is exposed to the Files app by Info.plist.
-      final resolvedTargetBaseDir = Platform.isIOS
-          ? (await getApplicationDocumentsDirectory()).path
-          : targetBaseDir;
-      final targetDir = Directory(resolvedTargetBaseDir);
-      if (!await targetDir.exists()) {
-        await targetDir.create(recursive: true);
-      }
+      final resolvedTargetBaseDir = await _resolveTargetDir(targetBaseDir);
 
       final freeDiskBytes = await _getAvailableDiskSpace(resolvedTargetBaseDir);
       final requiredBytes =
