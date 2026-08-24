@@ -30,6 +30,12 @@
 	<string>NSApplication</string>
 	<key>FLTEnableMergedPlatformUIThread</key>
 	<false/>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_directdrop._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>DirectDrop finds the other device on your local network, or over a direct Wi-Fi link between the two, to transfer files without sending them anywhere else.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>DirectDrop uses Bluetooth to send and receive files with nearby Macs without a network.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>

@@ -16,6 +16,9 @@ import Flutter
     if let registrar = self.registrar(forPlugin: "QuickShareBluetoothPlugin") {
       QuickShareBluetoothPlugin.register(with: registrar)
     }
+    if let registrar = self.registrar(forPlugin: "PeerLinkPlugin") {
+      PeerLinkPlugin.register(with: registrar)
+    }
     if let controller = window?.rootViewController as? FlutterViewController {
       hotspotBridge.register(with: controller.binaryMessenger)
     }

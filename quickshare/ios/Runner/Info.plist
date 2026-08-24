@@ -62,6 +62,7 @@
 	</dict>
 	<key>NSBonjourServices</key>
 	<array>
+		<string>_directdrop._tcp</string>
 		<string>_http._tcp</string>
 		<string>_quickshare._tcp</string>
 	</array>
