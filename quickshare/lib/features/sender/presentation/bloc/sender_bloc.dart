@@ -775,7 +775,15 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // works; letting a failure out would mean the extra route took down the
     // one the user actually asked for. A bluetooth test caught exactly that.
     try {
-      final result = await repository.startQhtpTransfer(paths);
+      // The same token the Bluetooth session advertises. The receiver has no
+      // other, so a session minting its own would answer 401 to the one
+      // device it exists to serve — which is exactly what happened: the link
+      // came up, the transfer failed, and the screen said "connection
+      // failed" before falling back to Bluetooth on the retry.
+      final result = await repository.startQhtpTransfer(
+        paths,
+        authToken: sessionToken,
+      );
       await result.fold(
         (failure) async => AppLogger.info(
             'No fast path alongside Bluetooth: ${failure.message}',

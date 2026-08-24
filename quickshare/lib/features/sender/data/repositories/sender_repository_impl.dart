@@ -134,7 +134,9 @@ class SenderRepositoryImpl implements SenderRepository {
 
   @override
   Future<Either<Failure, TransferSession>> startQhtpTransfer(
-      List<String> paths) async {
+    List<String> paths, {
+    String? authToken,
+  }) async {
     try {
       _statusController.add(TransferStatus.serving);
 
@@ -144,7 +146,7 @@ class SenderRepositoryImpl implements SenderRepository {
       }
 
       final sessionId = const Uuid().v4();
-      final token = const Uuid().v4();
+      final token = authToken ?? const Uuid().v4();
 
       final indexResult = await indexer.buildResult(
         sessionId: sessionId,

@@ -18,6 +18,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:path/path.dart' as p;
 
+import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
@@ -80,6 +81,29 @@ void main() {
     final call = nativeCalls.firstWhere((c) => c.method == 'startAdvertising');
     return (call.arguments as Map)['filePath'] as String;
   }
+
+  test('the fast path accepts the token the receiver actually has', () async {
+    // The receiver on the far side of a Bluetooth session holds one token:
+    // the Bluetooth one. A QHTP session minting its own answered 401 to the
+    // only device it existed to serve, and the screen reported a connection
+    // failure before falling back on the retry.
+    final captured = <String?>[];
+    when(() => repository.startQhtpTransfer(any(),
+            authToken: any(named: 'authToken')))
+        .thenAnswer((invocation) async {
+      captured.add(invocation.namedArguments[#authToken] as String?);
+      return const Left(NetworkFailure('not needed for this test'));
+    });
+
+    final only = write('holiday.mov');
+    await advertisedPath([only.path]);
+
+    final advertisedToken =
+        (nativeCalls.firstWhere((c) => c.method == 'startAdvertising').arguments
+            as Map)['sessionToken'] as String;
+    expect(captured.single, equals(advertisedToken),
+        reason: 'both halves of one session have to agree on its token');
+  });
 
   test('three files are all sent, not just the first', () async {
     final files = [write('one.txt'), write('two.txt'), write('three.txt')];

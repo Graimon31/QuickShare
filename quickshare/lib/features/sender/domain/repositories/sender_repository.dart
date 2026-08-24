@@ -14,8 +14,15 @@ abstract class SenderRepository {
   Future<Either<Failure, TransferSession>> startServer(FileMetadata file);
 
   /// Starts a QHTP heavy transfer session for files and/or directories.
+  ///
+  /// [authToken] fixes the token the session will accept, for the callers that
+  /// already told the far side what to present. The Bluetooth fast path is
+  /// one: the receiver has only the Bluetooth session token, so a session
+  /// minting its own would reject the very device it was started for.
   Future<Either<Failure, TransferSession>> startQhtpTransfer(
-      List<String> paths);
+    List<String> paths, {
+    String? authToken,
+  });
 
   /// Generates the QR payload string for the given transfer session.
   /// [hostOverride] replaces the address written into the QR code.

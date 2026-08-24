@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -125,10 +127,16 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
 
     result.fold(
       (failure) {
-        setState(() {
-          _phase = _Phase.failed;
-          _error = failure.message;
-        });
+        // Falling back rather than failing. The direct link is an optimisation
+        // the user never asked for by name; if it does not deliver, the
+        // Bluetooth transfer they did ask for is still there and still works.
+        // Showing "connection failed" here sent people to tap Scan again,
+        // which quietly did this anyway — badly, and only after alarming them.
+        AppLogger.info(
+            'The direct link did not deliver (${failure.message}); '
+            'falling back to Bluetooth',
+            tag: 'PEERLINK');
+        unawaited(_startScan());
       },
       (received) {
         final items = TransferCache.itemsIn(session);
