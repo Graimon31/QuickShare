@@ -11,6 +11,7 @@ import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.da
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart'
     show TransferCancelledBySender, WebRtcReceiveProgress, WebRtcReceiverTransport;
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
+import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/transfer/interruption_guard.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
@@ -166,6 +167,12 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   /// Holds the transfer's place while the user is looking at something else.
   final TransferInterruptionGuard _interruption;
 
+  /// Facts about the last transfer, so "why was that slow?" has an answer on
+  /// screen rather than in a log file on somebody else's machine.
+  final TransferDiagnostics _diagnostics = const TransferDiagnostics();
+  DateTime? _startedAt;
+  String _route = '';
+
   ReceiverBloc({
     required this.downloadFileUseCase,
     required this.repository,
@@ -239,7 +246,9 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
 
         // Prefer a direct Wi-Fi link to the sender when one can be had. The
         // QHTP session is the same either way — only the address changes.
+        _startedAt = DateTime.now();
         final route = await _directRouteOrGiven(payload);
+        _route = _directLinkOpen ? 'Direct Wi-Fi link' : 'Local network';
         if (transferAttempt != _transferAttempt) return;
 
         void report(QhtpProgress qp) {
@@ -290,12 +299,20 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
 
         if (transferAttempt != _transferAttempt) return;
         result.fold(
-          (failure) => add(DownloadFailed(failure.message)),
-          (result) => add(DownloadCompleted(
-            result.preferredResultPath,
-            fileName: result.displayName,
-            items: TransferCache.itemsIn(session),
-          )),
+          (failure) {
+            unawaited(_report(0, failure: failure.message));
+            add(DownloadFailed(failure.message));
+          },
+          (result) {
+            final items = TransferCache.itemsIn(session);
+            unawaited(_report(
+                items.fold<int>(0, (sum, item) => sum + item.size)));
+            add(DownloadCompleted(
+              result.preferredResultPath,
+              fileName: result.displayName,
+              items: items,
+            ));
+          },
         );
         return;
       }
@@ -372,6 +389,21 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     _interruption.detach();
     await _closeDirectLink();
     return super.close();
+  }
+
+  /// Files away what just happened, for the settings screen to show.
+  Future<void> _report(int bytes, {String failure = ''}) async {
+    final started = _startedAt;
+    if (started == null) return;
+    _startedAt = null;
+    await _diagnostics.record(TransferReport(
+      at: started,
+      role: 'received',
+      route: _route.isEmpty ? 'Unknown' : _route,
+      bytes: bytes,
+      took: DateTime.now().difference(started),
+      failure: failure,
+    ));
   }
 
   /// Closes the direct link, if one was ever opened.

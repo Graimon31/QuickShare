@@ -295,6 +295,13 @@ class WebRtcTransferTransport implements TransferTransport {
   /// The check belongs here rather than at gathering time: gathering only
   /// knows what was offered, and the winning pair is not chosen until both
   /// sides have run connectivity checks.
+  /// Whether the last session went direct or through somebody's relay.
+  ///
+  /// Read by the sender bloc when it files the transfer away for the settings
+  /// screen: "Internet (relayed)" and "Internet (peer to peer)" look identical
+  /// to a user watching a progress ring, and differ by an order of magnitude.
+  IcePathKind? lastIcePath;
+
   Future<void> _startTransferIfAffordable(FileMetadata file) async {
     final connection = _peerConnection;
     if (connection == null) return;
@@ -304,6 +311,9 @@ class WebRtcTransferTransport implements TransferTransport {
         'Serverless sender selected path: ${path.name}, '
         'session ${file.size} bytes',
         tag: 'WEBRTC_SENDER');
+    // Which of the two it turned out to be is the single fact that explains a
+    // slow internet transfer, and it was only ever written to a log file.
+    lastIcePath = path;
 
     // The whole session, not just the first file: ten photos through a relay
     // cost ten photos' worth of somebody else's bandwidth.

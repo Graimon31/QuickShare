@@ -16,6 +16,7 @@ import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_tr
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:archive/archive_io.dart';
+import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
@@ -25,6 +26,7 @@ import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/utils/mime_compression.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
+import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 
 // Events
@@ -339,6 +341,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   /// Offers the running QHTP session over direct Wi-Fi as well as the LAN.
   final PeerLinkService peerLink;
+
+  /// Facts about the last transfer, for the settings screen to show.
+  final TransferDiagnostics _diagnostics = const TransferDiagnostics();
+  DateTime? _sendStartedAt;
+  bool _directLinkOffered = false;
   List<String>? _currentPaths;
 
   AnswerChannel? _answerChannel;
@@ -636,6 +643,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   Future<void> _onStartQhtpSend(
       StartQhtpSend event, Emitter<SenderState> emit) async {
     _currentPaths = event.paths;
+    // A fresh session: forget the last one's timing and route.
+    _sendStartedAt = null;
+    _directLinkOffered = false;
     final mode = event.mode ?? _selectedMode;
     if (mode == TransportType.internet || mode == TransportType.bluetooth) {
       if (event.paths.isEmpty) {
@@ -808,6 +818,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           // completion, nothing to say it worked. Functionally fine and
           // indistinguishable from a hung app, which is not a distinction
           // worth asking anyone to make.
+          _directLinkOffered = true;
           _fastPathSubscription?.cancel();
           _fastPathSubscription =
               repository.transferProgress.listen((progress) {
@@ -956,6 +967,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onTransferProgress(
       TransferProgressEvent event, Emitter<SenderState> emit) async {
+    // The clock starts at the first byte that actually moves, not when the
+    // user pressed send: waiting for somebody to scan a QR code is not
+    // transfer time, and counting it turns a fast transfer into a slow-looking
+    // number. Measured that way once today and it cost an hour of chasing.
+    _sendStartedAt ??= DateTime.now();
     if (state is QRReady ||
         state is BluetoothAdvertising ||
         state is Transferring) {
@@ -987,8 +1003,41 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     }
   }
 
+  /// Files away what just happened, in terms that explain a slow transfer.
+  ///
+  /// The route is the fact that matters: a relayed internet session and a
+  /// direct one look identical behind a progress ring and differ by an order
+  /// of magnitude. Reading it off a log file on somebody else's machine is
+  /// what this replaces.
+  Future<void> _reportSend({String failure = ''}) async {
+    final started = _sendStartedAt;
+    if (started == null) return;
+    _sendStartedAt = null;
+
+    final ice = _activeWebRtcTransport?.lastIcePath;
+    final route = switch (ice) {
+      IcePathKind.relayed => 'Internet (relayed)',
+      IcePathKind.peerToPeer => 'Internet (peer to peer)',
+      IcePathKind.direct => 'Internet (direct, same network)',
+      _ when _activeBluetoothTransport != null && !_directLinkOffered =>
+        'Bluetooth',
+      _ when _directLinkOffered => 'Direct Wi-Fi link',
+      _ => 'Local network',
+    };
+
+    await _diagnostics.record(TransferReport(
+      at: started,
+      role: 'sent',
+      route: route,
+      bytes: (_sessionFiles ?? const []).fold<int>(0, (sum, f) => sum + f.size),
+      took: DateTime.now().difference(started),
+      failure: failure,
+    ));
+  }
+
   Future<void> _onTransferCompleted(
       TransferCompleted event, Emitter<SenderState> emit) async {
+    await _reportSend();
     await repository.stopServer();
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
