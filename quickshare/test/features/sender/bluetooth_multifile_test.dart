@@ -100,6 +100,20 @@ void main() {
     File(sent).deleteSync();
   });
 
+  test('a broken fast path does not take the Bluetooth transfer with it',
+      () async {
+    // The direct Wi-Fi route is offered alongside Bluetooth, not instead of
+    // it. The repository here has no `startQhtpTransfer` stub at all, so
+    // setting that route up throws — and the transfer the user actually asked
+    // for still has to go out.
+    final files = [write('one.txt'), write('two.txt')];
+
+    final sent = await advertisedPath([for (final f in files) f.path]);
+
+    expect(p.extension(sent), equals('.zip'),
+        reason: 'Bluetooth advertised regardless of the extra route failing');
+  });
+
   test('a single file is still sent as itself, not wrapped in an archive',
       () async {
     final only = write('holiday.mov');

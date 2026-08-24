@@ -593,6 +593,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
         final token = const Uuid().v4();
         await _activeBluetoothTransport!.startSharing(file, token);
+        await _offerBluetoothFastPath(token);
         emit(BluetoothAdvertising(
           _makeDummySession(file),
           qrData: BluetoothQrPayload(token: token).encode(),
@@ -744,6 +745,55 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         );
       },
     );
+  }
+
+  /// Serves the same selection over the direct Wi-Fi link while Bluetooth
+  /// advertises.
+  ///
+  /// This is the shape AirDrop has: Bluetooth finds the device, Wi-Fi carries
+  /// the file. It is not a workaround for a slow implementation — the whole
+  /// Bluetooth standard tops out at 3 Mbit/s for Classic, which Apple does not
+  /// expose to third-party apps at all, and 2 Mbit/s for BLE, which is what is
+  /// left. 200 MB over that is twenty minutes at the theoretical best. No
+  /// amount of tuning changes the radio.
+  ///
+  /// So the button keeps its name and its promise — find what is nearby, send
+  /// without a network — and the bytes take the only path that can carry them
+  /// at speed. If the link does not come up, the Bluetooth transfer that is
+  /// already advertising carries them instead, slowly but surely.
+  ///
+  /// The QHTP session is built from the original paths rather than the bundle
+  /// the Bluetooth path needs, so photos arrive as photos and land in the
+  /// recipient's gallery instead of inside a .zip.
+  Future<void> _offerBluetoothFastPath(String sessionToken) async {
+    if (!PeerLinkService.isSupported) return;
+    final paths = _currentPaths;
+    if (paths == null || paths.isEmpty) return;
+
+    // Nothing in here may escape. This is an optional faster route offered
+    // beside a Bluetooth transfer that is already advertising and already
+    // works; letting a failure out would mean the extra route took down the
+    // one the user actually asked for. A bluetooth test caught exactly that.
+    try {
+      final result = await repository.startQhtpTransfer(paths);
+      await result.fold(
+        (failure) async => AppLogger.info(
+            'No fast path alongside Bluetooth: ${failure.message}',
+            tag: 'PEERLINK'),
+        (session) async {
+          await peerLink.host(
+            serviceName: PeerLinkService.serviceNameFor(sessionToken),
+            localPort: session.serverPort,
+          );
+          AppLogger.info(
+              'Bluetooth is advertising; the file is also on the direct '
+              'Wi-Fi link at :${session.serverPort}',
+              tag: 'PEERLINK');
+        },
+      );
+    } catch (e) {
+      AppLogger.info('No fast path alongside Bluetooth: $e', tag: 'PEERLINK');
+    }
   }
 
   /// Also serves this session over a direct Wi-Fi link, where one is possible.

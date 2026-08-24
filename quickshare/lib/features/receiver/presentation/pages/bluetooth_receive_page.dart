@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
+import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_transport.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
@@ -45,7 +49,96 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         _connect(d);
       }
     });
-    _startScan();
+    _tryDirectLinkThenScan();
+  }
+
+  /// Takes the direct Wi-Fi link when the sender is offering one, and falls
+  /// back to the Bluetooth transfer when it is not.
+  ///
+  /// Same button, same promise — nothing nearby needs a network — but the
+  /// bytes travel over the only radio that can carry them at speed. Bluetooth
+  /// itself tops out at 2 Mbit/s for BLE, which is what Apple leaves open to
+  /// apps, so 200 MB over it is twenty minutes at the theoretical best.
+  ///
+  /// Everything about this is best effort. An older sender, a non-Apple one,
+  /// Wi-Fi switched off, no session token to look up — each simply falls
+  /// through to the scan that was here before.
+  Future<void> _tryDirectLinkThenScan() async {
+    final token = widget.sessionToken;
+    if (token == null || token.isEmpty || !PeerLinkService.isSupported) {
+      await _startScan();
+      return;
+    }
+
+    setState(() {
+      _phase = _Phase.connecting;
+      _fileName = 'Looking for a direct link…';
+    });
+
+    try {
+      final port = await const PeerLinkService().join(
+        serviceName: PeerLinkService.serviceNameFor(token),
+        timeout: const Duration(seconds: 8),
+      );
+      if (!mounted) return;
+      await _receiveOverDirectLink(token, port);
+      return;
+    } on PeerLinkException catch (e) {
+      AppLogger.info('No direct link for this transfer, using Bluetooth: $e',
+          tag: 'PEERLINK');
+    }
+    if (mounted) await _startScan();
+  }
+
+  Future<void> _receiveOverDirectLink(String token, int port) async {
+    setState(() {
+      _phase = _Phase.transferring;
+      _fileName = 'Receiving over direct Wi-Fi';
+    });
+
+    final session = await const TransferCache().sessionDirectory();
+    final result = await QhtpReceiverClient().downloadSession(
+      // The session id is only ever a local key for resume state; the server
+      // is reached with the address and token alone. The Bluetooth session
+      // token is the natural choice — it is stable across a retry, which is
+      // exactly what resuming wants.
+      payload: QRPayload(
+        version: 2,
+        ip: '127.0.0.1',
+        port: port,
+        token: token,
+        sessionId: token,
+        mode: 'http-lan',
+      ),
+      targetBaseDir: session.path,
+      onProgress: (progress) {
+        if (!mounted || progress.phase != 'transferring') return;
+        setState(() {
+          _received = progress.sessionReceived;
+          _total = progress.sessionTotal;
+          if (progress.itemPath.isNotEmpty) _fileName = progress.itemPath;
+        });
+      },
+    );
+    await const PeerLinkService().stop();
+    if (!mounted) return;
+
+    result.fold(
+      (failure) {
+        setState(() {
+          _phase = _Phase.failed;
+          _error = failure.message;
+        });
+      },
+      (received) {
+        final items = TransferCache.itemsIn(session);
+        context.go('/receive/complete', extra: {
+          'filePath': received.preferredResultPath,
+          'fileName': items.length == 1 ? items.single.name : received.displayName,
+          'items': items,
+        });
+      },
+    );
   }
 
   Future<void> _startScan() async {
