@@ -155,22 +155,6 @@ class _HomePageState extends State<HomePage>
               ],
             ),
 
-          // Settings, out of the way of the two things this screen is for.
-          SafeArea(
-            child: Align(
-              alignment: Alignment.topRight,
-              child: Padding(
-                padding: const EdgeInsets.only(top: 8, right: 8),
-                child: IconButton(
-                  tooltip: 'Settings',
-                  icon: const Icon(Icons.settings_outlined,
-                      color: AppColors.textSecondary),
-                  onPressed: () => context.go('/settings'),
-                ),
-              ),
-            ),
-          ),
-
           // 2. Main Centered Glass UI Content
           SafeArea(
             child: ScrollConfiguration(
@@ -275,6 +259,28 @@ class _HomePageState extends State<HomePage>
                       ],
                     ),
                   ),
+                ),
+              ),
+            ),
+          ),
+
+          // Settings, out of the way of the two things this screen is for.
+          //
+          // Last in the Stack on purpose. A Stack hit-tests its children in
+          // reverse, so whatever is declared after this takes the tap: with
+          // the gear above the main content, the scroll view underneath — it
+          // fills the screen and is opaque to pointers — swallowed every tap
+          // on the top-right corner and the button silently did nothing.
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topRight,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 8, right: 8),
+                child: IconButton(
+                  tooltip: 'Settings',
+                  icon: const Icon(Icons.settings_outlined,
+                      color: AppColors.textSecondary),
+                  onPressed: () => context.go('/settings'),
                 ),
               ),
             ),
