@@ -1,0 +1,45 @@
+name: Windows build
+
+# Windows binaries cannot be produced from a Mac: the Flutter toolchain
+# refuses outright ("build windows only supported on Windows hosts"), and no
+# cross-compilation exists. A Windows runner is the only way to get one
+# without a Windows machine on the desk.
+on:
+  push:
+    branches: [main, 'fix/**', 'feat/**']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+      - run: flutter pub get
+
+      # Run before building: a Windows failure that is really a Dart failure
+      # is worth naming as one.
+      - name: Tests
+        run: flutter test
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build
+        run: flutter build windows --release
+
+      - name: Package
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath DirectDrop-windows.zip
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DirectDrop-windows
+          path: DirectDrop-windows.zip
+          retention-days: 30
