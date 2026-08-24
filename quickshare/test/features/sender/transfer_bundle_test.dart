@@ -56,7 +56,9 @@ void main() {
   }
 
   test('bundling on its own isolate leaves the caller responsive', () async {
-    final file = payload('clip.mp4', 60);
+    // Deliberately not a media name: those are stored now, and this test
+    // needs the deflate path to have something to stall on.
+    final file = payload('sensor.bin', 60);
     final zipPath = p.join(workspace.path, 'bundle.zip');
 
     // The measurement has to be able to see a stall, or "no stall" means
@@ -81,6 +83,49 @@ void main() {
         reason: 'off the calling isolate, the interface keeps running');
     expect(free * 2, lessThan(blocked));
   }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('photos and videos are stored, not deflated again', () async {
+    // Deflate on an H.264 stream buys nothing and costs a pass over every
+    // byte. It also quietly broke the promise the app is built on — media is
+    // not re-encoded on the way out.
+    final video = payload('clip.mp4', 24);
+    final text = File(p.join(workspace.path, 'notes.txt'))
+      ..writeAsStringSync('a' * 200000);
+
+    final zipPath = p.join(workspace.path, 'mixed.zip');
+    await writeTransferBundle([video.path, text.path], zipPath);
+
+    final archive = ZipDecoder().decodeBytes(File(zipPath).readAsBytesSync());
+    final stored = archive.files.firstWhere((f) => f.name == 'clip.mp4');
+    final deflated = archive.files.firstWhere((f) => f.name == 'notes.txt');
+
+    expect(stored.compress, isFalse, reason: 'the video is copied, not packed');
+    expect(deflated.compress, isTrue,
+        reason: 'text really does shrink, so it still gets the pass');
+  }, timeout: const Timeout(Duration(minutes: 5)));
+
+  test('a folder decides per file, not once for the whole tree', () async {
+    // `addDirectory` takes one level for everything under it, which is why
+    // the tree is walked by hand: a holiday folder is photos next to a
+    // caption file.
+    final folder = Directory(p.join(workspace.path, 'Trip'))..createSync();
+    File(p.join(folder.path, 'photo.jpg'))
+        .writeAsBytesSync(Uint8List(400000)..setAll(0, List.generate(400000, (i) => (i * 7919) & 0xFF)));
+    File(p.join(folder.path, 'caption.txt')).writeAsStringSync('b' * 200000);
+
+    final zipPath = p.join(workspace.path, 'trip.zip');
+    await writeTransferBundle([folder.path], zipPath);
+
+    final archive = ZipDecoder().decodeBytes(File(zipPath).readAsBytesSync());
+    final photo = archive.files.firstWhere((f) => f.name.endsWith('photo.jpg'));
+    final caption =
+        archive.files.firstWhere((f) => f.name.endsWith('caption.txt'));
+
+    expect(photo.name, equals('Trip/photo.jpg'),
+        reason: 'the folder name stays in the path');
+    expect(photo.compress, isFalse);
+    expect(caption.compress, isTrue);
+  });
 
   test('everything picked ends up in the archive, files and folders alike',
       () async {

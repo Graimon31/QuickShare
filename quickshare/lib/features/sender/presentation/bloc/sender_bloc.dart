@@ -22,6 +22,7 @@ import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/core/utils/mime_compression.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 
@@ -252,13 +253,50 @@ Future<int> writeTransferBundle(List<String> paths, String zipPath) async {
   for (final path in paths) {
     final type = FileSystemEntity.typeSync(path);
     if (type == FileSystemEntityType.directory) {
-      await encoder.addDirectory(Directory(path));
+      await _addTree(encoder, Directory(path), p.basename(path));
     } else if (type == FileSystemEntityType.file) {
-      await encoder.addFile(File(path));
+      await _addOne(encoder, File(path), p.basename(path));
     }
   }
   await encoder.close();
   return File(zipPath).lengthSync();
+}
+
+/// Walks [directory] itself rather than handing it to `addDirectory`, which
+/// takes one compression level for a whole tree — and a tree of holiday
+/// photos is exactly where that decision has to be made per file.
+Future<void> _addTree(
+    ZipFileEncoder encoder, Directory directory, String prefix) async {
+  for (final entity in directory.listSync(followLinks: false)) {
+    final name = '$prefix/${p.basename(entity.path)}';
+    if (entity is Directory) {
+      await _addTree(encoder, entity, name);
+    } else if (entity is File) {
+      await _addOne(encoder, entity, name);
+    }
+  }
+}
+
+/// Stores already-compressed files instead of deflating them again.
+///
+/// Deflate on a JPEG or an H.264 stream buys nothing — the format has done
+/// the compressing already — and costs a full pass over every byte at about
+/// 55 MB/s. Storing them is a straight copy, so a 600 MB selection of photos
+/// stops being ten seconds of work and becomes as fast as the disk. It also
+/// keeps the promise the whole app is built on: photos and videos are not
+/// re-encoded on the way out, and a bundle that deflated them was quietly
+/// breaking that even though zip is lossless.
+Future<void> _addOne(
+    ZipFileEncoder encoder, File file, String nameInArchive) async {
+  final compressible = shouldCompressForTransfer(
+    lookupMimeType(file.path),
+    p.basename(file.path),
+  );
+  await encoder.addFile(
+    file,
+    nameInArchive,
+    compressible ? ZipFileEncoder.GZIP : ZipFileEncoder.STORE,
+  );
 }
 
 class SenderBloc extends Bloc<SenderEvent, SenderState> {
