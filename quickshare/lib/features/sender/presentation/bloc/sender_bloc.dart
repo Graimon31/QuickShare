@@ -643,22 +643,24 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         return;
       }
 
-      // Several plain files no longer need bundling: the DataChannel protocol
-      // carries a manifest now. Zipping is still the only way to preserve a
-      // *directory* tree, and it would also defeat saving photos into the
-      // recipient's gallery, so it is reserved for the case that needs it.
+      // Several plain files are never bundled. Both the DataChannel protocol
+      // and QHTP carry a manifest, so a .zip buys nothing and costs plenty:
+      // the recipient gets an archive to unpack instead of photos that land
+      // in their gallery, and the sender waits while it is written.
       //
-      // Bluetooth is excluded because its native channel sends exactly one
-      // file and has no manifest: it took `files.first` and the rest of the
-      // selection was dropped without a word. Bundling below is not as good
-      // as a manifest — the recipient gets a .zip rather than photos in their
-      // gallery — but it does send what the user picked.
+      // Zipping survives only for a *directory*, which is the one case a
+      // single-file channel genuinely cannot express.
+      //
+      // Bluetooth included, which leaves a known gap: its native bridge
+      // carries one file, so a multi-file selection reaches a receiver that
+      // cannot take the direct Wi-Fi link as the first file only. That path
+      // is the fallback of a fallback — a non-Apple device, in the same room,
+      // with no network — and papering over it with an archive made every
+      // ordinary multi-file send worse to fix a rare one.
       final allPlainFiles =
           event.paths.every((path) => FileSystemEntity.isFileSync(path));
 
-      if (mode == TransportType.internet &&
-          allPlainFiles &&
-          event.paths.length > 1) {
+      if (allPlainFiles && event.paths.length > 1) {
         final files = <FileMetadata>[];
         for (final path in event.paths) {
           files.add(FileMetadata(

@@ -11,7 +11,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:archive/archive_io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -160,23 +159,18 @@ void main() {
         reason: 'both halves of one session have to agree on its token');
   });
 
-  test('three files are all sent, not just the first', () async {
+  test('several files are never packed into an archive', () async {
+    // A .zip buys nothing here — both wire protocols carry a manifest — and
+    // costs the recipient an archive to unpack instead of photos that land in
+    // their gallery.
     final files = [write('one.txt'), write('two.txt'), write('three.txt')];
 
     final sent = await advertisedPath([for (final f in files) f.path]);
 
-    expect(p.extension(sent), equals('.zip'),
-        reason: 'the bridge carries one file, so the selection is bundled');
-
-    final names = ZipDecoder()
-        .decodeBytes(File(sent).readAsBytesSync())
-        .files
-        .map((f) => p.basename(f.name))
-        .toSet();
-    expect(names, containsAll(['one.txt', 'two.txt', 'three.txt']),
-        reason: 'every file the user picked has to be in there');
-
-    File(sent).deleteSync();
+    expect(p.extension(sent), isNot(equals('.zip')));
+    expect(sent, equals(files.first.path),
+        reason: 'the selection goes as itself, over whichever route can '
+            'carry all of it');
   });
 
   test('a broken fast path does not take the Bluetooth transfer with it',
@@ -189,7 +183,7 @@ void main() {
 
     final sent = await advertisedPath([for (final f in files) f.path]);
 
-    expect(p.extension(sent), equals('.zip'),
+    expect(sent, equals(files.first.path),
         reason: 'Bluetooth advertised regardless of the extra route failing');
   });
 
