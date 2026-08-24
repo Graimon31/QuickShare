@@ -12,6 +12,7 @@ import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_tra
     show TransferCancelledBySender, WebRtcReceiveProgress, WebRtcReceiverTransport;
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
+import 'package:quickshare/core/transfer/interruption_guard.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
@@ -162,8 +163,15 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   final PeerLinkService _peerLink = const PeerLinkService();
   bool _directLinkOpen = false;
 
-  ReceiverBloc({required this.downloadFileUseCase, required this.repository})
-      : super(ReceiverInitial()) {
+  /// Holds the transfer's place while the user is looking at something else.
+  final TransferInterruptionGuard _interruption;
+
+  ReceiverBloc({
+    required this.downloadFileUseCase,
+    required this.repository,
+    TransferInterruptionGuard? interruptionGuard,
+  })  : _interruption = interruptionGuard ?? TransferInterruptionGuard(),
+        super(ReceiverInitial()) {
     on<StartScanning>((event, emit) => emit(Scanning()));
 
     on<QRCodeScanned>((event, emit) async {
@@ -214,6 +222,11 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       }
 
       if (payload.isQhtp) {
+        // Watched from here rather than from the constructor: building a bloc
+        // should not require a widget binding, and a receiver that never
+        // starts a transfer has no foreground to lose.
+        _interruption.attach();
+        _interruption.reset();
         // Wi-Fi lands in the transfer cache like every other transport, in a
         // directory of its own so its entries can be told from another
         // session's afterwards. It used to write straight into Documents on
@@ -229,19 +242,47 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         final route = await _directRouteOrGiven(payload);
         if (transferAttempt != _transferAttempt) return;
 
-        final result = await repository.receiveQhtpSession(
+        void report(QhtpProgress qp) {
+          if (transferAttempt != _transferAttempt) return;
+          if (qp.phase == 'verifying') {
+            add(StartVerifying());
+          } else if (qp.phase == 'transferring') {
+            add(DownloadProgressUpdate(
+                qp.sessionReceived, qp.sessionTotal, qp.itemPath));
+          }
+        }
+
+        var result = await repository.receiveQhtpSession(
           route,
           session.path,
-          onProgress: (QhtpProgress qp) {
-            if (transferAttempt != _transferAttempt) return;
-            if (qp.phase == 'verifying') {
-              add(StartVerifying());
-            } else if (qp.phase == 'transferring') {
-              add(DownloadProgressUpdate(
-                  qp.sessionReceived, qp.sessionTotal, qp.itemPath));
-            }
-          },
+          onProgress: report,
         );
+
+        // A failure that lands while the app was in the background is almost
+        // never the network: iOS suspends the process and the open socket dies
+        // with it. QHTP keeps its partial files and resumes by byte offset, so
+        // the only real question is whether the user still wants this — and
+        // that is answered by whether they come back.
+        while (result.isLeft && _interruption.wasInterrupted) {
+          if (transferAttempt != _transferAttempt) return;
+          emit(Connecting());
+          if (await _interruption.awaitVerdict() == ResumeVerdict.giveUp) {
+            add(const DownloadFailed(
+                'The transfer stopped while the app was in the background. '
+                'Start it again to finish.'));
+            await _closeDirectLink();
+            return;
+          }
+          if (transferAttempt != _transferAttempt) return;
+          AppLogger.info('Resuming the transfer where it stopped',
+              tag: 'TRANSFER');
+          _interruption.reset();
+          result = await repository.receiveQhtpSession(
+            await _directRouteOrGiven(payload),
+            session.path,
+            onProgress: report,
+          );
+        }
 
         // The link has done its job either way; holding the radio open past
         // the transfer is nobody's benefit.
@@ -324,6 +365,13 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       _currentPayload = null;
       emit(ReceiverInitial());
     });
+  }
+
+  @override
+  Future<void> close() async {
+    _interruption.detach();
+    await _closeDirectLink();
+    return super.close();
   }
 
   /// Closes the direct link, if one was ever opened.
