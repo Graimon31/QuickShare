@@ -34,12 +34,28 @@ jobs:
       - name: Build
         run: flutter build windows --release
 
-      - name: Package
-        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath DirectDrop-windows.zip
+      # What Flutter produces here is already portable: an .exe beside its
+      # DLLs and a data/ folder, with nothing written to the registry and
+      # nothing to install. Copy it anywhere, including a USB stick, and run.
+      - name: Package portable build
         shell: pwsh
+        run: |
+          $out = "build\windows\x64\runner\Release"
+          @"
+          DirectDrop — portable build
+
+          Run directdrop.exe. Nothing is installed and nothing is written to
+          the registry; the whole folder is the application. Keep it together —
+          the .exe needs the DLLs and the data folder beside it.
+
+          Windows SmartScreen will warn on first run, because this build is not
+          signed with a code-signing certificate. Choose "More info" then "Run
+          anyway".
+          "@ | Out-File -FilePath "$out\README.txt" -Encoding utf8
+          Compress-Archive -Path "$out\*" -DestinationPath DirectDrop-windows-portable.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DirectDrop-windows
-          path: DirectDrop-windows.zip
+          name: DirectDrop-windows-portable
+          path: DirectDrop-windows-portable.zip
           retention-days: 30
