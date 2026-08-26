@@ -32,6 +32,16 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# permission_handler_windows pulls in C++/WinRT headers that still reach for
+# <experimental/coroutine>. A recent MSVC/STL turns that into a hard
+# static_assert failure (error C2338) rather than a warning, which breaks the
+# build outright rather than just complaining. This is the suppression
+# Microsoft's own error message names; it silences the deprecation gate
+# without changing what the header does, and applies to every target here
+# because generated_plugins.cmake's add_subdirectory calls happen after this
+# point in the file and inherit it.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
