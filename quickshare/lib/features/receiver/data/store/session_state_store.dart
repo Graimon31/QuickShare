@@ -92,9 +92,37 @@ class SessionStateStore {
     return dir.path;
   }
 
+  /// `sessionId` reaches this class straight from `sid` in a scanned QR code
+  /// or a pasted share link — nothing between the wire and here validates it.
+  /// Unsanitized, `../../../../Library/LaunchAgents/x` turns every read,
+  /// write and delete below into a path traversal: `File()` does not
+  /// interpret `..`, but the filesystem does the moment the path is actually
+  /// opened, so a crafted id reads, overwrites or deletes an arbitrary
+  /// `.json` file anywhere this process can reach — the whole disk outside
+  /// the sandbox, not just this app's own directory.
+  ///
+  /// An allowlist rather than a blocklist replace: this id is never shown to
+  /// anyone, so there is nothing to preserve about its shape, and a
+  /// characters-to-strip list is exactly the kind of check one forgotten
+  /// separator quietly defeats. The same malicious id always sanitizes to the
+  /// same safe string, so resume still finds its own state file again.
+  String _sanitizeSessionId(String sessionId) {
+    final clean = sessionId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    final trimmed = clean.length > 200 ? clean.substring(0, 200) : clean;
+    return trimmed.isEmpty ? 'session' : trimmed;
+  }
+
   Future<File> _getStateFile(String sessionId) async {
     final dir = await _getStoreDir();
-    return File(p.join(dir, '$sessionId.json'));
+    final file = File(p.join(dir, '${_sanitizeSessionId(sessionId)}.json'));
+    // Defense in depth: if sanitization above ever has a gap, this refuses to
+    // hand back a path outside the directory it is supposed to be confined
+    // to, rather than trusting the allowlist alone.
+    if (!p.isWithin(dir, file.path)) {
+      throw StateError('Refusing a session state path outside $dir: '
+          '${file.path}');
+    }
+    return file;
   }
 
   Future<Map<String, QhtpItemState>?> loadState(String sessionId) async {
