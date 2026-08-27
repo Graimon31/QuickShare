@@ -124,7 +124,17 @@ class WebRtcReceiverTransport {
   /// §9 — refreshes TURN credentials before they expire.
   TurnCredentialRefresher? _turnRefresher;
 
-  static const _connectionTimeout = Duration(seconds: 75);
+  /// A backstop against `_completion` never resolving at all, not a deadline
+  /// on how long a transfer may take.
+  ///
+  /// Real failure detection is `_onIceStateChanged` plus the idle watchdog
+  /// (armed once data starts flowing, in `_handleMessage`). This used to be
+  /// 75 seconds counted across the *entire* transfer rather than just
+  /// connection setup — the same bug `receiveWithSdpOffer` had and was fixed
+  /// for, just not here. Any file that took longer than 75s over a relay was
+  /// killed by this method while still healthy; at the ~1-3 MB/s a TURN
+  /// relay realistically manages, that is anything upward of roughly 100 MB.
+  static const _transferBackstop = Duration(minutes: 30);
 
   String sanitizeFileName(String name) {
     final base = p
@@ -335,21 +345,12 @@ class WebRtcReceiverTransport {
         });
       };
 
-      _peerConnection!.onIceConnectionState = (state) {
-        debugPrint('WebRTC receiver ICE: $state');
-        if (state ==
-                RTCIceConnectionState.RTCIceConnectionStateFailed ||
-            state ==
-                RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
-          if (!_completion.isCompleted) {
-            _fail(
-              'Peer connection failed (ICE $state). '
-              'Same Wi‑Fi helps; for LTE/cellular configure TURN via '
-              'QUICKSHARE_TURN_URL / USER / PASS.',
-            );
-          }
-        }
-      };
+      // The shared handler rather than a bespoke inline one: this used to
+      // fail the instant ICE reported Disconnected, with no grace period —
+      // a momentary blip (normal, recoverable) killed the transfer outright.
+      // `_onIceStateChanged` gives it `_iceRecoveryGrace` (20s) to recover
+      // before giving up, same as the QR/serverless path already does.
+      _peerConnection!.onIceConnectionState = _onIceStateChanged;
 
       _peerConnection!.onDataChannel = (RTCDataChannel channel) {
         debugPrint('WebRTC receiver: data channel received');
@@ -404,10 +405,11 @@ class WebRtcReceiverTransport {
               'Waiting for sender peer connection (keep the Mac share screen open)…');
 
       return await _completion.future.timeout(
-        _connectionTimeout,
+        _transferBackstop,
         onTimeout: () {
           throw Exception(
-            'Timed out waiting for the file transfer. Checklist:\n'
+            'No transfer completion after ${_transferBackstop.inMinutes} '
+            'minutes. If nothing was happening at all, check:\n'
             '• Signaling server running on the sender machine\n'
             '• Share link contains sig=ws://… and phone can open that host:port\n'
             '• Same Wi‑Fi for LAN signaling (LTE often needs TURN)\n'
