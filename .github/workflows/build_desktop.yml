@@ -3,9 +3,18 @@ name: Build Desktop Applications
 on:
   push:
     branches: [ main, master, 'fix/**', 'feat/**' ]
+    # A pushed tag like v1.0.0 is what turns this build into a public
+    # download: see the release job below.
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
+
+# Artifacts uploaded within a run need no permission to exist, but they stay
+# behind a GitHub login — which is the whole problem a Release solves, and
+# publishing one is what needs write access to the repo.
+permissions:
+  contents: write
 
 jobs:
   build_desktop_macos:
@@ -99,3 +108,35 @@ jobs:
           name: DirectDrop-windows-portable
           path: DirectDrop-windows-portable.zip
           retention-days: 30
+
+  # Run artifacts are only ever visible to someone logged in with access to
+  # the repo — that is what today's "why can't they download it" was. A
+  # Release attaches the same file to a public page instead, so this only
+  # fires for a version tag rather than every ordinary push.
+  #
+  # macOS and Linux are not attached yet: those two jobs still build --debug
+  # with nothing packaged, so there is nothing of release quality to publish
+  # for them. Windows is what was actually asked for today.
+  release:
+    needs: [ build_desktop_windows ]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DirectDrop-windows-portable
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DirectDrop-windows-portable.zip
+          body: |
+            Windows build, portable — no installer.
+
+            Download **DirectDrop-windows-portable.zip**, extract it anywhere,
+            run `directdrop.exe`. Nothing is installed and nothing is written
+            to the registry; the extracted folder is the whole application.
+
+            Windows SmartScreen will warn on first run, because this build
+            carries no code-signing certificate. Choose "More info" then "Run
+            anyway".
