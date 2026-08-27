@@ -11,8 +11,14 @@
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
     </application>
   </compatibility>
-  <Capabilities>
-    <DeviceCapability Name="bluetooth" />
-    <DeviceCapability Name="radios" />
-  </Capabilities>
+  <!--
+    No <Capabilities> block here. Device capabilities are a packaged-app
+    (UWP/MSIX) concept; in a classic Win32 side-by-side manifest the element
+    is not merely ignored — Windows rejects the whole manifest and the
+    executable refuses to start with "the application's side-by-side
+    configuration is incorrect", naming this element in the SideBySide event
+    log. Bluetooth from a Win32 process needs no declaration: universal_ble
+    reaches WinRT directly, and permission is a runtime prompt rather than a
+    manifest entry.
+  -->
 </assembly>
