@@ -82,9 +82,29 @@ jobs:
           flutter pub get
           flutter build windows --release
 
-      # Flutter's Windows output is already portable: an .exe beside its DLLs
-      # and a data/ folder, nothing installed and nothing written to the
-      # registry. The archive just needs saying so.
+      # Flutter links the app against the Visual C++ runtime but does not
+      # bundle it — the exe runs fine here because this runner has Visual
+      # Studio installed and the DLLs sit in the system path, and then fails
+      # on an ordinary user's machine with "side-by-side configuration is
+      # incorrect", which is Windows's way of saying vcruntime140.dll and
+      # friends are missing. Nearly every first-time Flutter Windows build
+      # hits this; "portable" is not true until these travel with the exe.
+      - name: Bundle the Visual C++ runtime
+        working-directory: ./quickshare
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -property installationPath
+          $redist = Get-ChildItem -Path "$vsPath\VC\Redist\MSVC" -Directory |
+            Sort-Object Name -Descending | Select-Object -First 1
+          $crtDir = Get-ChildItem -Path $redist.FullName -Directory -Filter "*.CRT" |
+            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
+          Copy-Item -Path "$($crtDir.FullName)\*.dll" -Destination "build\windows\x64\runner\Release" -Force
+          Write-Host "Bundled from: $($crtDir.FullName)"
+
+      # Flutter's Windows output is otherwise already portable: an .exe
+      # beside its DLLs and a data/ folder, nothing installed and nothing
+      # written to the registry. The archive just needs saying so.
       - name: Package portable build
         working-directory: ./quickshare
         shell: pwsh
