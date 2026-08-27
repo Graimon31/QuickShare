@@ -20,7 +20,7 @@ class _DirectDropAppState extends State<DirectDropApp> {
   // stays up.
   final _hotspotGuard = HotspotLifecycleGuard();
   StreamSubscription<InternetInvite>? _inviteSub;
-  StreamSubscription<String>? _payloadSub;
+  StreamSubscription<ShareLinkContents>? _payloadSub;
 
   @override
   void initState() {
@@ -38,10 +38,12 @@ class _DirectDropAppState extends State<DirectDropApp> {
     });
     // Payload links carry the QR itself (`?p=`). Receive/code submits that
     // string the same way a paste would.
-    _payloadSub = _deepLinks.sharePayloads.listen((payload) {
-      AppRouter.router.go(
-        '/receive/code?p=${Uri.encodeQueryComponent(payload)}',
-      );
+    _payloadSub = _deepLinks.sharePayloads.listen((share) {
+      final q = <String, String>{'p': share.qrPayload};
+      if (share.name != null) q['n'] = share.name!;
+      if (share.bytes != null) q['s'] = '${share.bytes}';
+      if (share.itemCount != null) q['c'] = '${share.itemCount}';
+      AppRouter.router.go(Uri(path: '/receive/code', queryParameters: q).toString());
     });
     _deepLinks.init();
     _hotspotGuard.attach();

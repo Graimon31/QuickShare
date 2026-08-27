@@ -178,7 +178,14 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                 defaultTargetPlatform == TargetPlatform.windows ||
                 defaultTargetPlatform == TargetPlatform.linux;
             final shareLink = showShareLink
-                ? DeepLinkService.buildPayloadLink(state.qrData)
+                ? DeepLinkService.buildPayloadLink(
+                    state.qrData,
+                    name: state.session.fileMetadata.name,
+                    bytes: state.totalBytes > 0
+                        ? state.totalBytes
+                        : state.session.fileMetadata.size,
+                    itemCount: state.itemCount,
+                  )
                 : null;
 
             return ScrollConfiguration(

@@ -89,6 +89,9 @@ void main() {
         token: 't',
         sessionId: 'sid-link',
         mode: 'http-lan',
+        fileName: 'Holiday',
+        fileSize: 999,
+        itemCount: 4,
       );
       final encoded = payload.encode();
       final link = DeepLinkService.buildPayloadLink(encoded);
@@ -96,6 +99,9 @@ void main() {
       expect(decoded.sessionId, 'sid-link');
       expect(decoded.ip, '192.168.0.5');
       expect(decoded.port, 9000);
+      expect(decoded.fileName, 'Holiday');
+      expect(decoded.fileSize, 999);
+      expect(decoded.itemCount, 4);
     });
   });
 }

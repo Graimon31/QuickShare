@@ -9,7 +9,9 @@ class QRPayloadDecoder {
   static const String serverlessMode = 'webrtc-qs1';
 
   QRPayload decode(String rawQRData) {
-    final unwrapped = DeepLinkService.unwrapToQrPayload(rawQRData);
+    final share = DeepLinkService.parseShareLink(rawQRData);
+    final unwrapped = share?.qrPayload ??
+        DeepLinkService.unwrapToQrPayload(rawQRData);
     if (ServerlessQr.looksLikeOne(unwrapped)) {
       // Validate by decoding — a corrupt scan should fail here rather than
       // halfway through the handshake.
@@ -22,6 +24,9 @@ class QRPayloadDecoder {
         sessionId: qr.offer.iceUfrag,
         mode: serverlessMode,
         sdpOffer: unwrapped,
+        fileName: share?.name ?? '',
+        fileSize: share?.bytes ?? 0,
+        itemCount: share?.itemCount ?? 0,
       );
     }
 
@@ -33,7 +38,23 @@ class QRPayloadDecoder {
       if (!payload.isValid) {
         throw Exception('Invalid payload fields');
       }
-      return payload;
+      return QRPayload(
+        version: payload.version,
+        ip: payload.ip,
+        port: payload.port,
+        token: payload.token,
+        fileName: payload.fileName.isNotEmpty
+            ? payload.fileName
+            : (share?.name ?? ''),
+        fileSize: payload.fileSize > 0 ? payload.fileSize : (share?.bytes ?? 0),
+        checksum: payload.checksum,
+        sessionId: payload.sessionId,
+        mode: payload.mode,
+        sdpOffer: payload.sdpOffer,
+        itemCount: payload.itemCount > 0
+            ? payload.itemCount
+            : (share?.itemCount ?? 0),
+      );
     } catch (e) {
       final roomCode = DeepLinkService.parseFromText(unwrapped);
       if (roomCode != null) {

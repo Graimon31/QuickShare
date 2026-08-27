@@ -77,8 +77,8 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
 
   Future<void> _submit() async {
     if (_isSubmitting || _phase != _Phase.idle) return;
-    final text = DeepLinkService.unwrapToQrPayload(_controller.text);
-    if (text.isEmpty) {
+    final raw = _controller.text.trim();
+    if (raw.isEmpty) {
       setState(() => _inputError = 'Paste the share link from the sender.');
       return;
     }
@@ -88,14 +88,20 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     });
 
     try {
-      final invite = DeepLinkService.parseInternetInvite(text);
-      if (invite != null) {
-        await _startInternet(invite.roomCode, signalingUrl: invite.signalingUrl);
-        return;
+      // Payload links (`?p=`) also use the directdrop scheme. Check those
+      // first so a share is not mistaken for a legacy six-character room.
+      if (DeepLinkService.parseShareLink(raw) == null) {
+        final invite = DeepLinkService.parseInternetInvite(raw);
+        if (invite != null) {
+          await _startInternet(invite.roomCode,
+              signalingUrl: invite.signalingUrl);
+          return;
+        }
       }
 
       if (!mounted) return;
-      context.read<ReceiverBloc>().add(QRCodeScanned(text, fromPaste: true));
+      // Pass the full pasted string so `n`/`s`/`c` preview fields survive.
+      context.read<ReceiverBloc>().add(QRCodeScanned(raw, fromPaste: true));
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -342,16 +348,25 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
   }
 
   Widget _buildConfirm(BuildContext context, QRParsed state) {
+    final payload = state.payload;
     final preview = state.qhtpPreview;
-    final isQhtp = state.payload.isQhtp;
-
-    final title = isQhtp
-        ? (preview != null
-            ? '${preview.itemCount} ${preview.itemCount == 1 ? 'file' : 'files'}'
-            : 'Folder / multiple files')
-        : state.payload.fileName;
-    final sizeBytes =
-        isQhtp ? (preview?.totalBytes ?? 0) : state.payload.fileSize;
+    final itemCount = preview?.itemCount ?? payload.itemCount;
+    final sizeBytes = preview?.totalBytes ?? payload.fileSize;
+    final isMany = itemCount > 1;
+    final title = payload.fileName.isNotEmpty
+        ? payload.fileName
+        : (itemCount > 0
+            ? '$itemCount ${itemCount == 1 ? 'file' : 'files'}'
+            : 'Incoming transfer');
+    final sizeBits = <String>[
+      if (itemCount > 1) '$itemCount files',
+      if (sizeBytes > 0)
+        FileMetadata(name: '', path: '', size: sizeBytes, mimeType: '')
+            .sizeFormatted,
+    ];
+    final sizeLabel = sizeBits.isNotEmpty
+        ? sizeBits.join(' · ')
+        : 'Size unknown until the transfer starts';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -376,7 +391,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
               child: Row(
                 children: [
                   Icon(
-                    isQhtp
+                    isMany
                         ? Icons.folder_zip_rounded
                         : Icons.insert_drive_file_rounded,
                     color: AppColors.success,
@@ -398,12 +413,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          FileMetadata(
-                                  name: '',
-                                  path: '',
-                                  size: sizeBytes,
-                                  mimeType: '')
-                              .sizeFormatted,
+                          sizeLabel,
                           style: GoogleFonts.inter(
                               fontSize: 14,
                               color: Colors.white.withValues(alpha: 0.70)),

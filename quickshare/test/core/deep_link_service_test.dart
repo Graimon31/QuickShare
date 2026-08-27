@@ -120,5 +120,32 @@ void main() {
         isNull,
       );
     });
+
+    test('carries file name, size and count for the receiver preview', () {
+      final link = DeepLinkService.buildPayloadLink(
+        'QS1abcdefghijk',
+        name: 'Vacation.jpg',
+        bytes: 1234567,
+        itemCount: 1,
+      );
+      final parsed = DeepLinkService.parseShareLink(link);
+      expect(parsed, isNotNull);
+      expect(parsed!.qrPayload, 'QS1abcdefghijk');
+      expect(parsed.name, 'Vacation.jpg');
+      expect(parsed.bytes, 1234567);
+      expect(parsed.itemCount, 1);
+    });
+
+    test('encodes a Cyrillic folder name without losing it', () {
+      final link = DeepLinkService.buildPayloadLink(
+        'QS1x',
+        name: 'Фото',
+        bytes: 42,
+        itemCount: 3,
+      );
+      final parsed = DeepLinkService.parseShareLink(link)!;
+      expect(parsed.name, 'Фото');
+      expect(parsed.itemCount, 3);
+    });
   });
 }

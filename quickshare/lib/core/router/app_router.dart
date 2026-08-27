@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:animations/animations.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/theme/app_motion.dart';
@@ -201,7 +202,13 @@ class AppRouter {
               final payload = state.uri.queryParameters['p'];
               String? initial;
               if (payload != null && payload.isNotEmpty) {
-                initial = payload;
+                initial = DeepLinkService.buildPayloadLink(
+                  payload,
+                  name: state.uri.queryParameters['n'],
+                  bytes: int.tryParse(state.uri.queryParameters['s'] ?? ''),
+                  itemCount:
+                      int.tryParse(state.uri.queryParameters['c'] ?? ''),
+                );
               } else if (room != null && room.isNotEmpty) {
                 initial = (sig != null && sig.isNotEmpty)
                     ? 'directdrop://join?room=$room&sig=${Uri.encodeComponent(sig)}'
