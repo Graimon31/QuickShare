@@ -93,14 +93,31 @@ jobs:
         working-directory: ./quickshare
         shell: pwsh
         run: |
+          # Fail loudly rather than silently: a Copy-Item that finds nothing
+          # is a non-terminating error by default in PowerShell and would
+          # otherwise leave this step green with an artifact that is still
+          # broken — which is exactly what shipped in v1.0.1. Nobody should
+          # find that out on a machine three time zones away again.
+          $ErrorActionPreference = 'Stop'
+
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vsPath = & $vswhere -latest -property installationPath
-          $redist = Get-ChildItem -Path "$vsPath\VC\Redist\MSVC" -Directory |
-            Sort-Object Name -Descending | Select-Object -First 1
-          $crtDir = Get-ChildItem -Path $redist.FullName -Directory -Filter "*.CRT" |
-            Where-Object { $_.FullName -match '\\x64\\' } | Select-Object -First 1
-          Copy-Item -Path "$($crtDir.FullName)\*.dll" -Destination "build\windows\x64\runner\Release" -Force
-          Write-Host "Bundled from: $($crtDir.FullName)"
+          if (-not $vsPath) { throw "vswhere found no Visual Studio installation" }
+
+          # The CRT folder is two levels below the redist version folder
+          # (<version>\x64\Microsoft.VCnnn.CRT), not one — a non-recursive
+          # search here is what silently found nothing last time.
+          $crtDir = Get-ChildItem -Path "$vsPath\VC\Redist\MSVC" -Recurse -Directory -Filter "Microsoft.VC*.CRT" |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $crtDir) { throw "Could not find an x64 CRT redistributable folder under $vsPath" }
+
+          $dlls = Get-ChildItem -Path $crtDir.FullName -Filter "*.dll"
+          if ($dlls.Count -eq 0) { throw "$($crtDir.FullName) contained no DLLs" }
+
+          Copy-Item -Path $dlls.FullName -Destination "build\windows\x64\runner\Release" -Force
+          Write-Host "Bundled $($dlls.Count) runtime DLL(s) from: $($crtDir.FullName)"
+          $dlls | ForEach-Object { Write-Host "  $($_.Name)" }
 
       # Flutter's Windows output is otherwise already portable: an .exe
       # beside its DLLs and a data/ folder, nothing installed and nothing
