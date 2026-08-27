@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 import 'package:quickshare/core/webrtc/turn_credential_service.dart';
@@ -95,16 +94,8 @@ class TurnCredentialRefresher {
       final service = TurnCredentialService(baseUrl: workerBaseUrl);
       final result = await service.fetchIceServersWithExpiry();
 
-      // Build the de-duplicated ICE config the same way the initial fetch does.
-      final seen = IceServers.stunUrlsIn(result.servers);
-      final newConfig = <String, dynamic>{
-        'iceServers': [
-          for (final stunUrl in AppConstants.stunServers)
-            if (!seen.contains(stunUrl)) {'urls': stunUrl},
-          ...result.servers,
-        ],
-        'iceTransportPolicy': 'all',
-      };
+      final newConfig =
+          IceServers.configurationWithTurnServers(result.servers);
 
       await peerConnection.setConfiguration(newConfig);
       AppLogger.info(

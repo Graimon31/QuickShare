@@ -17,31 +17,88 @@ import 'package:quickshare/core/webrtc/turn_credential_service.dart';
 class IceServers {
   const IceServers._();
 
+  /// libwebrtc's `RTCConfiguration.ice_servers` is a C array of
+  /// `kMaxIceServerSize` (8) entries. flutter_webrtc's desktop
+  /// `CreateIceServers` writes `ice_servers[i]` for every Dart entry with
+  /// **no bounds check**. A ninth server is a native buffer overflow:
+  /// `createPeerConnection` kills the process, no Dart exception, and the
+  /// last log line is the wakelock that sits immediately above the call.
+  ///
+  /// The default STUN pool (5) plus one TURN host expanded into four
+  /// transports is 9. Anything that builds this list has to go through
+  /// [_fit] so that cannot happen again.
+  static const int maxIceServers = 8;
+
   /// Credentials never appear here as literals — they come from
-  /// `--dart-define` (or CI secrets) through [AppConstants], so a build can be
-  /// pointed at a private TURN account without touching this file.
+  /// `--dart-define` (or CI secrets) through [AppConstants], so a build can
+  /// be pointed at a private TURN account without touching this file.
   static List<Map<String, dynamic>> build({
     List<String>? stunUrls,
     List<String>? turnUrls,
     String? username,
     String? credential,
   }) {
-    final servers = <Map<String, dynamic>>[
+    final stun = <Map<String, dynamic>>[
       for (final url in stunUrls ?? AppConstants.stunServers) {'urls': url},
     ];
 
     final user = username ?? AppConstants.turnUsername;
     final secret = credential ?? AppConstants.turnCredential;
 
+    final turn = <Map<String, dynamic>>[];
     for (final url in turnUrls ?? AppConstants.turnServerUrls) {
       if (url.trim().isEmpty) continue;
       final entry = <String, dynamic>{'urls': url.trim()};
       if (user.isNotEmpty) entry['username'] = user;
       if (secret.isNotEmpty) entry['credential'] = secret;
-      servers.add(entry);
+      turn.add(entry);
     }
 
-    return servers;
+    return _fit(stun: stun, turn: turn);
+  }
+
+  /// Same merge [configurationDynamic] uses: static STUN pool plus a
+  /// Worker-provided TURN list, de-duplicated and capped at [maxIceServers].
+  static Map<String, dynamic> configurationWithTurnServers(
+    List<Map<String, dynamic>> turnServers,
+  ) {
+    final seen = stunUrlsIn(turnServers);
+    final stun = <Map<String, dynamic>>[
+      for (final stunUrl in AppConstants.stunServers)
+        if (!seen.contains(stunUrl)) {'urls': stunUrl},
+    ];
+    return {
+      'iceServers': _fit(stun: stun, turn: turnServers),
+      'iceTransportPolicy': 'all',
+    };
+  }
+
+  /// Trim STUN first so a VPN session still has every TURN transport. Only
+  /// if TURN alone still overflows do we drop the least-preferred relay
+  /// (UDP, last in [expandTransports]).
+  static List<Map<String, dynamic>> _fit({
+    required List<Map<String, dynamic>> stun,
+    required List<Map<String, dynamic>> turn,
+  }) {
+    final stunKeep = List<Map<String, dynamic>>.of(stun);
+    final turnKeep = List<Map<String, dynamic>>.of(turn);
+    final original = stunKeep.length + turnKeep.length;
+    while (stunKeep.length + turnKeep.length > maxIceServers &&
+        stunKeep.isNotEmpty) {
+      stunKeep.removeLast();
+    }
+    while (stunKeep.length + turnKeep.length > maxIceServers &&
+        turnKeep.isNotEmpty) {
+      turnKeep.removeLast();
+    }
+    if (original > maxIceServers) {
+      AppLogger.warning(
+        'ICE server list was $original; libwebrtc only keeps '
+        '$maxIceServers. Dropped ${original - stunKeep.length - turnKeep.length}.',
+        tag: 'WEBRTC',
+      );
+    }
+    return [...stunKeep, ...turnKeep];
   }
 
   static Map<String, dynamic> configuration({
@@ -85,16 +142,7 @@ class IceServers {
       // pool — `stun.cloudflare.com` is in both. A duplicate is not harmless
       // here: every extra STUN URL is another query inside the 6-second
       // gathering ceiling that a relay candidate is already competing for.
-      final seen = stunUrlsIn(dynamicTurnServers);
-
-      return {
-        'iceServers': [
-          for (final stunUrl in AppConstants.stunServers)
-            if (!seen.contains(stunUrl)) {'urls': stunUrl},
-          ...dynamicTurnServers,
-        ],
-        'iceTransportPolicy': 'all',
-      };
+      return configurationWithTurnServers(dynamicTurnServers);
     } catch (e) {
       AppLogger.warning(
           'Worker TURN credential fetch failed, falling back to static '

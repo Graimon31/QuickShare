@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 
 void main() {
@@ -58,6 +59,64 @@ void main() {
 
     test('keeps a direct path available rather than forcing relay', () {
       expect(IceServers.configuration()['iceTransportPolicy'], equals('all'));
+    });
+
+    test('never hands libwebrtc more ICE servers than its C array holds', () {
+      // flutter_webrtc writes ice_servers[i] with no bounds check.
+      // kMaxIceServerSize is 8; a ninth entry is a native overflow that
+      // kills the Windows process inside createPeerConnection.
+      final uncapped = AppConstants.stunServers.length +
+          AppConstants.turnServerUrls.length;
+      expect(uncapped, greaterThan(IceServers.maxIceServers));
+      expect(IceServers.build().length, lessThanOrEqualTo(IceServers.maxIceServers));
+      expect(
+        (IceServers.configuration()['iceServers'] as List).length,
+        lessThanOrEqualTo(IceServers.maxIceServers),
+      );
+    });
+
+    test('drops extra STUN rather than a TURN transport when the list overflows',
+        () {
+      final servers = IceServers.build(
+        stunUrls: const [
+          'stun:a',
+          'stun:b',
+          'stun:c',
+          'stun:d',
+          'stun:e',
+        ],
+        turnUrls: const [
+          'turn:x:443?transport=tcp',
+          'turns:x:443?transport=tcp',
+          'turn:x:80?transport=tcp',
+          'turn:x:3478',
+        ],
+        username: 'u',
+        credential: 'c',
+      );
+      expect(servers, hasLength(IceServers.maxIceServers));
+      final urls = servers.map((s) => s['urls']).toList();
+      expect(urls, contains('turn:x:443?transport=tcp'));
+      expect(urls, contains('turns:x:443?transport=tcp'));
+      expect(urls, contains('turn:x:80?transport=tcp'));
+      expect(urls, contains('turn:x:3478'));
+      expect(urls, isNot(contains('stun:e')));
+    });
+
+    test('configurationWithTurnServers also stays within the libwebrtc cap', () {
+      final turn = [
+        for (var i = 0; i < 10; i++)
+          <String, dynamic>{
+            'urls': 'turn:relay$i.example.com:443?transport=tcp',
+            'username': 'u',
+            'credential': 'c',
+          },
+      ];
+      final config = IceServers.configurationWithTurnServers(turn);
+      expect(
+        (config['iceServers'] as List).length,
+        lessThanOrEqualTo(IceServers.maxIceServers),
+      );
     });
   });
 }

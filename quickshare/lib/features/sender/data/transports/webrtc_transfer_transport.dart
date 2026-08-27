@@ -123,6 +123,16 @@ class WebRtcTransferTransport implements TransferTransport {
   Future<Map<String, dynamic>> _iceConfiguration() =>
       IceServers.configurationDynamic();
 
+  Future<RTCPeerConnection> _openPeerConnection() async {
+    final ice = await _iceConfiguration();
+    final iceCount = (ice['iceServers'] as List?)?.length ?? 0;
+    AppLogger.info(
+      'Creating peer connection ($iceCount ICE servers, cap ${IceServers.maxIceServers})',
+      tag: 'WEBRTC_SENDER',
+    );
+    return createPeerConnection(ice);
+  }
+
   /// Starts a TURN credential refresh timer after the peer connection is up.
   ///
   /// §9: Credentials fetched at connection time expire after 30 minutes.
@@ -147,7 +157,7 @@ class WebRtcTransferTransport implements TransferTransport {
       _statusController.add(TransferStatus.connecting);
       await _wakelockGuard.acquire(); // §6
 
-      _peerConnection = await createPeerConnection(await _iceConfiguration());
+      _peerConnection = await _openPeerConnection();
       await _startTurnRefresher(); // §9
       // The room-based path had no ICE state handler at all, so a dropped
       // connection here was even quieter than in the serverless one.
@@ -254,7 +264,7 @@ class WebRtcTransferTransport implements TransferTransport {
       _statusController.add(TransferStatus.connecting);
       await _wakelockGuard.acquire(); // §6
 
-      _peerConnection = await createPeerConnection(await _iceConfiguration());
+      _peerConnection = await _openPeerConnection();
       await _startTurnRefresher(); // §9
 
       // Candidates gathered after the QR is rendered cannot reach the peer —
