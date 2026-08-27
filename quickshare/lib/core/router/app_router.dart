@@ -198,11 +198,14 @@ class AppRouter {
             pageBuilder: (context, state) {
               final room = state.uri.queryParameters['room'];
               final sig = state.uri.queryParameters['sig'];
+              final payload = state.uri.queryParameters['p'];
               String? initial;
-              if (room != null && room.isNotEmpty) {
+              if (payload != null && payload.isNotEmpty) {
+                initial = payload;
+              } else if (room != null && room.isNotEmpty) {
                 initial = (sig != null && sig.isNotEmpty)
-                    ? 'quickshare://join?room=$room&sig=${Uri.encodeComponent(sig)}'
-                    : 'quickshare://join?room=$room';
+                    ? 'directdrop://join?room=$room&sig=${Uri.encodeComponent(sig)}'
+                    : 'directdrop://join?room=$room';
               }
               return _qsPage(
                 state,

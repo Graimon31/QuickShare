@@ -82,6 +82,47 @@ void main() {
     );
   });
 
+  test('paste failures do not tell the user to point a camera', () async {
+    const raw = 'directdrop://join?p=not-a-payload';
+    when(() => mockReceiverRepository.parseQRCode(raw))
+        .thenAnswer((_) async => const Left(FileFailure('Invalid QR Code')));
+
+    final seen = expectLater(
+      receiverBloc.stream,
+      emits(isA<ReceiverError>().having(
+        (e) => e.message,
+        'message',
+        contains('share link'),
+      )),
+    );
+    receiverBloc.add(const QRCodeScanned(raw, fromPaste: true));
+    await seen;
+  });
+
+  test('a second failed paste still emits so the Receive button unsticks',
+      () async {
+    const raw = 'nope';
+    when(() => mockReceiverRepository.parseQRCode(raw))
+        .thenAnswer((_) async => const Left(FileFailure('Invalid QR Code')));
+
+    final first = expectLater(
+      receiverBloc.stream,
+      emits(isA<ReceiverError>()),
+    );
+    receiverBloc.add(const QRCodeScanned(raw, fromPaste: true));
+    await first;
+
+    final second = expectLater(
+      receiverBloc.stream,
+      emitsInOrder([
+        isA<ReceiverInitial>(),
+        isA<ReceiverError>(),
+      ]),
+    );
+    receiverBloc.add(const QRCodeScanned(raw, fromPaste: true));
+    await second;
+  });
+
   test('should emit ReceiverInitial when CancelDownload event is added', () async {
     when(() => mockReceiverRepository.cancelDownload()).thenReturn(null);
 

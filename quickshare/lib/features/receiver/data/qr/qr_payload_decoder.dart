@@ -9,10 +9,11 @@ class QRPayloadDecoder {
   static const String serverlessMode = 'webrtc-qs1';
 
   QRPayload decode(String rawQRData) {
-    if (ServerlessQr.looksLikeOne(rawQRData)) {
+    final unwrapped = DeepLinkService.unwrapToQrPayload(rawQRData);
+    if (ServerlessQr.looksLikeOne(unwrapped)) {
       // Validate by decoding — a corrupt scan should fail here rather than
       // halfway through the handshake.
-      final qr = ServerlessQr.decode(rawQRData.trim());
+      final qr = ServerlessQr.decode(unwrapped);
       return QRPayload(
         version: 2,
         ip: 'p2p',
@@ -20,12 +21,12 @@ class QRPayloadDecoder {
         token: qr.offer.iceUfrag,
         sessionId: qr.offer.iceUfrag,
         mode: serverlessMode,
-        sdpOffer: rawQRData.trim(),
+        sdpOffer: unwrapped,
       );
     }
 
     try {
-      final payload = QRPayload.decode(rawQRData);
+      final payload = QRPayload.decode(unwrapped);
       if (payload.version != 1 && payload.version != 2) {
         throw Exception('Unsupported QR version: ${payload.version}. Expected 1 or 2.');
       }
@@ -34,7 +35,7 @@ class QRPayloadDecoder {
       }
       return payload;
     } catch (e) {
-      final roomCode = DeepLinkService.parseFromText(rawQRData);
+      final roomCode = DeepLinkService.parseFromText(unwrapped);
       if (roomCode != null) {
         return QRPayload(
           version: 1,

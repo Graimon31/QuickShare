@@ -77,21 +77,33 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
 
   Future<void> _submit() async {
     if (_isSubmitting || _phase != _Phase.idle) return;
-    final text = _controller.text.trim();
-    if (text.isEmpty) return;
+    final text = DeepLinkService.unwrapToQrPayload(_controller.text);
+    if (text.isEmpty) {
+      setState(() => _inputError = 'Paste the share link from the sender.');
+      return;
+    }
     setState(() {
       _isSubmitting = true;
       _inputError = null;
     });
 
-    final invite = DeepLinkService.parseInternetInvite(text);
-    if (invite != null) {
-      await _startInternet(invite.roomCode, signalingUrl: invite.signalingUrl);
-      return;
-    }
+    try {
+      final invite = DeepLinkService.parseInternetInvite(text);
+      if (invite != null) {
+        await _startInternet(invite.roomCode, signalingUrl: invite.signalingUrl);
+        return;
+      }
 
-    if (!mounted) return;
-    context.read<ReceiverBloc>().add(QRCodeScanned(text));
+      if (!mounted) return;
+      context.read<ReceiverBloc>().add(QRCodeScanned(text, fromPaste: true));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSubmitting = false;
+        _inputError =
+            'Could not read that link. Copy the share link under the QR on the sender.';
+      });
+    }
   }
 
   Future<void> _startInternet(String roomCode, {String? signalingUrl}) async {
@@ -195,16 +207,10 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                   ? BlocConsumer<ReceiverBloc, ReceiverState>(
                       listener: (context, state) {
                         if (state is QRParsed || state is ReceiverError) {
-                          _isSubmitting = false;
+                          setState(() => _isSubmitting = false);
                         }
                         if (state is ReceiverError) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(state.message),
-                              backgroundColor: AppColors.error,
-                              behavior: SnackBarBehavior.floating,
-                            ),
-                          );
+                          setState(() => _inputError = state.message);
                         }
                       },
                       builder: (context, state) {
@@ -257,7 +263,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 style: GoogleFonts.firaCode(color: Colors.white, fontSize: 14),
                 decoration: InputDecoration(
                   border: InputBorder.none,
-                  hintText: 'Wi-Fi code or room link',
+                  hintText: 'directdrop://join?p=…',
                   hintStyle:
                       GoogleFonts.inter(color: Colors.white.withValues(alpha: 0.40)),
                 ),

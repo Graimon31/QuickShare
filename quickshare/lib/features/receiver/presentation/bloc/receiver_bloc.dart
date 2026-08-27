@@ -33,9 +33,15 @@ class StartScanning extends ReceiverEvent {}
 
 class QRCodeScanned extends ReceiverEvent {
   final String rawData;
-  const QRCodeScanned(this.rawData);
+
+  /// True when the payload was pasted or opened as a link, not read by camera.
+  /// The error copy has to say so: telling a desktop user to point the
+  /// camera at the QR is how a failed paste currently reads as a hang.
+  final bool fromPaste;
+
+  const QRCodeScanned(this.rawData, {this.fromPaste = false});
   @override
-  List<Object> get props => [rawData];
+  List<Object> get props => [rawData, fromPaste];
 }
 
 class StartDownload extends ReceiverEvent {
@@ -182,10 +188,19 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     on<StartScanning>((event, emit) => emit(Scanning()));
 
     on<QRCodeScanned>((event, emit) async {
+      // A second failed paste would otherwise emit the same ReceiverError
+      // the bloc already holds, which Equatable swallows — the desktop
+      // Receive button stays disabled and the window looks frozen.
+      if (state is ReceiverError) {
+        emit(ReceiverInitial());
+      }
       final result = await repository.parseQRCode(event.rawData);
       await result.fold(
-        (failure) async => emit(const ReceiverError(
-            'Invalid QR Code. Point the camera at the QR on the sender screen — not at the Wi‑Fi address text under it.')),
+        (failure) async => emit(ReceiverError(
+          event.fromPaste
+              ? 'That is not a DirectDrop share link. Copy the link under the QR on the sender — not the Wi-Fi address.'
+              : 'Invalid QR Code. Point the camera at the QR on the sender screen — not at the Wi‑Fi address text under it.',
+        )),
         (payload) async {
           _currentPayload = payload;
           if (!payload.isQhtp) {

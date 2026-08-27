@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -9,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
@@ -62,6 +64,67 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     );
   }
 
+  Widget _copyRow({
+    required IconData icon,
+    required String label,
+    required String value,
+    required String copiedMessage,
+  }) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            color: const Color.fromRGBO(255, 255, 255, 0.08),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: const Color.fromRGBO(255, 255, 255, 0.25),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: AppColors.primary, size: 22),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        color: Colors.white.withValues(alpha: 0.55),
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    SelectableText(
+                      value,
+                      maxLines: 3,
+                      style: GoogleFonts.firaCode(
+                        fontSize: 13,
+                        color: Colors.white.withValues(alpha: 0.9),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.copy_rounded,
+                    color: Colors.white, size: 20),
+                onPressed: () => _copyToClipboard(value, copiedMessage),
+                tooltip: 'Copy',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -111,7 +174,12 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
             }
 
             final isInternet = state.mode == TransportType.internet;
-            final shareText = isInternet ? state.webLinkUrl : state.qrData;
+            final showShareLink = defaultTargetPlatform == TargetPlatform.macOS ||
+                defaultTargetPlatform == TargetPlatform.windows ||
+                defaultTargetPlatform == TargetPlatform.linux;
+            final shareLink = showShareLink
+                ? DeepLinkService.buildPayloadLink(state.qrData)
+                : null;
 
             return ScrollConfiguration(
               behavior:
@@ -129,9 +197,11 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                       children: [
                         // Subtitle instruction
                         Text(
-                          isInternet
-                              ? 'Share this link to receive the file'
-                              : 'Scan this QR code to receive the file',
+                          showShareLink
+                              ? 'Scan the QR or share the link'
+                              : (isInternet
+                                  ? 'Share this link to receive the file'
+                                  : 'Scan this QR code to receive the file'),
                           textAlign: TextAlign.center,
                           style: GoogleFonts.inter(
                             fontSize: 18,
@@ -214,84 +284,25 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                           ),
                         ).animate().scale(delay: 150.ms, duration: 350.ms),
 
-                        // Connection / Link Box
-                        if (shareText != null) ...[
+                        if (shareLink != null) ...[
                           const SizedBox(height: 20),
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(16),
-                            child: BackdropFilter(
-                              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 16, vertical: 12),
-                                decoration: BoxDecoration(
-                                  color:
-                                      const Color.fromRGBO(255, 255, 255, 0.08),
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(
-                                    color: const Color.fromRGBO(
-                                        255, 255, 255, 0.25),
-                                    width: 1,
-                                  ),
-                                ),
-                                child: Row(
-                                  children: [
-                                    Icon(
-                                      isInternet
-                                          ? Icons.link
-                                          : Icons.wifi_tethering_rounded,
-                                      color: AppColors.primary,
-                                      size: 22,
-                                    ),
-                                    const SizedBox(width: 12),
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            isInternet
-                                                ? 'Share link'
-                                                : 'Sender Wi‑Fi address',
-                                            style: GoogleFonts.inter(
-                                              fontSize: 11,
-                                              color:
-                                                  Colors.white.withValues(alpha: 0.55),
-                                            ),
-                                          ),
-                                          const SizedBox(height: 2),
-                                          SelectableText(
-                                            isInternet
-                                                ? shareText
-                                                : '${state.session.localIp}:${state.session.serverPort}',
-                                            style: GoogleFonts.firaCode(
-                                              fontSize: 14,
-                                              color:
-                                                  Colors.white.withValues(alpha: 0.9),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    const SizedBox(width: 8),
-                                    IconButton(
-                                      icon: const Icon(Icons.copy_rounded,
-                                          color: Colors.white, size: 20),
-                                      onPressed: () => _copyToClipboard(
-                                        isInternet
-                                            ? shareText
-                                            : '${state.session.localIp}:${state.session.serverPort}',
-                                        isInternet
-                                            ? 'Link copied to clipboard'
-                                            : 'Wi‑Fi address copied',
-                                      ),
-                                      tooltip: 'Copy',
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
+                          _copyRow(
+                            icon: Icons.link,
+                            label: 'Share link',
+                            value: shareLink,
+                            copiedMessage: 'Link copied to clipboard',
                           ).animate().fadeIn(delay: 250.ms),
+                        ],
+
+                        if (!isInternet) ...[
+                          const SizedBox(height: 12),
+                          _copyRow(
+                            icon: Icons.wifi_tethering_rounded,
+                            label: 'Sender Wi‑Fi address',
+                            value:
+                                '${state.session.localIp}:${state.session.serverPort}',
+                            copiedMessage: 'Wi‑Fi address copied',
+                          ).animate().fadeIn(delay: 280.ms),
                         ],
 
                         const SizedBox(height: 20),

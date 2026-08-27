@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 
@@ -77,6 +78,24 @@ void main() {
       const badJson = '{"v":99,"ip":"1.1.1.1","p":1,"t":"t","sid":"x","mode":"http-lan"}';
       final badEncoded = base64UrlEncode(utf8.encode(badJson));
       expect(() => decoder.decode(badEncoded), throwsA(anything));
+    });
+
+    test('QRPayloadDecoder accepts a share link wrapping the same locator', () {
+      final decoder = QRPayloadDecoder();
+      const payload = QRPayload(
+        version: 2,
+        ip: '192.168.0.5',
+        port: 9000,
+        token: 't',
+        sessionId: 'sid-link',
+        mode: 'http-lan',
+      );
+      final encoded = payload.encode();
+      final link = DeepLinkService.buildPayloadLink(encoded);
+      final decoded = decoder.decode(link);
+      expect(decoded.sessionId, 'sid-link');
+      expect(decoded.ip, '192.168.0.5');
+      expect(decoded.port, 9000);
     });
   });
 }

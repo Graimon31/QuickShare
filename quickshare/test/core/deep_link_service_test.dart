@@ -81,4 +81,44 @@ void main() {
       expect(invite?.signalingUrl, isNull);
     });
   });
+
+  group('DeepLinkService payload share link', () {
+    test('round-trips a serverless QR payload', () {
+      const payload = 'QS1abcdefghijk';
+      final link = DeepLinkService.buildPayloadLink(payload);
+      expect(link, startsWith('directdrop://join?p='));
+      final parsed = DeepLinkService.parseSharePayloadFromUri(Uri.parse(link));
+      expect(parsed, payload);
+    });
+
+    test('round-trips a compressed QHTP locator', () {
+      const payload = 'eJyNjsEKwjAQRP-l';
+      final link = DeepLinkService.buildPayloadLink(payload);
+      expect(DeepLinkService.parseSharePayloadFromUri(Uri.parse(link)), payload);
+    });
+
+    test('unwrapToQrPayload peels the wrapper and leaves raw QR text alone', () {
+      const payload = 'QS1rawpayload';
+      expect(
+        DeepLinkService.unwrapToQrPayload(
+            DeepLinkService.buildPayloadLink(payload)),
+        payload,
+      );
+      expect(DeepLinkService.unwrapToQrPayload('  QS1rawpayload  '), payload);
+    });
+
+    test('a room invite is not mistaken for a payload link', () {
+      final uri = Uri.parse('directdrop://join?room=A1B2C3');
+      expect(DeepLinkService.parseSharePayloadFromUri(uri), isNull);
+      expect(DeepLinkService.unwrapToQrPayload(uri.toString()), uri.toString());
+    });
+
+    test('rejects an empty p=', () {
+      expect(
+        DeepLinkService.parseSharePayloadFromUri(
+            Uri.parse('directdrop://join?p=')),
+        isNull,
+      );
+    });
+  });
 }
