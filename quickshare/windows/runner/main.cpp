@@ -26,9 +26,20 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
+  // Cap the height at 80% of the work area: with 150% display scaling a
+  // hard-coded 720 logical pixels is the screen's entire logical height, and
+  // the "small" window filled the screen top to bottom.
+  RECT work_area{};
+  SystemParametersInfo(SPI_GETWORKAREA, 0, &work_area, 0);
+  const double scale = GetDpiForSystem() / 96.0;
+  const unsigned screen_logical_height =
+      static_cast<unsigned>((work_area.bottom - work_area.top) / scale);
+  // No std::min: windows.h's min macro would claim the name first.
+  const unsigned capped = screen_logical_height * 8 / 10;
+  const unsigned height = capped < 720u ? capped : 720u;
   // Phone-sized on purpose: the window frame is fixed, so this is the size
   // the app keeps.
-  Win32Window::Size size(480, 720);
+  Win32Window::Size size(480, height);
   if (!window.Create(L"DirectDrop", origin, size)) {
     return EXIT_FAILURE;
   }
