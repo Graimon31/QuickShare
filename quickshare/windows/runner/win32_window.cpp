@@ -134,8 +134,15 @@ bool Win32Window::Create(const std::wstring& title,
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   double scale_factor = dpi / 96.0;
 
+  // Fixed-size frame without WS_MAXIMIZEBOX and WS_THICKFRAME: the layouts
+  // are built for a small phone-sized window, and the default
+  // WS_OVERLAPPEDWINDOW let the window be maximized into a mostly empty
+  // fullscreen rectangle.
+  const DWORD window_style =
+      WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+
   HWND window = CreateWindow(
-      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
+      window_class, title.c_str(), window_style,
       Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
       Scale(size.width, scale_factor), Scale(size.height, scale_factor),
       nullptr, nullptr, GetModuleHandle(nullptr), this);

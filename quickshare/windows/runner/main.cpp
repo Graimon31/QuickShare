@@ -26,8 +26,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
-  Win32Window::Size size(1280, 720);
-  if (!window.Create(L"quickshare", origin, size)) {
+  // Phone-sized on purpose: the window frame is fixed, so this is the size
+  // the app keeps.
+  Win32Window::Size size(480, 720);
+  if (!window.Create(L"DirectDrop", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
