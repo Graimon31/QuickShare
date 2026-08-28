@@ -8,6 +8,7 @@ import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/core/theme/app_motion.dart';
 import 'package:quickshare/features/home/presentation/pages/home_page.dart';
+import 'package:quickshare/features/settings/presentation/pages/logs_page.dart';
 import 'package:quickshare/features/settings/presentation/pages/settings_page.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/features/sender/presentation/pages/file_picker_page.dart';
@@ -269,6 +270,15 @@ class AppRouter {
         pageBuilder: (context, state) => _qsPage(
           state,
           const SettingsPage(),
+          sharedAxis: true,
+        ),
+      ),
+
+      GoRoute(
+        path: '/settings/logs',
+        pageBuilder: (context, state) => _qsPage(
+          state,
+          const LogsPage(),
           sharedAxis: true,
         ),
       ),

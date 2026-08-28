@@ -263,6 +263,18 @@ class AppLocalizationsRu extends AppLocalizations {
   String get settingsDetailsCopied => 'Сведения скопированы';
 
   @override
+  String get settingsLogs => 'Журнал';
+
+  @override
+  String get settingsLogsSubtitle => 'Технический лог — скопируйте его, когда сообщаете о проблеме с передачей';
+
+  @override
+  String get logsCopyAll => 'Скопировать весь журнал';
+
+  @override
+  String get logsEmpty => 'Записей пока нет';
+
+  @override
   String get settingsTransferFootnote =>
       'Скорость объясняется маршрутом. Прямая связь — самая быстрая, передача через интернет-реле — самая медленная. Скопируйте сведения, если просите кого-то о помощи.';
 

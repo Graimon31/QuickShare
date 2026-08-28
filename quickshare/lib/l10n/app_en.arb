@@ -279,5 +279,10 @@
   },
   "previewCalculatingSize": "Calculating size…",
   "previewStarting": "Starting file transfer…",
-  "previewStartNow": "Start Now"
+  "previewStartNow": "Start Now",
+
+  "settingsLogs": "Logs",
+  "settingsLogsSubtitle": "Technical journal — copy it when reporting a transfer problem",
+  "logsCopyAll": "Copy entire log",
+  "logsEmpty": "No entries yet"
 }

@@ -554,6 +554,30 @@ abstract class AppLocalizations {
   /// **'Details copied'**
   String get settingsDetailsCopied;
 
+  /// No description provided for @settingsLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'Logs'**
+  String get settingsLogs;
+
+  /// No description provided for @settingsLogsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Technical journal — copy it when reporting a transfer problem'**
+  String get settingsLogsSubtitle;
+
+  /// No description provided for @logsCopyAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy entire log'**
+  String get logsCopyAll;
+
+  /// No description provided for @logsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No entries yet'**
+  String get logsEmpty;
+
   /// No description provided for @settingsTransferFootnote.
   ///
   /// In en, this message translates to:

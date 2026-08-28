@@ -226,11 +226,44 @@ class _SettingsPageState extends State<SettingsPage> {
             const SizedBox(height: 24),
             _sectionTitle(l10n.settingsLastTransfers),
             _transferCard(l10n),
+            const SizedBox(height: 24),
+            _sectionTitle(l10n.settingsLogs),
+            _logsCard(l10n),
           ],
         ),
       ),
     );
   }
+
+  /// The log file, one tap away.
+  ///
+  /// On a phone the file sits in the app's sandbox where nobody can reach it
+  /// without a computer — and the phone is exactly where the interesting
+  /// failures happen. This row opens an on-screen copy.
+  Widget _logsCard(AppLocalizations l10n) => Container(
+        decoration: BoxDecoration(
+          color: AppColors.glassFill,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.glassBorder),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: ListTile(
+            leading: const Icon(Icons.article_outlined,
+                color: AppColors.primary),
+            title: Text(l10n.settingsLogs,
+                style: const TextStyle(color: AppColors.textPrimary)),
+            subtitle: Text(
+              l10n.settingsLogsSubtitle,
+              style: const TextStyle(
+                  color: AppColors.textSecondary, fontSize: 12),
+            ),
+            trailing: const Icon(Icons.chevron_right_rounded,
+                color: AppColors.textSecondary),
+            onTap: () => context.push('/settings/logs'),
+          ),
+        ),
+      );
 
   /// Where "automatic" saves land, and the one control to change it.
   ///

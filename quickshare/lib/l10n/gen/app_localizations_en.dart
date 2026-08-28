@@ -263,6 +263,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsDetailsCopied => 'Details copied';
 
   @override
+  String get settingsLogs => 'Logs';
+
+  @override
+  String get settingsLogsSubtitle => 'Technical journal — copy it when reporting a transfer problem';
+
+  @override
+  String get logsCopyAll => 'Copy entire log';
+
+  @override
+  String get logsEmpty => 'No entries yet';
+
+  @override
   String get settingsTransferFootnote =>
       'The route explains the speed. A direct link is the fastest, a relayed internet transfer the slowest — copy the details if you are asking someone for help.';
 

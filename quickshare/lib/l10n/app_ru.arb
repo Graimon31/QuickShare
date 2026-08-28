@@ -219,5 +219,10 @@
   "previewFolderSize": "Размер папки: {size}",
   "previewCalculatingSize": "Считаем размер…",
   "previewStarting": "Начинаем передачу файла…",
-  "previewStartNow": "Начать сейчас"
+  "previewStartNow": "Начать сейчас",
+
+  "settingsLogs": "Журнал",
+  "settingsLogsSubtitle": "Технический лог — скопируйте его, когда сообщаете о проблеме с передачей",
+  "logsCopyAll": "Скопировать весь журнал",
+  "logsEmpty": "Записей пока нет"
 }
