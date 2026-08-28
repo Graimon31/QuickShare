@@ -13,22 +13,24 @@ void main() {
       expect(AppConstants.nostrRendezvousEnabled, isTrue);
     });
 
-    test('the worker channel stays off until a Worker URL is configured', () {
-      // 'worker' is in the default channel list, but without
-      // QUICKSHARE_WORKER_URL there is nothing to talk to. Naming a channel
-      // must not be enough to enable it.
+    test('the worker channel needs a URL, and the default build has one', () {
+      // 'worker' is in the default channel list and the production Worker
+      // URL is baked into AppConstants, so a default build really can reach
+      // it. A build that deliberately blanks QUICKSHARE_WORKER_URL still
+      // falls back to Nostr alone.
       expect(AppConstants.rendezvousChannels, contains('worker'));
-      expect(AppConstants.workerBaseUrl, isEmpty);
-      expect(AppConstants.workerRendezvousEnabled, isFalse);
+      expect(AppConstants.workerBaseUrl, isNotEmpty);
+      expect(AppConstants.workerRendezvousEnabled, isTrue);
     });
 
     test('builds a usable channel under the default configuration', () {
       final channel = buildRendezvousChannel();
       addTearDown(channel.close);
       expect(channel, isA<RacingAnswerChannel>());
-      // Nostr only: the Worker half is inert without a URL.
+      // Both halves are live: Nostr relays and the Worker mailbox race,
+      // whichever delivers the sealed answer first wins.
       expect(channel.name, contains('nostr'));
-      expect(channel.name, isNot(contains('worker')));
+      expect(channel.name, contains('worker'));
     });
 
     test('a misconfiguration message names both defines to check', () {

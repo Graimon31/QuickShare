@@ -57,10 +57,15 @@ void main() {
       );
     });
 
-    test('defaults to the configured 50 MB ceiling', () {
-      expect(AppConstants.maxRelayTransferBytes, equals(50 * oneMb));
-      expect(relayLimitAllows(IcePathKind.relayed, 60 * oneMb), isFalse);
-      expect(relayLimitAllows(IcePathKind.relayed, 10 * oneMb), isTrue);
+    test('defaults to the configured 2 GB ceiling', () {
+      // The relay is the project's own Cloudflare Calls allocation, not a
+      // paid metered account, so the default matches the largest file the
+      // WebRTC path can carry at all.
+      expect(AppConstants.maxRelayTransferBytes, equals(2 * 1024 * oneMb));
+      expect(
+          relayLimitAllows(IcePathKind.relayed, 2 * 1024 * oneMb + oneMb),
+          isFalse);
+      expect(relayLimitAllows(IcePathKind.relayed, 500 * oneMb), isTrue);
     });
   });
 }

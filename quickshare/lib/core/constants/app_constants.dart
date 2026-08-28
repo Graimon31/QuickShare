@@ -106,28 +106,32 @@ class AppConstants {
   /// Ceiling on a session that would have to travel through a TURN relay.
   ///
   /// A direct path costs nothing and carries no limit — send 500 GB over it.
-  /// A relayed path is somebody else's bandwidth, billed by the gigabyte, and
-  /// TCP-over-TLS relaying realistically runs at 1-3 MB/s, so a gigabyte means
-  /// ten minutes and a free monthly quota gone. Better to say so before the
-  /// first byte than to die halfway through.
+  /// A relayed path rides on the project's own Cloudflare Calls allocation
+  /// (free tier is measured in hundreds of GB a month, not megabytes), so the
+  /// ceiling now matches the largest file the WebRTC path can carry at all.
+  /// TCP-over-TLS relaying realistically runs at 1-3 MB/s — a gigabyte means
+  /// ten minutes — but that is a slow transfer, not a failed one.
   ///
-  /// Raise or lift it with `--dart-define=QUICKSHARE_RELAY_LIMIT=<bytes>` once
-  /// a paid relay exists; 0 means no limit.
+  /// Override with `--dart-define=QUICKSHARE_RELAY_LIMIT=<bytes>`; 0 means no
+  /// limit.
   static const int maxRelayTransferBytes = int.fromEnvironment(
     'QUICKSHARE_RELAY_LIMIT',
-    defaultValue: 50 * 1024 * 1024, // 50 MB
+    defaultValue: 2 * 1024 * 1024 * 1024, // 2 GB, same as maxFileSizeBytes
   );
 
   /// Base URL of the DirectDrop Cloudflare Worker (rendezvous reserve channel
   /// + short-lived TURN credentials), e.g.
   /// `--dart-define=QUICKSHARE_WORKER_URL=https://directdrop-worker.<account>.workers.dev`
   ///
-  /// Empty by default. Until a Worker is deployed and this is set, the app
-  /// falls back to Nostr-only signaling and the build-time TURN credentials
-  /// above — nothing breaks, the Worker path is purely additive.
+  /// Defaults to the deployed production Worker. Without it a build has only
+  /// the static Metered credentials above — which answer with no relay
+  /// candidate at all — so every internet transfer between two NATted peers
+  /// (which is to say, most of them) had no fallback when the direct path
+  /// failed: Windows↔iOS could not connect at all, and Windows↔macOS died
+  /// ~4 MB in when the marginal srflx pair went silent.
   static const String workerBaseUrl = String.fromEnvironment(
     'QUICKSHARE_WORKER_URL',
-    defaultValue: '',
+    defaultValue: 'https://directdrop-worker.directdrop-worker.workers.dev',
   );
 
   /// Which rendezvous channels may carry the sealed SDP answer, comma
