@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/router/app_router.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 void main() {
   setUp(() async {
@@ -50,7 +51,11 @@ void main() {
       // waits on indefinitely. A handful of fixed frames is enough for
       // go_router to land on a page and paint it.
       await tester.pumpWidget(
-        MaterialApp.router(routerConfig: AppRouter.router),
+        MaterialApp.router(
+          routerConfig: AppRouter.router,
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+        ),
       );
       for (var i = 0; i < 5; i++) {
         await tester.pump(const Duration(milliseconds: 100));

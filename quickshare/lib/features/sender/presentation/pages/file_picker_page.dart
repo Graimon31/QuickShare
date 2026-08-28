@@ -13,6 +13,7 @@ import 'package:quickshare/core/media/media_library.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/pages/media_picker_page.dart';
 import 'package:quickshare/features/sender/presentation/widgets/wifi_speed_prompt.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class FilePickerPage extends StatefulWidget {
@@ -119,7 +120,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: Text(
-          'Send File or Folder',
+          AppLocalizations.of(context).pickerTitle,
           style: GoogleFonts.inter(
             color: Colors.white,
             fontWeight: FontWeight.w600,
@@ -167,10 +168,10 @@ class _FilePickerPageState extends State<FilePickerPage> {
         },
         builder: (context, state) {
           if (state is ServerStarting) {
-            return const Center(
+            return Center(
               child: TransferPhaseLoader(
-                phaseLabel: 'Indexing selection…',
-                detail: 'Starting a secure peer-to-peer session',
+                phaseLabel: AppLocalizations.of(context).pickerIndexing,
+                detail: AppLocalizations.of(context).pickerStartingSession,
                 icon: Icons.cloud_upload_outlined,
               ),
             );
@@ -191,7 +192,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
                     children: [
                       // Mode selector header
                       Text(
-                        '1. Select Transfer Method',
+                        AppLocalizations.of(context).pickerStepMethod,
                         style: GoogleFonts.inter(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
@@ -214,8 +215,8 @@ class _FilePickerPageState extends State<FilePickerPage> {
                           children: [
                       _buildModeTile(
                         type: TransportType.wifi,
-                        title: 'Wi-Fi / Local Network',
-                        subtitle: 'Fast transfer over local Wi-Fi / LAN',
+                        title: AppLocalizations.of(context).pickerMethodWifiTitle,
+                        subtitle: AppLocalizations.of(context).pickerMethodWifiSubtitle,
                         icon: Icons.wifi_rounded,
                       ),
                       const SizedBox(height: 10),
@@ -226,16 +227,16 @@ class _FilePickerPageState extends State<FilePickerPage> {
                           defaultTargetPlatform == TargetPlatform.linux) ...[
                         _buildModeTile(
                           type: TransportType.bluetooth,
-                          title: 'Bluetooth',
-                          subtitle: 'Direct peer transfer via Bluetooth',
+                          title: AppLocalizations.of(context).pickerMethodBluetoothTitle,
+                          subtitle: AppLocalizations.of(context).pickerMethodBluetoothSubtitle,
                           icon: Icons.bluetooth_rounded,
                         ),
                         const SizedBox(height: 10),
                       ],
                       _buildModeTile(
                         type: TransportType.internet,
-                        title: 'Internet Link',
-                        subtitle: 'Share link via WebRTC signaling server',
+                        title: AppLocalizations.of(context).pickerMethodInternetTitle,
+                        subtitle: AppLocalizations.of(context).pickerMethodInternetSubtitle,
                         icon: Icons.language_rounded,
                       ),
                           ],
@@ -245,7 +246,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
                       const SizedBox(height: 28),
 
                       Text(
-                        '2. Choose What to Share',
+                        AppLocalizations.of(context).pickerStepWhat,
                         style: GoogleFonts.inter(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
@@ -257,7 +258,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
 
                       if (defaultTargetPlatform == TargetPlatform.iOS) ...[
                         _buildPickerCard(
-                          title: 'Photos & Videos',
+                          title: AppLocalizations.of(context).pickerPhotosVideos,
                           icon: Icons.photo_library_rounded,
                           gradient: const LinearGradient(
                             colors: [AppColors.primary, AppColors.primaryDeep],
@@ -272,7 +273,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
                         children: [
                           Expanded(
                             child: _buildPickerCard(
-                              title: 'Select File',
+                              title: AppLocalizations.of(context).pickerSelectFile,
                               icon: Icons.insert_drive_file_rounded,
                               gradient: const LinearGradient(
                                 colors: [
@@ -286,7 +287,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
                           const SizedBox(width: 16),
                           Expanded(
                             child: _buildPickerCard(
-                              title: 'Select Folder',
+                              title: AppLocalizations.of(context).pickerSelectFolder,
                               icon: Icons.folder_open_rounded,
                               gradient: const LinearGradient(
                                 colors: [

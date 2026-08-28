@@ -14,6 +14,7 @@ import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class QRDisplayPage extends StatefulWidget {
@@ -69,6 +70,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     required String label,
     required String value,
     required String copiedMessage,
+    required String copyTooltip,
   }) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
@@ -116,7 +118,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                 icon: const Icon(Icons.copy_rounded,
                     color: Colors.white, size: 20),
                 onPressed: () => _copyToClipboard(value, copiedMessage),
-                tooltip: 'Copy',
+                tooltip: copyTooltip,
               ),
             ],
           ),
@@ -127,6 +129,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return PopScope(
       canPop: true,
       onPopInvokedWithResult: (didPop, result) {
@@ -140,7 +143,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
           backgroundColor: Colors.transparent,
           elevation: 0,
           title: Text(
-            'Share File',
+            l10n.qrDisplayTitle,
             style: GoogleFonts.inter(
               color: Colors.white,
               fontWeight: FontWeight.w600,
@@ -164,10 +167,10 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
           },
           builder: (context, state) {
             if (state is! QRReady) {
-              return const Center(
+              return Center(
                 child: TransferPhaseLoader(
-                  phaseLabel: 'Preparing share…',
-                  detail: 'Generating a secure QR session',
+                  phaseLabel: l10n.qrDisplayPreparing,
+                  detail: l10n.qrDisplayPreparingDetail,
                   icon: Icons.qr_code_2_rounded,
                 ),
               );
@@ -205,10 +208,10 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         // Subtitle instruction
                         Text(
                           showShareLink
-                              ? 'Scan the QR or share the link'
+                              ? l10n.qrDisplayScanOrShare
                               : (isInternet
-                                  ? 'Share this link to receive the file'
-                                  : 'Scan this QR code to receive the file'),
+                                  ? l10n.qrDisplayShareLinkToReceive
+                                  : l10n.qrDisplayScanToReceive),
                           textAlign: TextAlign.center,
                           style: GoogleFonts.inter(
                             fontSize: 18,
@@ -220,8 +223,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         if (!isInternet) ...[
                           const SizedBox(height: 6),
                           Text(
-                            'On the phone: open QuickShare → Receive and scan this QR.\n'
-                            'The Wi‑Fi line below is only for diagnostics — it is NOT the QR content.',
+                            l10n.qrDisplayPhoneHint,
                             textAlign: TextAlign.center,
                             style: GoogleFonts.inter(
                               fontSize: 13,
@@ -277,7 +279,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                         height: 240,
                                         child: Center(
                                           child: Text(
-                                            'QR Render Error: $err',
+                                            l10n.qrDisplayRenderError('$err'),
                                             style: const TextStyle(color: Colors.red, fontSize: 12),
                                             textAlign: TextAlign.center,
                                           ),
@@ -295,9 +297,10 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                           const SizedBox(height: 20),
                           _copyRow(
                             icon: Icons.link,
-                            label: 'Share link',
+                            label: l10n.qrDisplayShareLinkLabel,
                             value: shareLink,
-                            copiedMessage: 'Link copied to clipboard',
+                            copiedMessage: l10n.qrDisplayLinkCopied,
+                            copyTooltip: l10n.commonCopy,
                           ).animate().fadeIn(delay: 250.ms),
                         ],
 
@@ -305,10 +308,11 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                           const SizedBox(height: 12),
                           _copyRow(
                             icon: Icons.wifi_tethering_rounded,
-                            label: 'Sender Wi‑Fi address',
+                            label: l10n.qrDisplayWifiAddressLabel,
                             value:
                                 '${state.session.localIp}:${state.session.serverPort}',
-                            copiedMessage: 'Wi‑Fi address copied',
+                            copiedMessage: l10n.qrDisplayWifiAddressCopied,
+                            copyTooltip: l10n.commonCopy,
                           ).animate().fadeIn(delay: 280.ms),
                         ],
 
@@ -326,7 +330,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                             children: [
                               Text(
                                 state.itemCount > 1
-                                    ? '${state.itemCount} files'
+                                    ? l10n.sharedItemsCount(state.itemCount)
                                     : state.session.fileMetadata.name,
                                 style: GoogleFonts.inter(
                                   fontSize: 16,
@@ -336,7 +340,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                'Total size: ${_formatBytes(state.totalBytes > 0 ? state.totalBytes : state.session.fileMetadata.size)}',
+                                l10n.qrDisplayTotalSize(_formatBytes(state.totalBytes > 0 ? state.totalBytes : state.session.fileMetadata.size)),
                                 style: GoogleFonts.inter(
                                   fontSize: 15,
                                   fontWeight: FontWeight.w700,
@@ -349,7 +353,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         const SizedBox(height: 12),
 
                         Text(
-                          'Session expires in ${_formatTime(_secondsLeft)}',
+                          l10n.qrDisplaySessionExpires(_formatTime(_secondsLeft)),
                           style: GoogleFonts.inter(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
@@ -368,7 +372,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                           icon: const Icon(Icons.close,
                               size: 18, color: AppColors.error),
                           label: Text(
-                            'Cancel Transfer',
+                            l10n.qrDisplayCancelTransfer,
                             style: GoogleFonts.inter(
                               color: AppColors.error,
                               fontWeight: FontWeight.w600,

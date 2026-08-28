@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 /// Shown when the internet path exists but is not worth using, or does not
 /// exist at all.
@@ -45,20 +46,18 @@ class NetworkFallbackPage extends StatelessWidget {
         '${units[unit]}';
   }
 
-  String get _headline => _isSizeLimited
-      ? 'Too large for this connection'
-      : 'No direct route to the other device';
+  String _headline(AppLocalizations l10n) => _isSizeLimited
+      ? l10n.fallbackTooLargeTitle
+      : l10n.fallbackNoRouteTitle;
 
-  String get _explanation => _isSizeLimited
-      ? 'The only route available goes through a public relay. '
-          '${_humanBytes(sessionBytes!)} would take a long time and would not '
-          'reliably finish, so nothing has been sent yet.'
-      : 'A VPN or this network\'s NAT is blocking a direct connection, and no '
-          'relay was reachable. Nothing has been sent yet.';
+  String _explanation(AppLocalizations l10n) => _isSizeLimited
+      ? l10n.fallbackTooLargeBody(_humanBytes(sessionBytes!))
+      : l10n.fallbackNoRouteBody;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
 
     return Scaffold(
       backgroundColor: AppColors.backgroundDark,
@@ -89,41 +88,36 @@ class NetworkFallbackPage extends StatelessWidget {
                   ),
                   const SizedBox(height: 24),
                   Text(
-                    _headline,
+                    _headline(l10n),
                     textAlign: TextAlign.center,
                     style: theme.textTheme.headlineSmall
                         ?.copyWith(fontWeight: FontWeight.w600),
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    _explanation,
+                    _explanation(l10n),
                     textAlign: TextAlign.center,
                     style: theme.textTheme.bodyMedium
                         ?.copyWith(color: Colors.white70, height: 1.45),
                   ),
                   const SizedBox(height: 32),
-                  const _SuggestionTile(
+                  _SuggestionTile(
                     icon: Icons.wifi_rounded,
-                    title: 'Put both devices on one network',
-                    subtitle:
-                        'The local transfer has no size limit and runs at full '
-                        'link speed. This phone can create that network itself '
-                        'if there is no router around.',
+                    title: l10n.fallbackWifiTitle,
+                    subtitle: l10n.fallbackWifiBody,
                   ),
                   const SizedBox(height: 12),
-                  const _SuggestionTile(
+                  _SuggestionTile(
                     icon: Icons.settings_ethernet_rounded,
-                    title: 'Or turn the VPN off for the transfer',
-                    subtitle:
-                        'A VPN that captures the default route prevents the two '
-                        'devices from finding each other directly.',
+                    title: l10n.fallbackVpnTitle,
+                    subtitle: l10n.fallbackVpnBody,
                   ),
                   const SizedBox(height: 32),
                   if (onCreateNetwork != null)
                     FilledButton.icon(
                       onPressed: onCreateNetwork,
                       icon: const Icon(Icons.wifi_tethering_rounded),
-                      label: const Text('Create a network for this transfer'),
+                      label: Text(l10n.fallbackCreateNetwork),
                       style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 16),
                       ),
@@ -132,14 +126,13 @@ class NetworkFallbackPage extends StatelessWidget {
                     const SizedBox(height: 10),
                     TextButton(
                       onPressed: onUseLocalNetwork,
-                      child: const Text('Go back and pick another method'),
+                      child: Text(l10n.fallbackGoBack),
                     ),
                   ],
                   if (_isSizeLimited) ...[
                     const SizedBox(height: 20),
                     Text(
-                      'Relay transfers are capped at '
-                      '${_humanBytes(limitBytes!)}.',
+                      l10n.fallbackRelayCap(_humanBytes(limitBytes!)),
                       textAlign: TextAlign.center,
                       style: theme.textTheme.bodySmall
                           ?.copyWith(color: Colors.white38),

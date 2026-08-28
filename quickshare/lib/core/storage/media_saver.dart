@@ -37,6 +37,18 @@ class MediaSaver {
     this.downloadsHook,
   });
 
+  /// Same saver, a different downloads folder.
+  ///
+  /// Used to plug the user's chosen save location in for one batch without
+  /// disturbing whatever the caller already set for [saveImageHook] /
+  /// [saveVideoHook] — a test's gallery stand-ins, most often.
+  MediaSaver withDownloadsHook(Future<Directory?> Function() hook) =>
+      MediaSaver(
+        saveImageHook: saveImageHook,
+        saveVideoHook: saveVideoHook,
+        downloadsHook: hook,
+      );
+
   /// Writes [item] into the device photo library.
   ///
   /// Photos and videos take different platform calls, so the kind is decided

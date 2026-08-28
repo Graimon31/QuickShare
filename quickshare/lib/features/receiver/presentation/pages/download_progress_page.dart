@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
@@ -46,7 +47,7 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
     super.dispose();
   }
 
-  Widget _buildWakelockWarning() {
+  Widget _buildWakelockWarning(AppLocalizations l10n) {
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -55,15 +56,15 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color.fromRGBO(255, 255, 255, 0.15)),
       ),
-      child: const Row(
+      child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text('💡', style: TextStyle(fontSize: 16)),
-          SizedBox(width: 8),
+          const Text('💡', style: TextStyle(fontSize: 16)),
+          const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Держите экран включенным и приложение открытым до окончания передачи файла.',
-              style: TextStyle(color: Colors.white70, fontSize: 12),
+              l10n.downloadWakelockWarning,
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
             ),
           ),
         ],
@@ -73,6 +74,7 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
@@ -80,15 +82,15 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
         final confirm = await showDialog<bool>(
           context: context,
           builder: (ctx) => AlertDialog(
-            title: const Text('Cancel Download?'),
+            title: Text(l10n.downloadCancelTitle),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('No'),
+                child: Text(l10n.commonNo),
               ),
               TextButton(
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Yes'),
+                child: Text(l10n.commonYes),
               ),
             ],
           ),
@@ -101,7 +103,7 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
       },
       child: Scaffold(
         backgroundColor: AppColors.voidBg,
-        appBar: AppBar(title: const Text('Downloading...')),
+        appBar: AppBar(title: Text(l10n.downloadTitle)),
         body: BlocConsumer<ReceiverBloc, ReceiverState>(
           listener: (context, state) {
             if (state is Connecting || state is Downloading || state is Verifying) {
@@ -126,13 +128,13 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const TransferPhaseLoader(
-                      phaseLabel: 'Connecting to sender…',
-                      detail: 'Preparing a secure transfer channel',
+                    TransferPhaseLoader(
+                      phaseLabel: l10n.downloadConnecting,
+                      detail: l10n.downloadConnectingDetail,
                       icon: Icons.link_rounded,
                     ),
                     const SizedBox(height: 16),
-                    _buildWakelockWarning(),
+                    _buildWakelockWarning(l10n),
                   ],
                 ),
               );
@@ -147,7 +149,7 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
                       fileName: state.fileName,
                     ),
                     const SizedBox(height: 16),
-                    _buildWakelockWarning(),
+                    _buildWakelockWarning(l10n),
                   ],
                 ),
               );
@@ -156,21 +158,21 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    const TransferPhaseLoader(
-                      phaseLabel: 'Verifying transfer…',
-                      detail: 'Checking file integrity',
+                    TransferPhaseLoader(
+                      phaseLabel: l10n.downloadVerifying,
+                      detail: l10n.downloadVerifyingDetail,
                       icon: Icons.verified_outlined,
                     ),
                     const SizedBox(height: 16),
-                    _buildWakelockWarning(),
+                    _buildWakelockWarning(l10n),
                   ],
                 ),
               );
             }
-            return const Center(
+            return Center(
               child: TransferPhaseLoader(
-                phaseLabel: 'Preparing download…',
-                detail: 'Waiting for the sender',
+                phaseLabel: l10n.downloadPreparing,
+                detail: l10n.downloadPreparingDetail,
                 icon: Icons.download_rounded,
               ),
             );

@@ -13,6 +13,7 @@ import 'package:quickshare/core/permissions/permission_service.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/theme/app_motion.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class QRScanPage extends StatefulWidget {
@@ -66,8 +67,9 @@ class _QRScanPageState extends State<QRScanPage>
     final granted = await sl<PermissionService>().requestCamera();
     if (!granted) {
       if (mounted && !_isClosing) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Camera permission required')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content:
+                Text(AppLocalizations.of(context).qrScanCameraPermission)));
         _closeScanner();
       }
       return;
@@ -198,7 +200,7 @@ class _QRScanPageState extends State<QRScanPage>
     _isProcessing = true;
     setState(() {
       _isLocked = true;
-      _statusHint = 'QR detected — opening transfer…';
+      _statusHint = AppLocalizations.of(context).qrScanDetected;
     });
     _animationController?.stop();
     unawaited(_successController.forward(from: 0));
@@ -237,6 +239,7 @@ class _QRScanPageState extends State<QRScanPage>
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
@@ -271,10 +274,10 @@ class _QRScanPageState extends State<QRScanPage>
           },
           builder: (context, state) {
             if (cameraController == null || _scanAnimation == null) {
-              return const Center(
+              return Center(
                 child: TransferPhaseLoader(
-                  phaseLabel: 'Preparing camera…',
-                  detail: 'Camera access is being initialized',
+                  phaseLabel: l10n.qrScanPreparingCamera,
+                  detail: l10n.qrScanPreparingDetail,
                   icon: Icons.camera_alt_outlined,
                 ),
               );
@@ -289,8 +292,7 @@ class _QRScanPageState extends State<QRScanPage>
                       child: Padding(
                         padding: const EdgeInsets.all(24),
                         child: Text(
-                          'Camera error: ${error.errorCode.name}\n'
-                          'Try closing and opening Receive again.',
+                          l10n.qrScanCameraError(error.errorCode.name),
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: Colors.white),
                         ),
@@ -325,7 +327,7 @@ class _QRScanPageState extends State<QRScanPage>
                         ),
                         onPressed: _openCodeEntry,
                         icon: const Icon(Icons.keyboard, color: Colors.white),
-                        label: const Text('Enter Code'),
+                        label: Text(l10n.qrScanEnterCode),
                       ),
                     ],
                   ),
@@ -377,12 +379,12 @@ class _QRScanPageState extends State<QRScanPage>
                             ),
                             onPressed: () => cameraController!.toggleTorch(),
                           ),
-                          const Flexible(
+                          Flexible(
                             child: Text(
-                              'Point camera at the QR code',
+                              l10n.qrScanPointCamera,
                               textAlign: TextAlign.center,
-                              style:
-                                  TextStyle(color: Colors.white, fontSize: 15),
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 15),
                             ),
                           ),
                           if (defaultTargetPlatform != TargetPlatform.iOS)

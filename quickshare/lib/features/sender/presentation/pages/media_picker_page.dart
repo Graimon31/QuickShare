@@ -4,6 +4,7 @@ import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 
 import 'package:quickshare/core/media/media_library.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 /// Grid of the device photo library, multi-select.
 ///
@@ -100,12 +101,11 @@ class _MediaPickerPageState extends State<MediaPickerPage> {
     final result = await widget.library.resolveAll(_selected.values);
     if (!mounted) return;
 
+    final l10n = AppLocalizations.of(context);
     if (result.entries.isEmpty) {
       setState(() => _resolving = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text(
-            'These items are not stored on this device — open them in Photos '
-            'once so they download, then try again.'),
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(l10n.mediaNotStored),
       ));
       return;
     }
@@ -114,8 +114,7 @@ class _MediaPickerPageState extends State<MediaPickerPage> {
       // Sending nine of ten beats sending none, but say so rather than
       // quietly dropping items the user picked.
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('${result.unavailable} item(s) are only in iCloud and '
-            'were skipped.'),
+        content: Text(l10n.mediaSkippedICloud(result.unavailable)),
       ));
     }
     Navigator.of(context).pop(result.entries);
@@ -123,14 +122,15 @@ class _MediaPickerPageState extends State<MediaPickerPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
       backgroundColor: AppColors.voidBg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: Text(_selected.isEmpty
-            ? 'Photos & Videos'
-            : '${_selected.length} selected'),
+            ? l10n.pickerPhotosVideos
+            : l10n.mediaSelectedCount(_selected.length)),
         leading: IconButton(
           icon: const Icon(Icons.close_rounded),
           onPressed: () => Navigator.of(context).pop(),
@@ -144,40 +144,40 @@ class _MediaPickerPageState extends State<MediaPickerPage> {
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Text('Send'),
+                  : Text(l10n.commonSend),
             ),
         ],
       ),
-      body: _buildBody(),
+      body: _buildBody(l10n),
     );
   }
 
-  Widget _buildBody() {
+  Widget _buildBody(AppLocalizations l10n) {
     if (_loading) {
       return const Center(child: CircularProgressIndicator());
     }
     if (_access == MediaAccess.denied) {
       return _message(
         Icons.no_photography_rounded,
-        'DirectDrop has no access to your photos',
-        'Grant access in Settings to send photos and videos.',
-        action: const TextButton(
+        l10n.mediaAccessDeniedTitle,
+        l10n.mediaAccessDeniedBody,
+        action: TextButton(
           onPressed: PhotoManager.openSetting,
-          child: Text('Open Settings'),
+          child: Text(l10n.commonOpenSettings),
         ),
       );
     }
     if (_assets.isEmpty) {
       return _message(
         Icons.photo_library_outlined,
-        'Nothing here yet',
+        l10n.mediaEmptyTitle,
         _access == MediaAccess.limited
-            ? 'Only some photos are shared with DirectDrop.'
-            : 'This device has no photos or videos.',
+            ? l10n.mediaLimitedBody
+            : l10n.mediaEmptyBody,
         action: _access == MediaAccess.limited
-            ? const TextButton(
+            ? TextButton(
                 onPressed: PhotoManager.openSetting,
-                child: Text('Choose more'),
+                child: Text(l10n.mediaChooseMore),
               )
             : null,
       );
@@ -191,15 +191,15 @@ class _MediaPickerPageState extends State<MediaPickerPage> {
             width: double.infinity,
             color: AppColors.glassFill,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            child: const Row(
+            child: Row(
               children: [
                 Expanded(
-                  child: Text('You have shared only some photos.',
-                      style: TextStyle(color: AppColors.textSecondary)),
+                  child: Text(l10n.mediaLimitedBanner,
+                      style: const TextStyle(color: AppColors.textSecondary)),
                 ),
                 TextButton(
                   onPressed: PhotoManager.openSetting,
-                  child: Text('Manage'),
+                  child: Text(l10n.mediaManage),
                 ),
               ],
             ),

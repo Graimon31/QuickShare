@@ -1,21 +1,33 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:flutter/services.dart';
 
+import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
+import 'package:quickshare/core/localization/locale_controller.dart';
+import 'package:quickshare/core/localization/locale_store.dart';
+import 'package:quickshare/core/storage/save_destination.dart';
+import 'package:quickshare/core/storage/save_location_store.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
-/// Settings, currently one thing: what the app is holding on disk.
+/// Settings: what the app is holding on disk, where finished transfers go,
+/// which language it speaks, and what its last few transfers actually did.
 class SettingsPage extends StatefulWidget {
   final TransferCache cache;
   final TransferDiagnostics diagnostics;
+  final SaveLocationStore saveLocation;
+  final LocaleController? localeController;
 
   const SettingsPage({
     super.key,
     this.cache = const TransferCache(),
     this.diagnostics = const TransferDiagnostics(),
+    this.saveLocation = const SaveLocationStore(),
+    this.localeController,
   });
 
   @override
@@ -27,11 +39,66 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _clearing = false;
   List<TransferReport> _transfers = const [];
 
+  /// Only desktop platforms let an app write into a folder the user picked,
+  /// outside its own sandbox. iOS and Android have no such folder to offer.
+  final bool _isDesktop = SaveDestination.forCurrentPlatform().isDesktop;
+
+  SaveLocation? _saveLocation;
+  bool _loadingLocation = true;
+  bool _changingLocation = false;
+
+  late final LocaleController _localeController =
+      widget.localeController ?? sl<LocaleController>();
+
   @override
   void initState() {
     super.initState();
     _measure();
     _loadTransfers();
+    if (_isDesktop) _loadSaveLocation();
+  }
+
+  Future<void> _loadSaveLocation() async {
+    final location = await widget.saveLocation.read();
+    if (mounted) {
+      setState(() {
+        _saveLocation = location;
+        _loadingLocation = false;
+      });
+    }
+  }
+
+  /// Opens the folder picker and, on a real choice, records it.
+  ///
+  /// On macOS the bookmark has to be created immediately after the picker
+  /// returns — the sandbox's grant for the folder is transient, and anything
+  /// that delays past this call risks it having already lapsed.
+  Future<void> _changeLocation() async {
+    if (_changingLocation) return;
+    final l10n = AppLocalizations.of(context);
+    final path = await FilePicker.platform.getDirectoryPath(
+      dialogTitle: l10n.settingsSaveLocationPickerTitle,
+    );
+    if (path == null || !mounted) return;
+
+    setState(() => _changingLocation = true);
+    try {
+      await widget.saveLocation.set(path);
+      if (!mounted) return;
+      setState(() => _saveLocation = SaveLocation(path: path));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.settingsSaveLocationError(e.toString()))),
+      );
+    } finally {
+      if (mounted) setState(() => _changingLocation = false);
+    }
+  }
+
+  Future<void> _useDefault() async {
+    await widget.saveLocation.clear();
+    if (mounted) setState(() => _saveLocation = null);
   }
 
   Future<void> _loadTransfers() async {
@@ -46,24 +113,22 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _clear() async {
     if (_clearing) return;
+    final l10n = AppLocalizations.of(context);
 
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppColors.surfaceDark,
-        title: const Text('Clear cache?'),
-        content: const Text(
-          'Anything received but not yet saved will be deleted. Files you '
-          'already saved to this device are not affected.',
-        ),
+        title: Text(l10n.settingsClearCacheTitle),
+        content: Text(l10n.settingsClearCacheBody),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+            child: Text(l10n.commonCancel),
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Clear'),
+            child: Text(l10n.commonClear),
           ),
         ],
       ),
@@ -81,19 +146,20 @@ class _SettingsPageState extends State<SettingsPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       // The number is what distinguishes "cleared" from "did nothing".
       content: Text(freed > 0
-          ? 'Freed ${TransferCache.formatBytes(freed)}'
-          : 'Nothing to clear'),
+          ? l10n.settingsCacheFreed(TransferCache.formatBytes(freed))
+          : l10n.settingsCacheNothingToClear),
     ));
   }
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
       backgroundColor: AppColors.voidBg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: const Text('Settings'),
+        title: Text(l10n.settingsTitle),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.canPop() ? context.pop() : context.go('/'),
@@ -103,58 +169,198 @@ class _SettingsPageState extends State<SettingsPage> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            _sectionTitle('Storage'),
+            _sectionTitle(l10n.settingsStorage),
             Container(
               decoration: BoxDecoration(
                 color: AppColors.glassFill,
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: AppColors.glassBorder),
               ),
-              child: Column(
-                children: [
-                  ListTile(
-                    leading: const Icon(Icons.folder_outlined,
-                        color: AppColors.primary),
-                    title: const Text('Cache',
-                        style: TextStyle(color: AppColors.textPrimary)),
-                    subtitle: Text(
-                      _cacheBytes == null
-                          ? 'Measuring…'
-                          : TransferCache.formatBytes(_cacheBytes!),
-                      style: const TextStyle(color: AppColors.textSecondary),
+              child: Material(
+                color: Colors.transparent,
+                child: Column(
+                  children: [
+                    ListTile(
+                      leading: const Icon(Icons.folder_outlined,
+                          color: AppColors.primary),
+                      title: Text(l10n.settingsCache,
+                          style: const TextStyle(color: AppColors.textPrimary)),
+                      subtitle: Text(
+                        _cacheBytes == null
+                            ? l10n.settingsCacheMeasuring
+                            : TransferCache.formatBytes(_cacheBytes!),
+                        style: const TextStyle(color: AppColors.textSecondary),
+                      ),
+                      trailing: _clearing
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : TextButton(
+                              onPressed: (_cacheBytes ?? 0) > 0 ? _clear : null,
+                              child: Text(l10n.commonClear),
+                            ),
                     ),
-                    trailing: _clearing
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : TextButton(
-                            onPressed:
-                                (_cacheBytes ?? 0) > 0 ? _clear : null,
-                            child: const Text('Clear'),
-                          ),
-                  ),
-                  const Divider(height: 1, color: AppColors.glassBorder),
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
-                    child: Text(
-                      'Incoming transfers are held here until you save them. '
-                      'Anything you do not save is removed automatically when '
-                      'you leave the transfer.',
-                      style: TextStyle(
-                          color: AppColors.textSecondary, fontSize: 12),
+                    const Divider(height: 1, color: AppColors.glassBorder),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                      child: Text(
+                        l10n.settingsCacheDescription,
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 12),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
+            if (_isDesktop) ...[
+              const SizedBox(height: 24),
+              _sectionTitle(l10n.settingsSaveLocation),
+              _saveLocationCard(l10n),
+            ],
             const SizedBox(height: 24),
-            _sectionTitle('Last transfers'),
-            _transferCard(),
+            _sectionTitle(l10n.settingsLanguage),
+            _languageCard(l10n),
+            const SizedBox(height: 24),
+            _sectionTitle(l10n.settingsLastTransfers),
+            _transferCard(l10n),
           ],
         ),
       ),
+    );
+  }
+
+  /// Where "automatic" saves land, and the one control to change it.
+  ///
+  /// The default stays whatever this platform already used — Downloads on
+  /// macOS and Linux, the platform equivalent on Windows — so nothing here
+  /// changes behaviour until a person deliberately picks a folder.
+  Widget _saveLocationCard(AppLocalizations l10n) {
+    final isCustom = _saveLocation != null;
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.glassFill,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.glassBorder),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: Column(
+          children: [
+            ListTile(
+              leading: Icon(
+                isCustom
+                    ? Icons.folder_special_outlined
+                    : Icons.download_outlined,
+                color: AppColors.primary,
+              ),
+              title: Text(
+                isCustom
+                    ? _saveLocation!.path
+                    : l10n.settingsSaveLocationDefault,
+                style: const TextStyle(color: AppColors.textPrimary),
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                _loadingLocation
+                    ? l10n.settingsSaveLocationReading
+                    : (isCustom
+                        ? l10n.settingsSaveLocationCustomSubtitle
+                        : l10n.settingsSaveLocationDefaultSubtitle),
+                style: const TextStyle(color: AppColors.textSecondary),
+              ),
+              trailing: _changingLocation
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : TextButton(
+                      onPressed: _loadingLocation ? null : _changeLocation,
+                      child: Text(l10n.commonChange),
+                    ),
+            ),
+            if (isCustom) ...[
+              const Divider(height: 1, color: AppColors.glassBorder),
+              ListTile(
+                dense: true,
+                title: Text(l10n.settingsSaveLocationUseDefault,
+                    style: const TextStyle(
+                        color: AppColors.warning, fontSize: 13)),
+                onTap: _changingLocation ? null : _useDefault,
+              ),
+            ],
+            const Divider(height: 1, color: AppColors.glassBorder),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Text(
+                l10n.settingsSaveLocationFootnote,
+                style: const TextStyle(
+                    color: AppColors.textSecondary, fontSize: 12),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// English or Russian, picked here and applied everywhere in the app
+  /// immediately — [LocaleController] is what makes that immediate part
+  /// happen, since [MaterialApp] listens to it directly.
+  ///
+  /// Plain [ListTile]s with a checkmark rather than [RadioListTile]: nothing
+  /// else on this screen uses Material's `Radio`, and `RadioListTile`'s own
+  /// `groupValue`/`onChanged` are deprecated as of Flutter 3.32 in favour of
+  /// a `RadioGroup` ancestor — a second widget just to manage two rows here.
+  Widget _languageCard(AppLocalizations l10n) {
+    return ValueListenableBuilder<Locale?>(
+      valueListenable: _localeController,
+      builder: (context, locale, _) {
+        final current = locale == null
+            ? _localeController.effective(Localizations.localeOf(context))
+            : (AppLanguage.fromCode(locale.languageCode) ??
+                AppLanguage.english);
+
+        Widget languageTile(AppLanguage language, String label) => ListTile(
+              title: Text(label,
+                  style: const TextStyle(color: AppColors.textPrimary)),
+              trailing: current == language
+                  ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                  : null,
+              onTap: () => _localeController.setLanguage(language),
+            );
+
+        return Container(
+          decoration: BoxDecoration(
+            color: AppColors.glassFill,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.glassBorder),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: Column(
+              children: [
+                languageTile(AppLanguage.english, l10n.settingsLanguageEnglish),
+                const Divider(
+                    height: 1, color: AppColors.glassBorder, indent: 16),
+                languageTile(AppLanguage.russian, l10n.settingsLanguageRussian),
+                const Divider(height: 1, color: AppColors.glassBorder),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  child: Text(
+                    l10n.settingsLanguageFootnote,
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -165,81 +371,82 @@ class _SettingsPageState extends State<SettingsPage> {
   /// until now the only way to tell them apart was to open a log file on the
   /// machine that did the sending — which, when that machine belongs to
   /// somebody else in another city, means it may as well not exist.
-  Widget _transferCard() => Container(
+  Widget _transferCard(AppLocalizations l10n) => Container(
         decoration: BoxDecoration(
           color: AppColors.glassFill,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: AppColors.glassBorder),
         ),
-        child: Column(
-          children: [
-            // Shown even when there is nothing yet. Hiding the section made an
-            // empty history indistinguishable from a build without the
-            // feature, which is exactly the question somebody asked while
-            // looking at this screen.
-            if (_transfers.isEmpty)
-              const ListTile(
-                leading: Icon(Icons.history_rounded,
-                    color: AppColors.textSecondary),
-                title: Text('No transfers yet',
-                    style: TextStyle(color: AppColors.textPrimary)),
-                subtitle: Text(
-                  'A transfer appears here once it finishes.',
-                  style:
-                      TextStyle(color: AppColors.textSecondary, fontSize: 12),
+        child: Material(
+          color: Colors.transparent,
+          child: Column(
+            children: [
+              // Shown even when there is nothing yet. Hiding the section made an
+              // empty history indistinguishable from a build without the
+              // feature, which is exactly the question somebody asked while
+              // looking at this screen.
+              if (_transfers.isEmpty)
+                ListTile(
+                  leading: const Icon(Icons.history_rounded,
+                      color: AppColors.textSecondary),
+                  title: Text(l10n.settingsNoTransfersYet,
+                      style: const TextStyle(color: AppColors.textPrimary)),
+                  subtitle: Text(
+                    l10n.settingsNoTransfersYetSubtitle,
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12),
+                  ),
                 ),
-              ),
-            for (final report in _transfers) ...[
-              ListTile(
-                leading: Icon(
-                  report.succeeded
-                      ? Icons.check_circle_outline_rounded
-                      : Icons.error_outline_rounded,
-                  color: report.succeeded
-                      ? AppColors.primary
-                      : AppColors.warning,
+              for (final report in _transfers) ...[
+                ListTile(
+                  leading: Icon(
+                    report.succeeded
+                        ? Icons.check_circle_outline_rounded
+                        : Icons.error_outline_rounded,
+                    color: report.succeeded
+                        ? AppColors.primary
+                        : AppColors.warning,
+                  ),
+                  title: Text(
+                    '${report.route} — '
+                    '${TransferReport.formatRate(report.bytesPerSecond)}',
+                    style: const TextStyle(color: AppColors.textPrimary),
+                  ),
+                  subtitle: Text(
+                    report.succeeded
+                        ? '${report.role} ${TransferReport.formatBytes(report.bytes)} '
+                            'in ${report.took.inSeconds}s'
+                        : report.failure,
+                    style: const TextStyle(
+                        color: AppColors.textSecondary, fontSize: 12),
+                  ),
+                  trailing: IconButton(
+                    tooltip: l10n.settingsCopyDetails,
+                    icon: const Icon(Icons.copy_rounded,
+                        color: AppColors.textSecondary, size: 18),
+                    onPressed: () => _copy(report, l10n),
+                  ),
                 ),
-                title: Text(
-                  '${report.route} — '
-                  '${TransferReport.formatRate(report.bytesPerSecond)}',
-                  style: const TextStyle(color: AppColors.textPrimary),
-                ),
-                subtitle: Text(
-                  report.succeeded
-                      ? '${report.role} ${TransferReport.formatBytes(report.bytes)} '
-                          'in ${report.took.inSeconds}s'
-                      : report.failure,
+                const Divider(height: 1, color: AppColors.glassBorder),
+              ],
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                child: Text(
+                  l10n.settingsTransferFootnote,
                   style: const TextStyle(
                       color: AppColors.textSecondary, fontSize: 12),
                 ),
-                trailing: IconButton(
-                  tooltip: 'Copy details',
-                  icon: const Icon(Icons.copy_rounded,
-                      color: AppColors.textSecondary, size: 18),
-                  onPressed: () => _copy(report),
-                ),
               ),
-              const Divider(height: 1, color: AppColors.glassBorder),
             ],
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 12, 16, 16),
-              child: Text(
-                'The route explains the speed. A direct link is the fastest, '
-                'a relayed internet transfer the slowest — copy the details if '
-                'you are asking someone for help.',
-                style:
-                    TextStyle(color: AppColors.textSecondary, fontSize: 12),
-              ),
-            ),
-          ],
+          ),
         ),
       );
 
-  Future<void> _copy(TransferReport report) async {
+  Future<void> _copy(TransferReport report, AppLocalizations l10n) async {
     await Clipboard.setData(ClipboardData(text: report.summary));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Details copied')),
+      SnackBar(content: Text(l10n.settingsDetailsCopied)),
     );
   }
 

@@ -6,6 +6,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 /// Shows the Bluetooth session QR while this device advertises the BLE service.
@@ -14,6 +15,7 @@ class BluetoothSendPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return PopScope(
       canPop: true,
       onPopInvokedWithResult: (didPop, result) {
@@ -22,7 +24,7 @@ class BluetoothSendPage extends StatelessWidget {
       child: Scaffold(
         backgroundColor: AppColors.voidBg,
         appBar: AppBar(
-          title: const Text('Bluetooth'),
+          title: Text(l10n.btSendTitle),
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: () {
@@ -45,10 +47,10 @@ class BluetoothSendPage extends StatelessWidget {
           },
           builder: (context, state) {
             if (state is! BluetoothAdvertising) {
-              return const Center(
+              return Center(
                 child: TransferPhaseLoader(
-                  phaseLabel: 'Preparing Bluetooth…',
-                  detail: 'Making this device discoverable',
+                  phaseLabel: l10n.btSendPreparing,
+                  detail: l10n.btSendPreparingDetail,
                   icon: Icons.bluetooth_searching_rounded,
                 ),
               );
@@ -87,17 +89,17 @@ class BluetoothSendPage extends StatelessWidget {
                           ),
                         ).animate().fadeIn(),
                         const SizedBox(height: 24),
-                        const Text(
-                          'Scan this QR code on the receiving device',
+                        Text(
+                          l10n.btSendScanPrompt,
                           textAlign: TextAlign.center,
-                          style: TextStyle(
+                          style: const TextStyle(
                               fontSize: 20,
                               fontWeight: FontWeight.bold,
                               color: AppColors.textPrimary),
                         ).animate().fadeIn(),
                         const SizedBox(height: 8),
                         Text(
-                          'The receiving device will connect over Bluetooth and start the transfer automatically.',
+                          l10n.btSendAutoConnectNote,
                           textAlign: TextAlign.center,
                           style:
                               Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -130,7 +132,7 @@ class BluetoothSendPage extends StatelessWidget {
                             context.go('/send');
                           },
                           icon: const Icon(Icons.close),
-                          label: const Text('Cancel'),
+                          label: Text(l10n.commonCancel),
                           style: OutlinedButton.styleFrom(
                             foregroundColor: AppColors.error,
                             side: const BorderSide(color: AppColors.error),

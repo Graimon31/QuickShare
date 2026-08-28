@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 /// Shows the scanned session metadata (folder size, item count) before starting the transfer.
 ///
@@ -75,6 +76,7 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     final parsed = _parsed;
     if (parsed == null) {
       return const Scaffold(
@@ -96,8 +98,8 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
         ? (payload.fileName.isNotEmpty
             ? payload.fileName
             : (itemCount > 0
-                ? '$itemCount ${itemCount == 1 ? 'file' : 'files'}'
-                : 'Folder Transfer'))
+                ? l10n.sharedItemsCount(itemCount)
+                : l10n.previewFolderTransfer))
         : payload.fileName;
 
     return PopScope(
@@ -130,7 +132,7 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                     ),
                     const SizedBox(height: 24),
                     Text(
-                      'Ready to Receive',
+                      l10n.previewReadyTitle,
                       textAlign: TextAlign.center,
                       style: GoogleFonts.inter(
                         color: Colors.white,
@@ -169,8 +171,9 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                           const SizedBox(width: 10),
                           Text(
                             totalBytes > 0
-                                ? 'Folder size: ${_formatBytes(totalBytes)}'
-                                : 'Calculating size…',
+                                ? l10n.previewFolderSize(
+                                    _formatBytes(totalBytes))
+                                : l10n.previewCalculatingSize,
                             style: GoogleFonts.inter(
                               color: AppColors.primary,
                               fontSize: 18,
@@ -188,7 +191,7 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      'Starting file transfer…',
+                      l10n.previewStarting,
                       style: GoogleFonts.inter(
                         color: Colors.white.withValues(alpha: 0.6),
                         fontSize: 14,
@@ -214,7 +217,7 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                             ),
                           ),
                           child: Text(
-                            'Cancel',
+                            l10n.commonCancel,
                             style: GoogleFonts.inter(color: Colors.white),
                           ),
                         ),
@@ -223,7 +226,7 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                           onPressed: _startTransfer,
                           icon: const Icon(Icons.download_rounded, size: 18),
                           label: Text(
-                            'Start Now',
+                            l10n.previewStartNow,
                             style: GoogleFonts.inter(
                                 fontWeight: FontWeight.w600),
                           ),

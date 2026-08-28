@@ -8,6 +8,7 @@ import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/save_coordinator.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/pressable_scale.dart';
 
 /// What happened to a finished transfer, and — on a phone, for documents —
@@ -88,7 +89,7 @@ class _CompletePageState extends State<CompletePage> {
     if (pending.isEmpty) return;
 
     final directory = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Where should these go?',
+      dialogTitle: AppLocalizations.of(context).completeWhereTo,
     );
     if (directory == null || !mounted) return;
 
@@ -154,7 +155,7 @@ class _CompletePageState extends State<CompletePage> {
                         .fadeIn(),
                     const SizedBox(height: 24),
                     Text(
-                      'Received!',
+                      AppLocalizations.of(context).completeTitle,
                       style: Theme.of(context)
                           .textTheme
                           .headlineMedium
@@ -184,15 +185,16 @@ class _CompletePageState extends State<CompletePage> {
   }
 
   String _statusLine() {
-    if (_working) return 'Saving…';
+    final l10n = AppLocalizations.of(context);
+    if (_working) return l10n.completeSaving;
     if (widget.items.isEmpty) return widget.fileName;
 
     final pending = _pending.length;
     final failed = _failures.length;
     final parts = <String>[];
-    if (_savedCount > 0) parts.add('$_savedCount saved');
-    if (pending > 0) parts.add('$pending waiting for you');
-    if (failed > 0) parts.add('$failed could not be saved');
+    if (_savedCount > 0) parts.add(l10n.completeSavedCount(_savedCount));
+    if (pending > 0) parts.add(l10n.completeWaitingCount(pending));
+    if (failed > 0) parts.add(l10n.completeFailedCount(failed));
     return parts.isEmpty ? widget.fileName : parts.join(' · ');
   }
 
@@ -234,7 +236,9 @@ class _CompletePageState extends State<CompletePage> {
           if (items.length > shown.length)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text('and ${items.length - shown.length} more',
+              child: Text(
+                  AppLocalizations.of(context)
+                      .completeAndMore(items.length - shown.length),
                   style: const TextStyle(color: AppColors.textSecondary)),
             ),
           for (final failure in _failures)
@@ -259,13 +263,13 @@ class _CompletePageState extends State<CompletePage> {
       if (pending.isNotEmpty)
         _primaryButton(
           pending.length == 1
-              ? 'Save to device'
-              : 'Save ${pending.length} files to device',
+              ? AppLocalizations.of(context).completeSaveOne
+              : AppLocalizations.of(context).completeSaveMany(pending.length),
           _saveePending,
         )
       else
         _primaryButton(
-          'Open',
+          AppLocalizations.of(context).commonOpen,
           () => OpenFile.open(
             _outcomes
                     .firstWhere(
@@ -287,12 +291,14 @@ class _CompletePageState extends State<CompletePage> {
       const SizedBox(height: 12),
       TextButton(
         onPressed: () => _leave('/receive'),
-        child: const Text('Receive Another'),
+        child: Text(AppLocalizations.of(context).completeReceiveAnother),
       ),
       TextButton(
         onPressed: () => _leave('/'),
         child: Text(
-          pending.isEmpty ? 'Done' : "Don't save",
+          pending.isEmpty
+              ? AppLocalizations.of(context).commonDone
+              : AppLocalizations.of(context).completeDontSave,
           style: TextStyle(
               color: pending.isEmpty
                   ? AppColors.textSecondary

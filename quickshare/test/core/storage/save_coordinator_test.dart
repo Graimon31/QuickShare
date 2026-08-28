@@ -8,7 +8,33 @@ import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/save_coordinator.dart';
 import 'package:quickshare/core/storage/gallery_formats.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
+import 'package:quickshare/core/storage/save_location_bookmark.dart';
+import 'package:quickshare/core/storage/save_location_store.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
+
+/// A stand-in for the native macOS bookmark bridge, which has nothing to
+/// answer platform-channel calls under `flutter test`. These tests are about
+/// whether the coordinator *uses* a configured location, not about the
+/// bookmark mechanics themselves — those have their own test file.
+class _FakeBookmark extends SaveLocationBookmark {
+  final Map<String, String> _bookmarks = {};
+
+  @override
+  Future<String> create(String path) async {
+    final token = 'bookmark-for:$path';
+    _bookmarks[path] = token;
+    return token;
+  }
+
+  @override
+  Future<BookmarkAccess> startAccessing(String bookmark) async {
+    final entry = _bookmarks.entries.firstWhere((e) => e.value == bookmark);
+    return BookmarkAccess(path: entry.key, stale: false);
+  }
+
+  @override
+  Future<void> stopAccessing() async {}
+}
 
 void main() {
   late Directory root;
@@ -56,6 +82,12 @@ void main() {
         ),
         saver: saver(galleryFails: galleryFails),
         cache: cache,
+        // Points at the test's own scratch directory rather than the real
+        // path_provider channel `flutter test` has no handler for. These
+        // tests are not about the save-location feature — that has its own
+        // test file — so a scratch dir with nothing ever set in it is all
+        // that is needed to keep this quiet and inert.
+        saveLocation: SaveLocationStore(overrideDir: () => root),
       );
 
   group('on desktop', () {
@@ -192,6 +224,59 @@ void main() {
 
       expect(freed, equals(150));
       expect(folder.existsSync(), isFalse);
+    });
+  });
+
+  group('a chosen save location', () {
+    test('automatic items land there instead of the platform default',
+        () async {
+      final chosen = Directory(p.join(root.path, 'chosen_folder'))
+        ..createSync();
+      final location =
+          SaveLocationStore(overrideDir: () => root, bookmark: _FakeBookmark());
+      await location.set(chosen.path);
+
+      final items = [await cached('report.pdf', 'application/pdf')];
+      final outcomes = await SaveCoordinator(
+        destination: const SaveDestination(
+          isDesktop: true,
+          gallery: GalleryFormats(GalleryPlatform.ios),
+        ),
+        saver: saver(),
+        cache: cache,
+        saveLocation: location,
+      ).runAutomatic(items);
+
+      expect(outcomes.single.item.isSaved, isTrue);
+      expect(p.dirname(outcomes.single.item.savedPath!), equals(chosen.path),
+          reason: 'the configured folder, not the downloadsHook default');
+      expect(Directory(downloads.path).listSync(), isEmpty,
+          reason: 'the platform default was never touched');
+    });
+
+    test('gallery items on mobile ignore it — there is no gallery folder to '
+        'redirect', () async {
+      final chosen = Directory(p.join(root.path, 'chosen_folder'))
+        ..createSync();
+      final location =
+          SaveLocationStore(overrideDir: () => root, bookmark: _FakeBookmark());
+      await location.set(chosen.path);
+
+      // isDesktop: false — SaveDestination.intentFor never returns
+      // .automatic here, so the location is never even consulted.
+      final items = [await cached('clip.mp4', 'video/mp4')];
+      await SaveCoordinator(
+        destination: const SaveDestination(
+          isDesktop: false,
+          gallery: GalleryFormats(GalleryPlatform.ios),
+        ),
+        saver: saver(),
+        cache: cache,
+        saveLocation: location,
+      ).runAutomatic(items);
+
+      expect(galleryWrites, hasLength(1),
+          reason: 'still went to the gallery, unaffected by the setting');
     });
   });
 }

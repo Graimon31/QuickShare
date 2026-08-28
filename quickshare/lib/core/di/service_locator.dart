@@ -1,6 +1,7 @@
 import 'package:get_it/get_it.dart';
 
 // Core
+import 'package:quickshare/core/localization/locale_controller.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/permissions/permission_service.dart';
 
@@ -28,6 +29,10 @@ final GetIt sl = GetIt.instance;
 class ServiceLocator {
   static Future<void> init() async {
     // ─── Core Services ───────────────────────────────────────
+    // Eager, not lazy: it starts reading the saved language choice from disk
+    // the moment the app launches, and the first frame should not be the one
+    // that triggers that read.
+    sl.registerSingleton<LocaleController>(LocaleController());
     sl.registerLazySingleton<NetworkInfoService>(
       () => NetworkInfoService(),
     );

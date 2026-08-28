@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
@@ -12,22 +13,23 @@ class SenderProgressPage extends StatelessWidget {
   const SenderProgressPage({super.key});
 
   void _showCancelDialog(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Cancel Transfer?'),
-        content: const Text('Are you sure you want to stop sending this file?'),
+        title: Text(l10n.senderProgressCancelTitle),
+        content: Text(l10n.senderProgressCancelBody),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('No'),
+            child: Text(l10n.commonNo),
           ),
           TextButton(
             onPressed: () {
               Navigator.pop(ctx);
               context.read<SenderBloc>().add(CancelSending());
             },
-            child: const Text('Yes, Cancel'),
+            child: Text(l10n.senderProgressCancelConfirm),
           ),
         ],
       ),
@@ -36,6 +38,7 @@ class SenderProgressPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
@@ -50,7 +53,7 @@ class SenderProgressPage extends StatelessWidget {
       child: Scaffold(
         backgroundColor: AppColors.voidBg,
         appBar: AppBar(
-          title: const Text('Transferring File'),
+          title: Text(l10n.senderProgressTitle),
           leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: () {
@@ -84,7 +87,7 @@ class SenderProgressPage extends StatelessWidget {
                       ).animate().scale().fadeIn(),
                       const SizedBox(height: 24),
                       Text(
-                        'Transfer Complete!',
+                        l10n.senderProgressCompleteTitle,
                         style:
                             Theme.of(context).textTheme.headlineSmall?.copyWith(
                                   color: AppColors.textPrimary,
@@ -104,7 +107,7 @@ class SenderProgressPage extends StatelessWidget {
                           context.read<SenderBloc>().add(CancelSending());
                           context.go('/send');
                         },
-                        child: const Text('Send Another File'),
+                        child: Text(l10n.senderProgressSendAnother),
                       ).animate().fadeIn(delay: 600.ms),
                     ],
                   ),
@@ -132,14 +135,14 @@ class SenderProgressPage extends StatelessWidget {
                       ).animate().fadeIn(),
                       const SizedBox(height: 32),
                       Text(
-                        'Sending...',
+                        l10n.senderProgressSending,
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                       const SizedBox(height: 32),
                       OutlinedButton.icon(
                         onPressed: () => _showCancelDialog(context),
                         icon: const Icon(Icons.close),
-                        label: const Text('Cancel'),
+                        label: Text(l10n.commonCancel),
                       ),
                     ],
                   ),
@@ -150,16 +153,16 @@ class SenderProgressPage extends StatelessWidget {
             if (state is SenderError) {
               return Center(
                 child: TransferPhaseLoader(
-                  phaseLabel: 'Transfer failed',
+                  phaseLabel: l10n.senderProgressFailed,
                   detail: state.message,
                   icon: Icons.error_outline_rounded,
                 ),
               );
             }
 
-            return const Center(
+            return Center(
               child: TransferPhaseLoader(
-                phaseLabel: 'Preparing transfer…',
+                phaseLabel: l10n.senderProgressPreparing,
                 icon: Icons.sync_rounded,
               ),
             );

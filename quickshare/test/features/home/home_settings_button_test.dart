@@ -11,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/router/app_router.dart';
 import 'package:quickshare/features/settings/presentation/pages/settings_page.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 void main() {
   setUp(() async {
@@ -23,7 +24,11 @@ void main() {
 
   testWidgets('tapping the gear on the home screen opens settings',
       (tester) async {
-    await tester.pumpWidget(MaterialApp.router(routerConfig: AppRouter.router));
+    await tester.pumpWidget(MaterialApp.router(
+      routerConfig: AppRouter.router,
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+    ));
     // Not pumpAndSettle(): the home screen animates its background forever.
     for (var i = 0; i < 5; i++) {
       await tester.pump(const Duration(milliseconds: 100));

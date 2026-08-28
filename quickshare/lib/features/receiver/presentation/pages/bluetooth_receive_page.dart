@@ -10,6 +10,7 @@ import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.da
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_transport.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
@@ -74,7 +75,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
 
     setState(() {
       _phase = _Phase.connecting;
-      _fileName = 'Looking for a direct link…';
+      _fileName = AppLocalizations.of(context).btReceiveLookingForLink;
     });
 
     try {
@@ -95,7 +96,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   Future<void> _receiveOverDirectLink(String token, int port) async {
     setState(() {
       _phase = _Phase.transferring;
-      _fileName = 'Receiving over direct Wi-Fi';
+      _fileName = AppLocalizations.of(context).btReceiveDirectLinkPlaceholder;
     });
 
     final session = await const TransferCache().sessionDirectory();
@@ -239,10 +240,11 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
       backgroundColor: AppColors.voidBg,
       appBar: AppBar(
-        title: const Text('Nearby devices'),
+        title: Text(l10n.btReceiveTitle),
         leading: IconButton(
             icon: const Icon(Icons.arrow_back),
             onPressed: () => context.go('/')),
@@ -263,7 +265,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
                 borderRadius: BorderRadius.circular(28),
                 border: Border.all(color: AppColors.glassBorder),
               ),
-              child: _buildBody(theme),
+              child: _buildBody(theme, l10n),
             ),
           ),
         ),
@@ -271,7 +273,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     );
   }
 
-  Widget _buildBody(ThemeData theme) {
+  Widget _buildBody(ThemeData theme, AppLocalizations l10n) {
     switch (_phase) {
       case _Phase.scanning:
         return Column(
@@ -279,8 +281,8 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
           children: [
             Text(
               widget.sessionToken == null
-                  ? 'Looking for nearby Macs…'
-                  : 'Looking for the Mac from the QR code…',
+                  ? l10n.btReceiveLookingNearby
+                  : l10n.btReceiveLookingQr,
               style: theme.textTheme.titleMedium?.copyWith(
                 color: AppColors.textPrimary,
                 fontWeight: FontWeight.w600,
@@ -288,9 +290,9 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
             ),
             const SizedBox(height: 16),
             if (_devices.isEmpty)
-              const TransferPhaseLoader(
-                phaseLabel: 'Scanning for nearby devices…',
-                detail: 'Keep Bluetooth enabled on both devices',
+              TransferPhaseLoader(
+                phaseLabel: l10n.btReceiveScanning,
+                detail: l10n.btReceiveScanningDetail,
                 icon: Icons.bluetooth_searching_rounded,
               )
             else
@@ -318,8 +320,8 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
 
       case _Phase.connecting:
         return TransferPhaseLoader(
-          phaseLabel: 'Connecting over Bluetooth…',
-          detail: 'Pairing with $_fileName',
+          phaseLabel: l10n.btReceiveConnecting,
+          detail: l10n.btReceivePairingWith(_fileName),
           icon: Icons.bluetooth_connected_rounded,
         );
 
@@ -348,7 +350,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
             Icon(Icons.check_circle_outline_rounded,
                 size: 72, color: theme.colorScheme.primary),
             const SizedBox(height: 16),
-            Text('File received',
+            Text(l10n.transferFileReceived,
                 textAlign: TextAlign.center,
                 style: theme.textTheme.headlineSmall),
             const SizedBox(height: 8),
@@ -365,7 +367,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
             ],
             const SizedBox(height: 24),
             OutlinedButton(
-                onPressed: () => context.go('/'), child: const Text('Done')),
+                onPressed: () => context.go('/'), child: Text(l10n.commonDone)),
           ],
         );
 
@@ -376,19 +378,19 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
             Icon(Icons.error_outline_rounded,
                 size: 72, color: theme.colorScheme.error),
             const SizedBox(height: 16),
-            Text('Connection failed',
+            Text(l10n.btReceiveConnectionFailed,
                 textAlign: TextAlign.center,
                 style: theme.textTheme.headlineSmall),
             const SizedBox(height: 8),
             Text(
-              _error ?? 'Unknown error',
+              _error ?? l10n.commonUnknownError,
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium
                   ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
             const SizedBox(height: 24),
             OutlinedButton(
-                onPressed: _startScan, child: const Text('Scan again')),
+                onPressed: _startScan, child: Text(l10n.btReceiveScanAgain)),
           ],
         );
     }

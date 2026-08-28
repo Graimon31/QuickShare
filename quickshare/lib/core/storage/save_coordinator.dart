@@ -1,6 +1,7 @@
 import 'package:quickshare/core/storage/media_saver.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
+import 'package:quickshare/core/storage/save_location_store.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
@@ -33,10 +34,16 @@ class SaveCoordinator {
   final MediaSaver saver;
   final TransferCache cache;
 
+  /// Where the desktop "automatic" folder points, when the user overrode it.
+  /// Nothing on iOS or Android ever reads this — [SaveDestination] never
+  /// returns [SaveIntent.automatic] there in the first place.
+  final SaveLocationStore saveLocation;
+
   const SaveCoordinator({
     required this.destination,
     this.saver = const MediaSaver(),
     this.cache = const TransferCache(),
+    this.saveLocation = const SaveLocationStore(),
   });
 
   /// Saves everything that needs no question, and reports the rest.
@@ -46,16 +53,36 @@ class SaveCoordinator {
   Future<List<SaveOutcome>> runAutomatic(List<ReceivedItem> items) async {
     final outcomes = <SaveOutcome>[];
 
-    for (final item in items) {
-      switch (destination.intentFor(item)) {
-        case SaveIntent.automatic:
-          outcomes.add(await _attempt(item, () => saver.saveToDownloads(item)));
-        case SaveIntent.gallery:
-          outcomes.add(_survivable(
-              await _attempt(item, () => saver.saveToGallery(item))));
-        case SaveIntent.ask:
-          outcomes.add(SaveOutcome(item: item, awaitingDecision: true));
+    // Resolved once for the whole batch rather than per item: on macOS this
+    // opens a security scope, and opening/closing it twenty times for twenty
+    // photos in one session would be both wasteful and, per Apple's own
+    // guidance, not what the pairing is meant for.
+    //
+    // Skipped outright off desktop: SaveIntent.automatic never comes up on a
+    // phone (SaveDestination.intentFor returns gallery or ask there), so
+    // there is nothing here that would ever consult it — only a reason to
+    // touch a plugin channel a mobile run has no need to know about.
+    final customDir = destination.isDesktop
+        ? await saveLocation.resolveForWriting()
+        : null;
+    final effectiveSaver =
+        customDir == null ? saver : saver.withDownloadsHook(() async => customDir);
+
+    try {
+      for (final item in items) {
+        switch (destination.intentFor(item)) {
+          case SaveIntent.automatic:
+            outcomes.add(
+                await _attempt(item, () => effectiveSaver.saveToDownloads(item)));
+          case SaveIntent.gallery:
+            outcomes.add(_survivable(
+                await _attempt(item, () => saver.saveToGallery(item))));
+          case SaveIntent.ask:
+            outcomes.add(SaveOutcome(item: item, awaitingDecision: true));
+        }
       }
+    } finally {
+      if (customDir != null) await saveLocation.release();
     }
     return outcomes;
   }

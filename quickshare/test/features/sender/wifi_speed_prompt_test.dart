@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/features/sender/presentation/widgets/wifi_speed_prompt.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 class _FakeLink extends PeerLinkService {
   final bool ready;
@@ -49,6 +50,8 @@ void main() {
     );
 
     await tester.pumpWidget(MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
       home: Builder(
         builder: (context) => ElevatedButton(
           onPressed: () => prompt.ask(context),

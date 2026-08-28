@@ -8,6 +8,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -196,7 +197,7 @@ class _HomePageState extends State<HomePage>
 
                         // Subtitle
                         Text(
-                          'Share files instantly over Wi-Fi, Bluetooth,\nor by link over the internet',
+                          AppLocalizations.of(context).appTagline,
                           style: GoogleFonts.inter(
                             fontSize: 16,
                             height: 1.5,
@@ -210,8 +211,8 @@ class _HomePageState extends State<HomePage>
 
                         // Card 1: Send File (Glassmorphism + Drag & Drop Target)
                         _GlassCard(
-                          title: 'Send File',
-                          subtitle: 'Select and share a file',
+                          title: AppLocalizations.of(context).homeSendTitle,
+                          subtitle: AppLocalizations.of(context).homeSendSubtitle,
                           icon: Icons.upload_rounded,
                           badgeGradient: const RadialGradient(
                             colors: [AppColors.accent, AppColors.secondaryDark],
@@ -239,10 +240,10 @@ class _HomePageState extends State<HomePage>
 
                         // Card 2: Receive File (Glassmorphism)
                         _GlassCard(
-                          title: 'Receive File',
+                          title: AppLocalizations.of(context).homeReceiveTitle,
                           subtitle: isDesktop
-                              ? 'Paste a code or share link'
-                              : 'Scan a QR code to download',
+                              ? AppLocalizations.of(context).homeReceiveSubtitleDesktop
+                              : AppLocalizations.of(context).homeReceiveSubtitleMobile,
                           icon: Icons.download_rounded,
                           badgeGradient: const RadialGradient(
                             colors: [Color(0xFFE0F2FE), Color(0xFF0EA5E9)],
@@ -277,7 +278,7 @@ class _HomePageState extends State<HomePage>
               child: Padding(
                 padding: const EdgeInsets.only(top: 8, right: 8),
                 child: IconButton(
-                  tooltip: 'Settings',
+                  tooltip: AppLocalizations.of(context).homeSettingsTooltip,
                   icon: const Icon(Icons.settings_outlined,
                       color: AppColors.textSecondary),
                   onPressed: () => context.go('/settings'),
@@ -462,7 +463,7 @@ class _GlassCardState extends State<_GlassCard> {
 
                   // Subtitle (Centered)
                   Text(
-                    _isDragOver ? 'Drop file here to send' : widget.subtitle,
+                    _isDragOver ? AppLocalizations.of(context).homeDropHere : widget.subtitle,
                     textAlign: TextAlign.center,
                     style: GoogleFonts.inter(
                       fontSize: 15,

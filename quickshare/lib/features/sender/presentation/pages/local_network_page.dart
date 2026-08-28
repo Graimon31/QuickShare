@@ -4,6 +4,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 /// Walks the sender through handing a network to the other device.
 ///
@@ -26,12 +27,13 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
       backgroundColor: AppColors.backgroundDark,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: const Text('Local network'),
+        title: Text(l10n.localNetTitle),
         leading: IconButton(
           icon: const Icon(Icons.close_rounded),
           onPressed: () {
@@ -45,22 +47,23 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
       body: BlocBuilder<SenderBloc, SenderState>(
         builder: (context, state) {
           if (state is HotspotStarting) {
-            return const _Busy(message: 'Creating the network…');
+            return _Busy(message: l10n.localNetCreating);
           }
           if (state is LocalNetworkReady) {
-            return _ready(context, state);
+            return _ready(context, l10n, state);
           }
           if (state is SenderError) {
-            return _failed(context, state.message);
+            return _failed(context, l10n, state.message);
           }
           // Transferring / complete are handled by the progress route.
-          return const _Busy(message: 'Working…');
+          return _Busy(message: l10n.localNetWorking);
         },
       ),
     );
   }
 
-  Widget _ready(BuildContext context, LocalNetworkReady state) {
+  Widget _ready(
+      BuildContext context, AppLocalizations l10n, LocalNetworkReady state) {
     final theme = Theme.of(context);
     return SafeArea(
       child: SingleChildScrollView(
@@ -73,23 +76,23 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
               children: [
                 _Step(
                   number: 1,
-                  title: 'Scan this with the other phone\'s camera',
-                  subtitle: 'It joins the network. No app needed for this step.',
+                  title: l10n.localNetStep1Title,
+                  subtitle: l10n.localNetStep1Subtitle,
                   active: !_joined,
                   child: Column(
                     children: [
                       _QrCard(data: state.wifiQr),
                       const SizedBox(height: 12),
                       _CredentialRow(
-                          label: 'Network', value: state.credentials.ssid),
+                          label: l10n.localNetNetworkLabel,
+                          value: state.credentials.ssid),
                       if (state.credentials.passphrase.isNotEmpty)
                         _CredentialRow(
-                            label: 'Password',
+                            label: l10n.localNetPasswordLabel,
                             value: state.credentials.passphrase),
                       const SizedBox(height: 8),
                       Text(
-                        'This network has no internet — it exists only to carry '
-                        'the transfer.',
+                        l10n.localNetNoInternetNote,
                         textAlign: TextAlign.center,
                         style: theme.textTheme.bodySmall
                             ?.copyWith(color: Colors.white38),
@@ -98,7 +101,7 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
                       if (!_joined)
                         FilledButton(
                           onPressed: () => setState(() => _joined = true),
-                          child: const Text('Done, it is connected'),
+                          child: Text(l10n.localNetJoinedButton),
                         ),
                     ],
                   ),
@@ -106,9 +109,9 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
                 const SizedBox(height: 20),
                 _Step(
                   number: 2,
-                  title: 'Now scan this one in the app',
-                  subtitle: 'It points at the files on '
-                      '${state.credentials.hostAddress}.',
+                  title: l10n.localNetStep2Title,
+                  subtitle: l10n
+                      .localNetStep2Subtitle(state.credentials.hostAddress ?? ''),
                   active: _joined,
                   child: _joined
                       ? _QrCard(data: state.transferQr)
@@ -122,7 +125,7 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
     );
   }
 
-  Widget _failed(BuildContext context, String message) {
+  Widget _failed(BuildContext context, AppLocalizations l10n, String message) {
     final theme = Theme.of(context);
     return Center(
       child: Padding(
@@ -140,7 +143,7 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
             FilledButton(
               onPressed: () =>
                   context.read<SenderBloc>().add(StartLocalNetwork()),
-              child: const Text('Try again'),
+              child: Text(l10n.commonRetry),
             ),
           ],
         ),

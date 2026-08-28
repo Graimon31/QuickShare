@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 /// Asks for Wi-Fi before a Bluetooth transfer, and takes no for an answer.
 ///
@@ -33,25 +34,21 @@ class WifiSpeedPrompt {
     if (await link.enableWifi()) return;
     if (!context.mounted) return;
 
+    final l10n = AppLocalizations.of(context);
     final wantsSettings = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppColors.surfaceDark,
-        title: const Text('Turn on Wi-Fi to send faster?'),
-        content: const Text(
-          'Bluetooth on its own is slow — a large video can take hours.\n\n'
-          'With Wi-Fi switched on, the two devices connect directly and the '
-          'same files take seconds. You do not need to join a network: the '
-          'radio just has to be on.',
-        ),
+        title: Text(l10n.wifiPromptTitle),
+        content: Text(l10n.wifiPromptBody),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Send over Bluetooth'),
+            child: Text(l10n.wifiPromptDecline),
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Open settings'),
+            child: Text(l10n.wifiPromptAccept),
           ),
         ],
       ),

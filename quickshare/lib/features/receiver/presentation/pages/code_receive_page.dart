@@ -1,6 +1,5 @@
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -13,6 +12,7 @@ import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
@@ -79,7 +79,8 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     if (_isSubmitting || _phase != _Phase.idle) return;
     final raw = _controller.text.trim();
     if (raw.isEmpty) {
-      setState(() => _inputError = 'Paste the share link from the sender.');
+      setState(() => _inputError =
+          AppLocalizations.of(context).codeReceivePasteError);
       return;
     }
     setState(() {
@@ -106,8 +107,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       if (!mounted) return;
       setState(() {
         _isSubmitting = false;
-        _inputError =
-            'Could not read that link. Copy the share link under the QR on the sender.';
+        _inputError = AppLocalizations.of(context).codeReceiveParseError;
       });
     }
   }
@@ -187,13 +187,14 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
       backgroundColor: AppColors.voidBg,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: Text(
-          'Receive a file',
+          l10n.codeReceiveTitle,
           style: GoogleFonts.inter(
               color: Colors.white, fontWeight: FontWeight.w600),
         ),
@@ -221,12 +222,12 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                       },
                       builder: (context, state) {
                         if (state is QRParsed) {
-                          return _buildConfirm(context, state);
+                          return _buildConfirm(context, l10n, state);
                         }
-                        return _buildIdle(context);
+                        return _buildIdle(context, l10n);
                       },
                     )
-                  : _buildInternetBody(context),
+                  : _buildInternetBody(context, l10n),
             ),
           ),
         ),
@@ -234,12 +235,12 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     );
   }
 
-  Widget _buildIdle(BuildContext context) {
+  Widget _buildIdle(BuildContext context, AppLocalizations l10n) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          'Paste a code or share link',
+          l10n.codeReceivePastePrompt,
           style: GoogleFonts.inter(
             fontSize: 18,
             fontWeight: FontWeight.w600,
@@ -269,7 +270,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 style: GoogleFonts.firaCode(color: Colors.white, fontSize: 14),
                 decoration: InputDecoration(
                   border: InputBorder.none,
-                  hintText: 'directdrop://join?p=…',
+                  hintText: l10n.codeReceiveHint,
                   hintStyle:
                       GoogleFonts.inter(color: Colors.white.withValues(alpha: 0.40)),
                 ),
@@ -291,7 +292,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 },
                 icon: const Icon(Icons.paste_rounded,
                     size: 18, color: Colors.white),
-                label: Text('Paste',
+                label: Text(l10n.codeReceivePasteButton,
                     style: GoogleFonts.inter(
                         color: Colors.white, fontWeight: FontWeight.w600)),
                 style: OutlinedButton.styleFrom(
@@ -309,7 +310,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 onPressed: _isSubmitting ? null : _submit,
                 icon: const Icon(Icons.download_rounded,
                     size: 18, color: Colors.white),
-                label: Text('Receive',
+                label: Text(l10n.codeReceiveReceiveButton,
                     style: GoogleFonts.inter(
                         color: Colors.white, fontWeight: FontWeight.w600)),
                 style: ElevatedButton.styleFrom(
@@ -328,26 +329,12 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
           Text(_inputError!,
               style: GoogleFonts.inter(color: AppColors.error, fontSize: 14)),
         ],
-        if (defaultTargetPlatform == TargetPlatform.macOS) ...[
-          const SizedBox(height: 24),
-          Center(
-            child: TextButton.icon(
-              onPressed: () => context.push('/receive/bluetooth'),
-              icon: const Icon(Icons.bluetooth_searching,
-                  size: 18, color: AppColors.primary),
-              label: Text(
-                'Look for nearby devices instead',
-                style:
-                    GoogleFonts.inter(color: AppColors.primary, fontSize: 14),
-              ),
-            ),
-          ),
-        ],
       ],
     );
   }
 
-  Widget _buildConfirm(BuildContext context, QRParsed state) {
+  Widget _buildConfirm(
+      BuildContext context, AppLocalizations l10n, QRParsed state) {
     final payload = state.payload;
     final preview = state.qhtpPreview;
     final itemCount = preview?.itemCount ?? payload.itemCount;
@@ -356,23 +343,23 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     final title = payload.fileName.isNotEmpty
         ? payload.fileName
         : (itemCount > 0
-            ? '$itemCount ${itemCount == 1 ? 'file' : 'files'}'
-            : 'Incoming transfer');
+            ? l10n.sharedItemsCount(itemCount)
+            : l10n.codeReceiveIncomingTransfer);
     final sizeBits = <String>[
-      if (itemCount > 1) '$itemCount files',
+      if (itemCount > 1) l10n.sharedItemsCount(itemCount),
       if (sizeBytes > 0)
         FileMetadata(name: '', path: '', size: sizeBytes, mimeType: '')
             .sizeFormatted,
     ];
     final sizeLabel = sizeBits.isNotEmpty
         ? sizeBits.join(' · ')
-        : 'Size unknown until the transfer starts';
+        : l10n.codeReceiveSizeUnknown;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
-          'File found',
+          l10n.codeReceiveFileFound,
           style: GoogleFonts.inter(
               fontSize: 18, fontWeight: FontWeight.w600, color: Colors.white),
         ),
@@ -442,7 +429,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(16)),
                 ),
-                child: Text('Cancel',
+                child: Text(l10n.commonCancel,
                     style: GoogleFonts.inter(
                         color: Colors.white, fontWeight: FontWeight.w600)),
               ),
@@ -465,7 +452,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                       borderRadius: BorderRadius.circular(16)),
                   elevation: 6,
                 ),
-                child: Text('Download',
+                child: Text(l10n.codeReceiveDownloadButton,
                     style: GoogleFonts.inter(
                         color: Colors.white, fontWeight: FontWeight.w600)),
               ),
@@ -476,13 +463,12 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     );
   }
 
-  Widget _buildInternetBody(BuildContext context) {
+  Widget _buildInternetBody(BuildContext context, AppLocalizations l10n) {
     switch (_phase) {
       case _Phase.internetConnecting:
         return TransferPhaseLoader(
-          phaseLabel: 'Connecting to sender…',
-          detail: _internetError ??
-              'Keep the Mac on the Share screen. Same Wi‑Fi required for local signaling; LTE needs a public signaling + TURN server.',
+          phaseLabel: l10n.codeReceiveConnecting,
+          detail: _internetError ?? l10n.codeReceiveConnectingDetail,
           icon: Icons.public_rounded,
         );
 
@@ -516,7 +502,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 size: 72, color: AppColors.success),
             const SizedBox(height: 16),
             Text(
-              'File received',
+              l10n.transferFileReceived,
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(
                   fontSize: 22,
@@ -548,7 +534,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16)),
               ),
-              child: Text('Done',
+              child: Text(l10n.commonDone,
                   style: GoogleFonts.inter(
                       color: Colors.white, fontWeight: FontWeight.w600)),
             ),
@@ -563,7 +549,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 size: 72, color: AppColors.error),
             const SizedBox(height: 16),
             Text(
-              'Transfer failed',
+              l10n.codeReceiveTransferFailed,
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(
                   fontSize: 22,
@@ -575,8 +561,9 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
               _internetError != null &&
                       (_internetError!.contains('Signaling') ||
                           _internetError!.contains('Cannot reach'))
-                  ? 'Signaling server unreachable (${AppConstants.signalingServerUrl}). Specify a remote server using:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com'
-                  : (_internetError ?? 'Unknown error'),
+                  ? l10n.codeReceiveSignalingError(
+                      AppConstants.signalingServerUrl)
+                  : (_internetError ?? l10n.commonUnknownError),
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(
                   fontSize: 14, color: Colors.white.withValues(alpha: 0.70)),
@@ -591,7 +578,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                     borderRadius: BorderRadius.circular(16)),
               ),
               child: Text(
-                'Try another code',
+                l10n.codeReceiveTryAnother,
                 style: GoogleFonts.inter(
                     color: AppColors.error, fontWeight: FontWeight.w600),
               ),

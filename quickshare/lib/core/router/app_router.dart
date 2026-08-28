@@ -5,6 +5,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/core/theme/app_motion.dart';
 import 'package:quickshare/features/home/presentation/pages/home_page.dart';
 import 'package:quickshare/features/settings/presentation/pages/settings_page.dart';
@@ -326,7 +327,7 @@ class _ErrorPage extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               Text(
-                'Oops!',
+                AppLocalizations.of(context).errorOops,
                 style: theme.textTheme.headlineMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),
@@ -344,13 +345,13 @@ class _ErrorPage extends StatelessWidget {
                 FilledButton.icon(
                   onPressed: () => context.go(retryRoute!),
                   icon: const Icon(Icons.refresh_rounded),
-                  label: const Text('Retry'),
+                  label: Text(AppLocalizations.of(context).commonRetry),
                 ),
               const SizedBox(height: 12),
               OutlinedButton.icon(
                 onPressed: () => context.go('/'),
                 icon: const Icon(Icons.home_rounded),
-                label: const Text('Go Home'),
+                label: Text(AppLocalizations.of(context).errorGoHome),
               ),
             ],
           ),
