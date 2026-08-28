@@ -16,6 +16,7 @@ class _FakeBookmark extends SaveLocationBookmark {
   bool stopCalled = false;
   bool staleOnNextStart = false;
   bool failCreate = false;
+  bool failStart = false;
 
   _FakeBookmark();
 
@@ -32,6 +33,9 @@ class _FakeBookmark extends SaveLocationBookmark {
   @override
   Future<BookmarkAccess> startAccessing(String bookmark) async {
     startCalled = true;
+    if (failStart) {
+      throw const SaveLocationBookmarkException('bookmark no longer resolves');
+    }
     final entry = _bookmarks.entries.firstWhere((e) => e.value == bookmark,
         orElse: () => throw const SaveLocationBookmarkException('unknown bookmark'));
     return BookmarkAccess(path: entry.key, stale: staleOnNextStart);
@@ -123,6 +127,21 @@ void main() {
 
       expect(dir, isNotNull,
           reason: 'stale means the folder moved, not that access failed');
+    });
+
+    test('a bookmark that no longer resolves falls back to the default',
+        () async {
+      await store.set('/Users/someone/Desktop');
+      bookmark.failStart = true;
+
+      // Must not throw: null is the "use the platform default" signal, and
+      // a dead bookmark — the folder was deleted, the drive is unplugged —
+      // must not wedge the save that is waiting on this answer.
+      expect(await store.resolveForWriting(), isNull);
+
+      expect(await store.read(), isNotNull,
+          reason: 'the choice is kept: a disconnected drive is transient, '
+              'and once the folder is back transfers should head there again');
     });
   }, skip: SaveLocationBookmark.isSupported ? false : 'macOS-only behaviour');
 

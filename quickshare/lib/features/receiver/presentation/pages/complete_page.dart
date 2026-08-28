@@ -8,6 +8,7 @@ import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/save_coordinator.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/pressable_scale.dart';
 
@@ -60,12 +61,22 @@ class _CompletePageState extends State<CompletePage> {
       setState(() => _working = false);
       return;
     }
-    final outcomes = await _coordinator.runAutomatic(widget.items);
-    if (mounted) {
-      setState(() {
-        _outcomes = outcomes;
-        _working = false;
-      });
+    try {
+      final outcomes = await _coordinator.runAutomatic(widget.items);
+      if (mounted) {
+        setState(() {
+          _outcomes = outcomes;
+          _working = false;
+        });
+      }
+    } catch (e, st) {
+      // The automatic pass must never wedge this screen on "Saving…": the
+      // files are still in the transfer cache, and a responsive screen is
+      // what lets the user do anything about them. Nothing is discarded here,
+      // so a failed pass leaves the cache for the next launch to sweep.
+      AppLogger.error('Automatic save failed to run',
+          error: e, stackTrace: st, tag: 'SAVE');
+      if (mounted) setState(() => _working = false);
     }
   }
 

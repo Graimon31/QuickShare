@@ -125,7 +125,23 @@ class SaveLocationStore {
       return Directory(location.path);
     }
 
-    final access = await _bookmark.startAccessing(location.bookmark);
+    BookmarkAccess access;
+    try {
+      access = await _bookmark.startAccessing(location.bookmark);
+    } catch (e) {
+      // The folder behind the bookmark is gone or the bookmark itself is
+      // damaged — an unplugged external drive, a folder deleted in Finder.
+      // null means "use the platform default", so this one batch falls back
+      // instead of the failure surfacing mid-save and wedging the screen
+      // that is waiting on it. The stored choice is kept: a transient
+      // condition like a disconnected drive should not erase a deliberate
+      // setting, and once the folder comes back, transfers head there again.
+      AppLogger.warning(
+          'Saved folder "${location.path}" is unreachable ($e); saving to '
+          'the platform default this once',
+          tag: 'SAVE');
+      return null;
+    }
     if (access.stale) await _refresh(location, access.path);
     return Directory(access.path);
   }
