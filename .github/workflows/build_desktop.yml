@@ -32,10 +32,27 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: Build macOS Debug Bundle
+      - name: Build macOS Release Bundle
         run: |
           flutter pub get
-          flutter build macos --debug
+          flutter build macos --release
+
+      # An .app is a bundle, not a file: a plain zip from a non-Mac tool can
+      # drop the Finder metadata and symlinks inside it, and the result still
+      # looks like an app but refuses to launch. ditto is the archiver macOS
+      # itself uses for bundles.
+      - name: Package macOS app
+        working-directory: ./quickshare
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            build/macos/Build/Products/Release/DirectDrop.app \
+            DirectDrop-macos.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DirectDrop-macos
+          path: quickshare/DirectDrop-macos.zip
+          retention-days: 30
 
   build_desktop_linux:
     runs-on: ubuntu-latest
@@ -148,32 +165,42 @@ jobs:
 
   # Run artifacts are only ever visible to someone logged in with access to
   # the repo — that is what today's "why can't they download it" was. A
-  # Release attaches the same file to a public page instead, so this only
+  # Release attaches the same files to a public page instead, so this only
   # fires for a version tag rather than every ordinary push.
   #
-  # macOS and Linux are not attached yet: those two jobs still build --debug
-  # with nothing packaged, so there is nothing of release quality to publish
-  # for them. Windows is what was actually asked for today.
+  # Linux is still not attached: that job only checks that the build compiles
+  # and packages nothing of release quality yet.
   release:
-    needs: [ build_desktop_windows ]
+    needs: [ build_desktop_windows, build_desktop_macos ]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: DirectDrop-windows-portable
-          path: dist
+          path: dist/windows
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: DirectDrop-macos
+          path: dist/macos
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/DirectDrop-windows-portable.zip
+          files: |
+            dist/windows/DirectDrop-windows-portable.zip
+            dist/macos/DirectDrop-macos.zip
           body: |
-            Windows build, portable — no installer.
-
-            Download **DirectDrop-windows-portable.zip**, extract it anywhere,
-            run `directdrop.exe`. Nothing is installed and nothing is written
-            to the registry; the extracted folder is the whole application.
-
+            **Windows** — portable, no installer. Download
+            **DirectDrop-windows-portable.zip**, extract it anywhere, run
+            `directdrop.exe`. Nothing is installed and nothing is written to
+            the registry; the extracted folder is the whole application.
             Windows SmartScreen will warn on first run, because this build
             carries no code-signing certificate. Choose "More info" then "Run
             anyway".
+
+            **macOS** — download **DirectDrop-macos.zip**, extract it and move
+            `DirectDrop.app` wherever you keep apps. The build is not signed
+            or notarized, so Gatekeeper will refuse the first launch: either
+            right-click the app and choose "Open", or run
+            `xattr -dr com.apple.quarantine /path/to/DirectDrop.app` once.
