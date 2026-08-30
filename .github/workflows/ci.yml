@@ -51,6 +51,30 @@ jobs:
           flutter pub get
           flutter build macos --debug --no-pub
 
+  # iOS ships in the release matrix but had no build here at all, so the only
+  # thing standing between a typo in Runner/*.swift and a failed archive on
+  # somebody's Mac was remembering to open Xcode. Codesigning is skipped —
+  # this is a compile check, not a distribution build.
+  build_ios:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ./quickshare
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Build iOS Application
+        run: |
+          flutter pub get
+          flutter build ios --release --no-codesign --no-pub
+
   build_android:
     runs-on: ubuntu-latest
     defaults:

@@ -30,7 +30,8 @@ class HotspotCredentials {
     final ssid = map['ssid'] as String?;
     final passphrase = map['passphrase'] as String?;
     if (ssid == null || ssid.isEmpty) {
-      throw const HotspotException('the platform returned a hotspot with no SSID');
+      throw const HotspotException(
+          'the platform returned a hotspot with no SSID');
     }
     return HotspotCredentials(
       ssid: ssid,
@@ -48,8 +49,8 @@ class HotspotCredentials {
   /// The standard `WIFI:` payload every phone camera understands, so a
   /// receiver without the app installed can still join the network.
   String toWifiQrPayload() {
-    String escape(String value) => value.replaceAllMapped(
-        RegExp(r'([\\;,:"])'), (m) => '\\${m[1]}');
+    String escape(String value) =>
+        value.replaceAllMapped(RegExp(r'([\\;,:"])'), (m) => '\\${m[1]}');
     return 'WIFI:T:WPA;S:${escape(ssid)};P:${escape(passphrase)};;';
   }
 
@@ -76,8 +77,7 @@ class HotspotException implements Exception {
 /// the guest. iPhone-to-iPhone is not reachable this way — that pair needs
 /// Personal Hotspot turned on by hand.
 class LocalHotspotService {
-  static const MethodChannel _channel =
-      MethodChannel('quickshare/hotspot');
+  static const MethodChannel _channel = MethodChannel('quickshare/hotspot');
 
   final MethodChannel _methodChannel;
 
@@ -102,10 +102,11 @@ class LocalHotspotService {
           'app; the other device has to host');
     }
     try {
-      final result =
-          await _methodChannel.invokeMethod<Map<Object?, Object?>>('startHotspot');
+      final result = await _methodChannel
+          .invokeMethod<Map<Object?, Object?>>('startHotspot');
       if (result == null) {
-        throw const HotspotException('the platform returned no hotspot details');
+        throw const HotspotException(
+            'the platform returned no hotspot details');
       }
       final credentials = HotspotCredentials.fromMap(result)
           .withHost(await awaitHotspotAddress());

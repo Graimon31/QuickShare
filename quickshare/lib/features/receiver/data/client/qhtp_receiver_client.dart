@@ -270,7 +270,8 @@ class QhtpReceiverClient {
             'Session file count ($itemCount) exceeds max limit of ${AppConstants.qhtpMaxFileCount}'));
       }
       if (totalBytes > AppConstants.qhtpMaxSessionBytes) {
-        return const Left(FileFailure('Session size exceeds max limit of 500 GB'));
+        return const Left(
+            FileFailure('Session size exceeds max limit of 500 GB'));
       }
 
       final resolvedTargetBaseDir = await _resolveTargetDir(targetBaseDir);
@@ -393,8 +394,14 @@ class QhtpReceiverClient {
                   if (existingBytes > 0) 'Range': 'bytes=$existingBytes-',
                 },
                 responseType: ResponseType.stream,
+                connectTimeout: const Duration(seconds: 15),
                 sendTimeout: const Duration(seconds: 10),
-                receiveTimeout: null, // Unlimited for file body stream
+                // dio's own receiveTimeout only covers waiting for the
+                // response headers, not a streamed body — a dead bridge
+                // keeps the socket open and simply stops sending, and the
+                // transfer used to sit on its last percentage forever. The
+                // idle timeout on the stream below is the actual guard.
+                receiveTimeout: null,
               );
 
               final fileUrl = 'http://$host:$port/v2/files/${item.id}';
@@ -416,7 +423,12 @@ class QhtpReceiverClient {
                     'Server returned status ${response.statusCode}');
               }
 
-              final stream = response.data!.stream;
+              // Thirty seconds without a single chunk is a dead link, not a
+              // slow one; the timeout errors the attempt so the retry loop
+              // resumes from the partial file instead of hanging forever.
+              final stream = response.data!.stream.timeout(
+                const Duration(seconds: 30),
+              );
 
               await for (final Uint8List chunk in stream) {
                 fileSink.add(chunk);
@@ -524,20 +536,39 @@ class QhtpReceiverClient {
         }
       }
 
-      // 6. Signal completion to sender
-      try {
-        await dio.post(
-          'http://$host:$port/v2/session/complete',
-          data: {
-            'sessionId': sessionId,
-            'receivedItems': manifest.itemCount,
-            'receivedBytes': manifest.totalBytes,
-            'failedItems': 0,
-          },
-          options: options,
-        );
-      } catch (e) {
-        // Complete signal best effort
+      // 6. Signal completion to the sender. This POST is the sender's only
+      // authoritative completion signal, so best-effort is not enough: a POST
+      // lost to a tearing-down bridge used to leave the sender sitting on
+      // 99% until the session timed out, with the receiver looking finished.
+      Object? completeError;
+      for (var attempt = 1;
+          attempt <= AppConstants.maxRetryAttempts;
+          attempt++) {
+        try {
+          await dio.post(
+            'http://$host:$port/v2/session/complete',
+            data: {
+              'sessionId': sessionId,
+              'receivedItems': manifest.itemCount,
+              'receivedBytes': manifest.totalBytes,
+              'failedItems': 0,
+            },
+            options: options,
+          );
+          completeError = null;
+          break;
+        } catch (e) {
+          completeError = e;
+          if (attempt < AppConstants.maxRetryAttempts) {
+            await Future.delayed(Duration(seconds: attempt));
+          }
+        }
+      }
+      if (completeError != null) {
+        // The files are complete on disk; only the sender's bookkeeping is
+        // missing. Log it rather than failing a receive that succeeded.
+        debugPrint('Completion signal never reached the sender: '
+            '$completeError');
       }
 
       await stateStore.deleteState(sessionId);

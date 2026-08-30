@@ -79,8 +79,8 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     if (_isSubmitting || _phase != _Phase.idle) return;
     final raw = _controller.text.trim();
     if (raw.isEmpty) {
-      setState(() => _inputError =
-          AppLocalizations.of(context).codeReceivePasteError);
+      setState(() =>
+          _inputError = AppLocalizations.of(context).codeReceivePasteError);
       return;
     }
     setState(() {
@@ -271,8 +271,8 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 decoration: InputDecoration(
                   border: InputBorder.none,
                   hintText: l10n.codeReceiveHint,
-                  hintStyle:
-                      GoogleFonts.inter(color: Colors.white.withValues(alpha: 0.40)),
+                  hintStyle: GoogleFonts.inter(
+                      color: Colors.white.withValues(alpha: 0.40)),
                 ),
                 onSubmitted: (_) => _submit(),
               ),
@@ -379,7 +379,9 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 children: [
                   Icon(
                     isMany
-                        ? Icons.folder_zip_rounded
+                        // A folder now arrives as a folder, so it should not
+                        // be announced with an archive icon.
+                        ? Icons.folder_rounded
                         : Icons.insert_drive_file_rounded,
                     color: AppColors.success,
                     size: 38,

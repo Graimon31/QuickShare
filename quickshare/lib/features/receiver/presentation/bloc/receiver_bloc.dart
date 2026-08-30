@@ -9,7 +9,10 @@ import 'package:quickshare/features/receiver/domain/repositories/receiver_reposi
 import 'package:quickshare/features/receiver/domain/entities/qhtp_session_preview.dart';
 import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart'
-    show TransferCancelledBySender, WebRtcReceiveProgress, WebRtcReceiverTransport;
+    show
+        TransferCancelledBySender,
+        WebRtcReceiveProgress,
+        WebRtcReceiverTransport;
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
@@ -78,8 +81,7 @@ class DownloadCompleted extends ReceiverEvent {
       {this.fileName, this.items = const []});
 
   @override
-  List<Object> get props =>
-      [filePath, if (fileName != null) fileName!, items];
+  List<Object> get props => [filePath, if (fileName != null) fileName!, items];
 }
 
 class DownloadFailed extends ReceiverEvent {
@@ -132,8 +134,7 @@ class DownloadComplete extends ReceiverState {
   /// which case the screen falls back to [filePath].
   final List<ReceivedItem> items;
 
-  const DownloadComplete(this.filePath, this.fileName,
-      {this.items = const []});
+  const DownloadComplete(this.filePath, this.fileName, {this.items = const []});
 
   @override
   List<Object> get props => [filePath, fileName, items];
@@ -151,6 +152,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   final DownloadFileUseCase downloadFileUseCase;
   final ReceiverRepository repository;
   QRPayload? _currentPayload;
+
   /// Smooths the reported speed.
   ///
   /// Progress arrives once per 16 KB chunk, so measuring between consecutive
@@ -214,9 +216,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           final embeddedPreview =
               (payload.fileSize > 0 || payload.itemCount > 0)
                   ? QhtpSessionPreview(
-                      itemCount: payload.itemCount > 0
-                          ? payload.itemCount
-                          : 0,
+                      itemCount: payload.itemCount > 0 ? payload.itemCount : 0,
                       totalBytes: payload.fileSize,
                     )
                   : null;
@@ -320,8 +320,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           },
           (result) {
             final items = TransferCache.itemsIn(session);
-            unawaited(_report(
-                items.fold<int>(0, (sum, item) => sum + item.size)));
+            unawaited(
+                _report(items.fold<int>(0, (sum, item) => sum + item.size)));
             add(DownloadCompleted(
               result.preferredResultPath,
               fileName: result.displayName,
@@ -507,28 +507,31 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       // a phone that decision belongs to the user.
       final cacheDir = await const TransferCache().sessionDirectory();
 
-      final savedPath = await transport.receiveWithSdpOffer(
+      await transport.receiveWithSdpOffer(
         qr.offer.toSdp(isOffer: true),
         targetDir: cacheDir.path,
         deliverAnswer: (answerSdp) async {
           final sealed = await SealedEnvelope.seal(
-            plaintext: ServerlessQr.trimForQr(CompactSdp.fromSdp(answerSdp))
-                .toBytes(),
+            plaintext:
+                ServerlessQr.trimForQr(CompactSdp.fromSdp(answerSdp)).toBytes(),
             seed: qr.seed,
             offerFingerprint: qr.offerFingerprint,
           );
           await channel.publish(topic, sealed);
         },
       );
-      final items = [
-        for (final path in transport.receivedPaths)
-          ReceivedItem.fromCacheFile(
-            File(path),
-            lookupMimeType(path) ?? 'application/octet-stream',
-          ),
-      ];
+      // Read off the filesystem rather than from the transport's own list of
+      // files. A folder now arrives as a folder — hundreds of files under one
+      // root — and the completion screen has one decision to offer about it,
+      // not one per photo inside it. The top level of the session directory is
+      // exactly that: whatever the sender picked.
+      final items = TransferCache.itemsIn(cacheDir);
       emit(DownloadComplete(
-        savedPath,
+        // The item itself when one thing arrived — a file or a folder — and
+        // the session directory when several did. The transport's own answer
+        // was the first file it wrote, which for a folder is some photo three
+        // levels down rather than the thing the sender sent.
+        items.length == 1 ? items.first.cachePath : cacheDir.path,
         items.length == 1 ? items.first.name : payload.fileName,
         items: items,
       ));

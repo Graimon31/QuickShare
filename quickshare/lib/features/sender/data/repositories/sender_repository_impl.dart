@@ -8,6 +8,7 @@ import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/foundation.dart';
 
+import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
@@ -128,7 +129,8 @@ class SenderRepositoryImpl implements SenderRepository {
     } catch (e) {
       _statusController.add(TransferStatus.failed);
       debugPrint('Error details: $e');
-      return const Left(ServerFailure('Failed to start server. Please try again.'));
+      return const Left(
+          ServerFailure('Failed to start server. Please try again.'));
     }
   }
 
@@ -151,12 +153,25 @@ class SenderRepositoryImpl implements SenderRepository {
       final indexResult = await indexer.buildResult(
         sessionId: sessionId,
         paths: paths,
+        includeChecksums: false,
       );
+
+      // Hashing waits for nobody: the QR goes up on sizes alone, and the
+      // manifest endpoint holds its answer until the digests are merged.
+      // Above the checksum budget the session skips hashes entirely, as
+      // before.
+      Future<Map<String, String>>? checksums;
+      if (indexResult.manifest.totalBytes <=
+          AppConstants.qhtpChecksumMaxSessionBytes) {
+        checksums =
+            FileIndexer.computeChecksums(indexResult.itemIdToAbsPathMap);
+      }
 
       final port = await localServer.startQhtpSession(
         manifest: indexResult.manifest,
         itemIdToAbsPathMap: indexResult.itemIdToAbsPathMap,
         authToken: token,
+        checksums: checksums,
       );
 
       // Prefer the original folder/file basename so receivers can show a real
@@ -209,8 +224,8 @@ class SenderRepositoryImpl implements SenderRepository {
   }
 
   @override
-  Future<Either<Failure, String>> generateQRPayload(
-      TransferSession session, {String? hostOverride}) async {
+  Future<Either<Failure, String>> generateQRPayload(TransferSession session,
+      {String? hostOverride}) async {
     try {
       // Legacy single-file session path
       if (!session.isQhtp) {

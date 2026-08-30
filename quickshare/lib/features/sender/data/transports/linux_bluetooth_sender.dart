@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dbus/dbus.dart';
 
+import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 
 typedef LinuxBluetoothProgress = void Function(int sent, int total);
@@ -17,14 +18,10 @@ typedef LinuxBluetoothStatus = void Function(String status, [String? error]);
 /// advertisement, then streams the selected file as Value notifications after
 /// the receiver writes START:<token> to the control characteristic.
 class LinuxBluetoothSender {
-  static const serviceUuid =
-      'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10';
-  static const controlUuid =
-      'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
-  static const metadataUuid =
-      'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
-  static const dataUuid =
-      'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
+  static const serviceUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10';
+  static const controlUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
+  static const metadataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
+  static const dataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
 
   DBusClient? _bus;
   DBusRemoteObject? _adapter;
@@ -37,7 +34,13 @@ class LinuxBluetoothSender {
   RandomAccessFile? _file;
 
   String? _token;
-  FileMetadata? _fileMetadata;
+
+  /// The session being served, in send order. One entry for a single file,
+  /// one per file for a folder — the same list the other BLE senders take.
+  List<FileMetadata> _sessionFiles = const [];
+  /// What the receiver said it can take, from its `CAPS:` write. Null means
+  /// it never sent one — a build that stops at the first file.
+  int? _peerGeneration;
   bool _dataNotifying = false;
   bool _startReceived = false;
   bool _transferStarted = false;
@@ -46,13 +49,14 @@ class LinuxBluetoothSender {
   LinuxBluetoothStatus? _onStatus;
 
   Future<void> start(
-    FileMetadata file,
+    List<FileMetadata> files,
     String token, {
     required LinuxBluetoothProgress onProgress,
     required LinuxBluetoothStatus onStatus,
   }) async {
     await stop();
-    _fileMetadata = file;
+    _sessionFiles = files;
+    _peerGeneration = null;
     _token = token;
     _onProgress = onProgress;
     _onStatus = onStatus;
@@ -81,7 +85,14 @@ class LinuxBluetoothSender {
         flags: const ['write', 'write-without-response'],
         onWrite: (bytes) async {
           final command = utf8.decode(bytes, allowMalformed: true);
-          if (command == 'START' || command == 'START:$_token') {
+          // Always ahead of START, so it is on record before the decision
+          // about what this session may send is taken.
+          final generation = BleControlProtocol.parseCapabilities(command);
+          if (generation != null) {
+            _peerGeneration = generation;
+            return;
+          }
+          if (BleControlProtocol.isStart(command, _token)) {
             _startReceived = true;
             await _maybeStartTransfer();
           }
@@ -193,36 +204,65 @@ class LinuxBluetoothSender {
     if (_transferStarted || !_dataNotifying || !_startReceived || _stopping) {
       return;
     }
-    final metadata = _fileMetadata;
+    final session = _sessionFiles;
     final dataCharacteristic = _data;
     final metadataCharacteristic = _metadata;
-    if (metadata == null ||
+    if (session.isEmpty ||
         dataCharacteristic == null ||
         metadataCharacteristic == null) {
       return;
     }
 
     _transferStarted = true;
+    // Half a folder delivered in silence is worse than a refusal: an older
+    // receiver ends the transfer at the first file and reports success.
+    if (!BleControlProtocol.peerCanTakeSession(
+        fileCount: session.length, peerGeneration: _peerGeneration)) {
+      _onStatus?.call('failed', BleControlProtocol.sessionRefusedMessage);
+      return;
+    }
+    final sessionBytes = session.fold<int>(0, (sum, f) => sum + f.size);
+    var sessionSent = 0;
     try {
-      _file = await File(metadata.path).open();
-      await metadataCharacteristic.setValue(
-        utf8.encode(jsonEncode({
-          'name': metadata.name,
-          'size': metadata.size,
-          'mime': metadata.mimeType,
-        })),
-      );
+      for (var index = 0; index < session.length; index++) {
+        if (_stopping) return;
+        final item = session[index];
+        _file = await File(item.path).open();
+        await metadataCharacteristic.setValue(
+          utf8.encode(jsonEncode({
+            'name': item.name,
+            // Where this file sits inside the selection, so a folder is
+            // rebuilt on the far side instead of arriving as a heap of files
+            // or as an archive to unpack.
+            'path': item.relPath,
+            'size': item.size,
+            'mime': item.mimeType,
+            'index': index,
+            'count': session.length,
+            'sessionBytes': sessionBytes,
+          })),
+        );
 
-      const chunkSize = 182;
-      var sent = 0;
-      while (!_stopping && sent < metadata.size) {
-        final chunk = await _file!.read(chunkSize);
-        if (chunk.isEmpty) break;
-        await dataCharacteristic.setValue(chunk);
-        sent += chunk.length;
-        _onProgress?.call(sent, metadata.size);
+        const chunkSize = 182;
+        var fileSent = 0;
+        try {
+          while (!_stopping && fileSent < item.size) {
+            final chunk = await _file!.read(chunkSize);
+            if (chunk.isEmpty) break;
+            await dataCharacteristic.setValue(chunk);
+            fileSent += chunk.length;
+            sessionSent += chunk.length;
+            // Progress belongs to the session, not to whichever file happens
+            // to be open.
+            _onProgress?.call(sessionSent, sessionBytes);
+          }
+        } finally {
+          await _file?.close();
+          _file = null;
+        }
+        if (fileSent < item.size) return;
       }
-      if (!_stopping && sent >= metadata.size) _onStatus?.call('completed');
+      if (!_stopping) _onStatus?.call('completed');
     } catch (error) {
       if (!_stopping) _onStatus?.call('failed', error.toString());
     } finally {
@@ -282,7 +322,8 @@ class LinuxBluetoothSender {
     _data = null;
     _advertisement = null;
     _token = null;
-    _fileMetadata = null;
+    _sessionFiles = const [];
+    _peerGeneration = null;
     _onProgress = null;
     _onStatus = null;
     _dataNotifying = false;

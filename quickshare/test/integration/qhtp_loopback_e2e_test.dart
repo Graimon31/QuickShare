@@ -39,7 +39,8 @@ class _InMemorySessionStateStore extends SessionStateStore {
   final Map<String, Map<String, QhtpItemState>> _states = {};
 
   @override
-  Future<Map<String, QhtpItemState>?> loadState(String sessionId) async => _states[sessionId];
+  Future<Map<String, QhtpItemState>?> loadState(String sessionId) async =>
+      _states[sessionId];
 
   @override
   Future<void> saveState({
@@ -80,7 +81,8 @@ void main() {
     if (await targetDir.exists()) await targetDir.delete(recursive: true);
   });
 
-  test('full folder session transfers byte-for-byte over real loopback HTTP', () async {
+  test('full folder session transfers byte-for-byte over real loopback HTTP',
+      () async {
     final readme = File(p.join(sourceDir.path, 'readme.txt'));
     await readme.writeAsString('hello qhtp');
 
@@ -91,7 +93,8 @@ void main() {
     await subDir.create();
     final bigFile = File(p.join(subDir.path, 'big.bin'));
     final rand = Random(42);
-    final bigBytes = Uint8List.fromList(List.generate(3 * 1024 * 1024, (_) => rand.nextInt(256)));
+    final bigBytes = Uint8List.fromList(
+        List.generate(3 * 1024 * 1024, (_) => rand.nextInt(256)));
     await bigFile.writeAsBytes(bigBytes);
 
     final indexResult = await FileIndexer().buildResult(
@@ -128,14 +131,17 @@ void main() {
     );
 
     result.fold(
-      (failure) => fail('Expected successful QHTP session, got failure: ${failure.message}'),
+      (failure) => fail(
+          'Expected successful QHTP session, got failure: ${failure.message}'),
       (_) {},
     );
 
     final destRoot = p.join(targetDir.path, p.basename(sourceDir.path));
-    expect(await File(p.join(destRoot, 'readme.txt')).readAsString(), 'hello qhtp');
+    expect(await File(p.join(destRoot, 'readme.txt')).readAsString(),
+        'hello qhtp');
     expect(await File(p.join(destRoot, 'empty.txt')).length(), 0);
-    expect(await File(p.join(destRoot, 'sub', 'big.bin')).readAsBytes(), equals(bigBytes));
+    expect(await File(p.join(destRoot, 'sub', 'big.bin')).readAsBytes(),
+        equals(bigBytes));
 
     expect(phases, containsAllInOrder(['connecting', 'manifest']));
     expect(phases.last, 'completed');
@@ -151,12 +157,15 @@ void main() {
     await progressSub.cancel();
   });
 
-  test('resumes a partially-written item via HTTP Range and rejoins bytes correctly', () async {
+  test(
+      'resumes a partially-written item via HTTP Range and rejoins bytes correctly',
+      () async {
     final dataDir = Directory(p.join(sourceDir.path, 'data'));
     await dataDir.create();
     final srcFile = File(p.join(dataDir.path, 'resume.bin'));
     final rand = Random(7);
-    final bytes = Uint8List.fromList(List.generate(2 * 1024 * 1024, (_) => rand.nextInt(256)));
+    final bytes = Uint8List.fromList(
+        List.generate(2 * 1024 * 1024, (_) => rand.nextInt(256)));
     await srcFile.writeAsBytes(bytes);
 
     final indexResult = await FileIndexer().buildResult(
@@ -195,25 +204,100 @@ void main() {
       ..interceptors.add(InterceptorsWrapper(
         onResponse: (response, handler) {
           observedStatusCodes.add(response.statusCode ?? -1);
-          observedRangeHeaders.add(response.requestOptions.headers['Range'] as String?);
+          observedRangeHeaders
+              .add(response.requestOptions.headers['Range'] as String?);
           handler.next(response);
         },
       ));
 
-    final client = QhtpReceiverClient(dioClient: dio, store: _InMemorySessionStateStore());
-    final result = await client.downloadSession(payload: payload, targetBaseDir: targetDir.path);
+    final client =
+        QhtpReceiverClient(dioClient: dio, store: _InMemorySessionStateStore());
+    final result = await client.downloadSession(
+        payload: payload, targetBaseDir: targetDir.path);
 
     result.fold(
-      (failure) => fail('Expected successful resume, got failure: ${failure.message}'),
+      (failure) =>
+          fail('Expected successful resume, got failure: ${failure.message}'),
       (_) {},
     );
 
     // Proves an actual Range request went over the wire and the sender
     // replied 206, rather than silently re-downloading the whole file.
     expect(observedStatusCodes, contains(206));
-    expect(observedRangeHeaders.any((h) => h != null && h.startsWith('bytes=$half-')), isTrue);
+    expect(
+        observedRangeHeaders
+            .any((h) => h != null && h.startsWith('bytes=$half-')),
+        isTrue);
 
-    final finalBytes = await File(p.join(destRoot, 'data', 'resume.bin')).readAsBytes();
+    final finalBytes =
+        await File(p.join(destRoot, 'data', 'resume.bin')).readAsBytes();
     expect(finalBytes, equals(bytes));
+  });
+
+  test(
+      'byte-counted progress never completes the session — only the receiver\'s POST does',
+      () async {
+    // The sender used to treat "bytes left the socket" as "transfer done"
+    // and tore the session down while the receiver was still writing its
+    // tail — the 98-100% hang. Retried Range requests also count their
+    // bytes twice, so the counter can reach the total *before* the receiver
+    // has a single complete file. Only POST /v2/session/complete may take
+    // the sender's progress to 1.0.
+    final payloadFile = File(p.join(sourceDir.path, 'photo.jpg'));
+    await payloadFile.writeAsBytes(
+        Uint8List.fromList(List.generate(512 * 1024, (i) => i % 256)));
+
+    final indexResult = await FileIndexer().buildResult(
+      sessionId: 'e2e-session-cap',
+      paths: [payloadFile.path],
+    );
+
+    server = LocalHttpServer();
+    const token = 'e2e-token-cap';
+    final port = await server!.startQhtpSession(
+      manifest: indexResult.manifest,
+      itemIdToAbsPathMap: indexResult.itemIdToAbsPathMap,
+      authToken: token,
+    );
+
+    final senderProgress = <double>[];
+    final progressSub = server!.transferProgress.listen(senderProgress.add);
+
+    final dio = Dio();
+    final auth = Options(headers: {'Authorization': 'Bearer $token'});
+
+    // Download the item directly, bypassing QhtpReceiverClient so nothing
+    // sends the completion POST before this test says so.
+    final item = indexResult.manifest.items.single;
+    final response = await dio.get<ResponseBody>(
+      'http://127.0.0.1:$port/v2/files/${item.id}',
+      options: auth.copyWith(responseType: ResponseType.stream),
+    );
+    await response.data!.stream
+        .fold<int>(0, (sum, chunk) => sum + chunk.length);
+
+    await Future.delayed(const Duration(milliseconds: 50));
+    expect(senderProgress, isNotEmpty);
+    expect(senderProgress.every((v) => v < 1.0), isTrue,
+        reason: 'every byte left the socket, yet nothing proves the '
+            'receiver has them — progress must hold below 1.0');
+
+    await dio.post(
+      'http://127.0.0.1:$port/v2/session/complete',
+      data: {
+        'sessionId': indexResult.manifest.sessionId,
+        'receivedItems': 1,
+        'receivedBytes': indexResult.manifest.totalBytes,
+        'failedItems': 0,
+      },
+      options: auth,
+    );
+
+    await Future.delayed(const Duration(milliseconds: 50));
+    expect(senderProgress.last, 1.0,
+        reason: 'the receiver\'s completion POST is the one signal that '
+            'releases the sender');
+
+    await progressSub.cancel();
   });
 }

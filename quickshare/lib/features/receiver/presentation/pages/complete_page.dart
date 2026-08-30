@@ -167,13 +167,11 @@ class _CompletePageState extends State<CompletePage> {
                     const SizedBox(height: 24),
                     Text(
                       AppLocalizations.of(context).completeTitle,
-                      style: Theme.of(context)
-                          .textTheme
-                          .headlineMedium
-                          ?.copyWith(
-                            color: AppColors.textPrimary,
-                            fontWeight: FontWeight.w700,
-                          ),
+                      style:
+                          Theme.of(context).textTheme.headlineMedium?.copyWith(
+                                color: AppColors.textPrimary,
+                                fontWeight: FontWeight.w700,
+                              ),
                     ),
                     const SizedBox(height: 8),
                     Text(
@@ -256,8 +254,8 @@ class _CompletePageState extends State<CompletePage> {
             Padding(
               padding: const EdgeInsets.only(top: 8),
               child: Text('${failure.item.name}: ${failure.error}',
-                  style: const TextStyle(
-                      color: AppColors.warning, fontSize: 12)),
+                  style:
+                      const TextStyle(color: AppColors.warning, fontSize: 12)),
             ),
         ],
       ),

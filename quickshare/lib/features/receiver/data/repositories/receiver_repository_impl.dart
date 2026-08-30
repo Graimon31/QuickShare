@@ -107,7 +107,8 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
         );
         if (legacyRes.statusCode == 200) return const Right(true);
       } catch (_) {}
-      return const Left(NetworkFailure('Connection failed. Please check network.'));
+      return const Left(
+          NetworkFailure('Connection failed. Please check network.'));
     }
   }
 
@@ -197,7 +198,9 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       String filePath, String expectedChecksum) async {
     try {
       final file = File(filePath);
-      if (!await file.exists()) return const Left(FileFailure('File not found'));
+      if (!await file.exists()) {
+        return const Left(FileFailure('File not found'));
+      }
 
       final stream = file.openRead();
       final hash = await sha256.bind(stream).first;

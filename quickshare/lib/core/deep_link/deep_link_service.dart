@@ -123,7 +123,8 @@ class DeepLinkService {
     String? signalingUrlForPeer,
   }) {
     final code = roomCode.trim().toUpperCase();
-    const base = '${AppConstants.deepLinkScheme}://${AppConstants.deepLinkHost}';
+    const base =
+        '${AppConstants.deepLinkScheme}://${AppConstants.deepLinkHost}';
     if (signalingUrlForPeer == null || signalingUrlForPeer.isEmpty) {
       return '$base?room=$code';
     }

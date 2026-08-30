@@ -41,7 +41,8 @@ class WebRtcSignalingClient {
   /// URL a *remote peer* should use to reach the same signaling process this
   /// sender dials. Resolves loopback with LAN or public endpoints.
   static Future<String> resolvePeerReachableUrl(String configuredUrl) async {
-    return await AutoTunnelService().resolveReachableSignalingUrl(configuredUrl);
+    return await AutoTunnelService()
+        .resolveReachableSignalingUrl(configuredUrl);
   }
 
   Future<Map<String, dynamic>> _connectAndAwait({
@@ -54,9 +55,8 @@ class WebRtcSignalingClient {
     }
 
     final completer = Completer<Map<String, dynamic>>();
-    final targetUrl = serverUrl.trim().isEmpty
-        ? 'ws://localhost:3000'
-        : serverUrl.trim();
+    final targetUrl =
+        serverUrl.trim().isEmpty ? 'ws://localhost:3000' : serverUrl.trim();
     connectedUrl = targetUrl;
 
     try {
@@ -150,8 +150,8 @@ class WebRtcSignalingClient {
   void sendAnswer(Map<String, dynamic> answer) =>
       _send({'type': 'answer', 'roomCode': roomCode, 'payload': answer});
 
-  void sendIceCandidate(Map<String, dynamic> candidate) =>
-      _send({'type': 'ice-candidate', 'roomCode': roomCode, 'payload': candidate});
+  void sendIceCandidate(Map<String, dynamic> candidate) => _send(
+      {'type': 'ice-candidate', 'roomCode': roomCode, 'payload': candidate});
 
   void _send(Map<String, dynamic> message) {
     if (_isDisposed || _channel == null) return;

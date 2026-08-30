@@ -1,7 +1,15 @@
 import 'package:equatable/equatable.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 
-enum DownloadStatus { idle, connecting, downloading, verifying, completed, failed, cancelled }
+enum DownloadStatus {
+  idle,
+  connecting,
+  downloading,
+  verifying,
+  completed,
+  failed,
+  cancelled
+}
 
 class DownloadSession extends Equatable {
   final String id;
@@ -22,7 +30,8 @@ class DownloadSession extends Equatable {
     this.startedAt,
   });
 
-  double get progressPercent => totalBytes > 0 ? downloadedBytes / totalBytes : 0.0;
+  double get progressPercent =>
+      totalBytes > 0 ? downloadedBytes / totalBytes : 0.0;
 
   @override
   List<Object?> get props => [

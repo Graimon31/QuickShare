@@ -106,7 +106,9 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
         appBar: AppBar(title: Text(l10n.downloadTitle)),
         body: BlocConsumer<ReceiverBloc, ReceiverState>(
           listener: (context, state) {
-            if (state is Connecting || state is Downloading || state is Verifying) {
+            if (state is Connecting ||
+                state is Downloading ||
+                state is Verifying) {
               WakelockPlus.enable();
             } else if (state is DownloadComplete) {
               WakelockPlus.disable();

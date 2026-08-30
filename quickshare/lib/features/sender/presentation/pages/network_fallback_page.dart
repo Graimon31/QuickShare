@@ -46,9 +46,8 @@ class NetworkFallbackPage extends StatelessWidget {
         '${units[unit]}';
   }
 
-  String _headline(AppLocalizations l10n) => _isSizeLimited
-      ? l10n.fallbackTooLargeTitle
-      : l10n.fallbackNoRouteTitle;
+  String _headline(AppLocalizations l10n) =>
+      _isSizeLimited ? l10n.fallbackTooLargeTitle : l10n.fallbackNoRouteTitle;
 
   String _explanation(AppLocalizations l10n) => _isSizeLimited
       ? l10n.fallbackTooLargeBody(_humanBytes(sessionBytes!))
@@ -82,7 +81,9 @@ class NetworkFallbackPage extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Icon(
-                    _isSizeLimited ? Icons.speed_rounded : Icons.vpn_lock_rounded,
+                    _isSizeLimited
+                        ? Icons.speed_rounded
+                        : Icons.vpn_lock_rounded,
                     size: 56,
                     color: theme.colorScheme.primary,
                   ),

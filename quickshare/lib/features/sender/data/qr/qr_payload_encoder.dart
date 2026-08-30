@@ -10,10 +10,14 @@ class QRPayloadEncoder {
     required int fileSize,
     required String checksum,
   }) {
-    if (ip.isEmpty || port <= 0 || token.isEmpty || fileName.isEmpty || fileSize < 0) {
+    if (ip.isEmpty ||
+        port <= 0 ||
+        token.isEmpty ||
+        fileName.isEmpty ||
+        fileSize < 0) {
       throw ArgumentError('Invalid payload parameters');
     }
-    
+
     final payload = QRPayload(
       version: AppConstants.qrPayloadVersion,
       ip: ip,
@@ -23,7 +27,7 @@ class QRPayloadEncoder {
       fileSize: fileSize,
       checksum: checksum,
     );
-    
+
     return payload.encode();
   }
 }

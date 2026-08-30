@@ -143,7 +143,8 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         final items = TransferCache.itemsIn(session);
         context.go('/receive/complete', extra: {
           'filePath': received.preferredResultPath,
-          'fileName': items.length == 1 ? items.single.name : received.displayName,
+          'fileName':
+              items.length == 1 ? items.single.name : received.displayName,
           'items': items,
         });
       },

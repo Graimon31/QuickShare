@@ -85,6 +85,130 @@ void main() {
     });
   });
 
+  group('folder paths', () {
+    const inFolder = TransferItem(
+      name: 'IMG_0042.HEIC',
+      size: 4200000,
+      mimeType: 'image/heic',
+      compressed: false,
+      path: 'Trip/Day 1/IMG_0042.HEIC',
+    );
+
+    test('an item keeps the path it has to be rebuilt at', () {
+      final decoded = TransferProtocol.parseManifest(
+          jsonDecode(TransferProtocol.buildManifest([inFolder]))
+              as Map<String, dynamic>);
+      expect(decoded.single.path, equals('Trip/Day 1/IMG_0042.HEIC'));
+      expect(decoded.single.name, equals('IMG_0042.HEIC'));
+    });
+
+    test('a file picked directly puts no path on the wire', () {
+      // A manifest of ten thousand loose files would otherwise pay ten
+      // thousand times for a field that repeats the name beside it.
+      final json = jsonDecode(TransferProtocol.buildManifest([photo]))
+          as Map<String, dynamic>;
+      expect((json['files'] as List).single, isNot(contains('path')));
+      expect(photo.path, equals(photo.name));
+      expect(photo.hasFolderPath, isFalse);
+      expect(inFolder.hasFolderPath, isTrue);
+    });
+
+    test('a sender that knows nothing about folders is not a broken one', () {
+      // No path field at all is a session with no folders in it, which is
+      // every session older builds could express.
+      final decoded = TransferProtocol.parseManifest({
+        'files': [
+          {'name': 'holiday.mov', 'size': 10}
+        ]
+      });
+      expect(decoded.single.path, equals('holiday.mov'));
+    });
+  });
+
+  group('large manifests', () {
+    /// Enough items that the list cannot be announced in one frame.
+    List<TransferItem> folderOf(int count) => [
+          for (var i = 0; i < count; i++)
+            TransferItem(
+              name: 'IMG_${i.toString().padLeft(5, '0')}.HEIC',
+              size: 4200000,
+              mimeType: 'image/heic',
+              compressed: false,
+              path: 'Trip/Day ${i % 7}/IMG_${i.toString().padLeft(5, '0')}.HEIC',
+            ),
+        ];
+
+    test('a session that fits still goes out as one frame', () {
+      final frames = TransferProtocol.buildManifestFrames([photo, doc]);
+      expect(frames, hasLength(1));
+      expect(jsonDecode(frames.single)['type'], equals('manifest'));
+    });
+
+    test('a folder too big for one frame is split into parts', () {
+      // Not a slow send but a refused one: past roughly a quarter megabyte a
+      // data channel will not carry the message at all, and the session dies
+      // on its opening frame.
+      final frames = TransferProtocol.buildManifestFrames(folderOf(4000));
+
+      expect(frames.length, greaterThan(1));
+      final begin = jsonDecode(frames.first) as Map<String, dynamic>;
+      expect(begin['type'], equals('manifest-begin'));
+      expect(begin['count'], equals(4000));
+      expect(begin['parts'], equals(frames.length - 1));
+      expect(begin['totalBytes'], equals(4000 * 4200000));
+    });
+
+    test('no frame is larger than the limit it was given', () {
+      for (final frame in TransferProtocol.buildManifestFrames(folderOf(4000))) {
+        expect(utf8.encode(frame).length,
+            lessThanOrEqualTo(TransferProtocol.maxManifestFrameBytes));
+      }
+    });
+
+    test('the parts put the whole folder back together, in order', () {
+      final items = folderOf(4000);
+      final frames = TransferProtocol.buildManifestFrames(items);
+
+      final rebuilt = <TransferItem>[];
+      for (final frame in frames.skip(1)) {
+        rebuilt.addAll(TransferProtocol.parseManifest(
+            jsonDecode(frame) as Map<String, dynamic>));
+      }
+
+      expect(rebuilt, hasLength(items.length));
+      expect(rebuilt.map((i) => i.path).toList(),
+          equals(items.map((i) => i.path).toList()));
+    });
+
+    test('the parts are numbered so a gap is noticeable', () {
+      final frames = TransferProtocol.buildManifestFrames(folderOf(4000));
+      final indexes = [
+        for (final frame in frames.skip(1)) jsonDecode(frame)['index'] as int,
+      ];
+      expect(indexes, equals(List.generate(indexes.length, (i) => i)));
+    });
+
+    test('a single item larger than the frame budget still gets sent', () {
+      // Nothing can split one entry, so the part it lands in is allowed to
+      // overshoot rather than being dropped from the manifest.
+      final huge = TransferItem(
+        name: 'x.bin',
+        size: 1,
+        mimeType: 'application/octet-stream',
+        compressed: false,
+        path: 'Deep/${'nested/' * 60}x.bin',
+      );
+      final frames =
+          TransferProtocol.buildManifestFrames([huge, huge], maxFrameBytes: 64);
+      final rebuilt = [
+        for (final frame in frames.skip(1))
+          ...TransferProtocol.parseManifest(
+              jsonDecode(frame) as Map<String, dynamic>),
+      ];
+      expect(rebuilt, hasLength(2));
+    });
+  });
+
   group('framing', () {
     test('file-start and file-end carry the index they refer to', () {
       expect(jsonDecode(TransferProtocol.buildFileStart(3)),

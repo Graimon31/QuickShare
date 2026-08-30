@@ -64,7 +64,9 @@ ByteRangeResult parseRangeHeader(String? header, int totalSize) {
 
   final trimmed = header.trim();
   // Range units are case-insensitive.
-  if (!trimmed.toLowerCase().startsWith('bytes=')) return ByteRangeResult.absent;
+  if (!trimmed.toLowerCase().startsWith('bytes=')) {
+    return ByteRangeResult.absent;
+  }
 
   final spec = trimmed.substring(6).trim();
   if (spec.isEmpty || spec.contains(',')) return ByteRangeResult.absent;

@@ -15,8 +15,8 @@ class LocalHttpServer {
   Timer? _timeoutTimer;
   QhtpManifest? _activeManifest;
   Map<String, String>? _itemIdToAbsPathMap;
+  Future<Map<String, String>>? _checksumsInFlight;
   int _qhtpBytesSent = 0;
-
 
   final _progressController = StreamController<double>.broadcast();
   Stream<double> get transferProgress => _progressController.stream;
@@ -65,36 +65,37 @@ class LocalHttpServer {
       var bytesSent = 0;
       var downloadStarted = false;
       final stream = file.openRead().transform<List<int>>(
-        StreamTransformer.fromHandlers(
-          handleData: (data, sink) {
-            sink.add(data);
-            bytesSent += data.length;
-            downloadStarted = true;
-            if (actualSize > 0) {
-              _progressController.add(bytesSent / actualSize);
-            }
-          },
-          handleDone: (sink) {
-            sink.close();
-            if (downloadStarted) {
-              _progressController.add(1.0);
-              if (bytesSent >= actualSize) {
-                _invalidateToken();
-              }
-            }
-          },
-          handleError: (error, stackTrace, sink) {
-            sink.addError(error, stackTrace);
-          },
-        ),
-      );
+            StreamTransformer.fromHandlers(
+              handleData: (data, sink) {
+                sink.add(data);
+                bytesSent += data.length;
+                downloadStarted = true;
+                if (actualSize > 0) {
+                  _progressController.add(bytesSent / actualSize);
+                }
+              },
+              handleDone: (sink) {
+                sink.close();
+                if (downloadStarted) {
+                  _progressController.add(1.0);
+                  if (bytesSent >= actualSize) {
+                    _invalidateToken();
+                  }
+                }
+              },
+              handleError: (error, stackTrace, sink) {
+                sink.addError(error, stackTrace);
+              },
+            ),
+          );
 
       return Response.ok(
         stream,
         headers: {
           'Content-Length': actualSize.toString(),
           'Content-Type': mimeType,
-          'Content-Disposition': "attachment; filename*=UTF-8''${Uri.encodeComponent(fileName)}",
+          'Content-Disposition':
+              "attachment; filename*=UTF-8''${Uri.encodeComponent(fileName)}",
         },
       );
     });
@@ -103,10 +104,17 @@ class LocalHttpServer {
   }
 
   /// QHTP v2 Heavy Session Start Method
+  ///
+  /// [checksums] is the background hashing of the selection, started after
+  /// the QR is already up. The manifest endpoint holds its answer until the
+  /// digests are merged in, so the receiver never sees a hash-less manifest
+  /// for a session that is meant to have them — and the QR never waits for
+  /// the hashing.
   Future<int> startQhtpSession({
     required QhtpManifest manifest,
     required Map<String, String> itemIdToAbsPathMap,
     required String authToken,
+    Future<Map<String, String>>? checksums,
   }) async {
     if (_server != null) {
       await stop();
@@ -116,6 +124,13 @@ class LocalHttpServer {
     _activeManifest = manifest;
     _itemIdToAbsPathMap = itemIdToAbsPathMap;
     _qhtpBytesSent = 0;
+    _checksumsInFlight = checksums;
+    if (checksums != null) {
+      unawaited(checksums.then(_mergeChecksums).catchError((_) {
+        // Hashing is best-effort: without it the receiver verifies byte
+        // counts, exactly as it does for sessions over the checksum budget.
+      }));
+    }
 
     final router = Router();
 
@@ -144,9 +159,18 @@ class LocalHttpServer {
     });
 
     // 3. GET /v2/manifest (Auth required)
-    router.get('/v2/manifest', (Request request) {
+    router.get('/v2/manifest', (Request request) async {
+      // Hold the answer until background hashing has merged in; without the
+      // hashes the manifest is still correct, just weaker on verification.
+      final pending = _checksumsInFlight;
+      if (pending != null) {
+        try {
+          await pending;
+        } catch (_) {}
+      }
+      final active = _activeManifest ?? manifest;
       return Response.ok(
-        jsonEncode(manifest.toJson()),
+        jsonEncode(active.toJson()),
         headers: {'Content-Type': 'application/json; charset=utf-8'},
       );
     });
@@ -194,10 +218,12 @@ class LocalHttpServer {
 
       final isRange = parsed.outcome == RangeOutcome.satisfiable;
       final startOffset = parsed.range?.start ?? 0;
-      final endOffset = parsed.range?.end ?? (totalSize > 0 ? totalSize - 1 : 0);
+      final endOffset =
+          parsed.range?.end ?? (totalSize > 0 ? totalSize - 1 : 0);
 
       final contentLength = totalSize > 0 ? (endOffset - startOffset + 1) : 0;
-      final rawStream = file.openRead(startOffset, contentLength > 0 ? startOffset + contentLength : 0);
+      final rawStream = file.openRead(
+          startOffset, contentLength > 0 ? startOffset + contentLength : 0);
       final sessionTotalBytes = manifest.totalBytes;
       final stream = rawStream.transform<List<int>>(
         StreamTransformer.fromHandlers(
@@ -206,11 +232,17 @@ class LocalHttpServer {
             _qhtpBytesSent += data.length;
             if (sessionTotalBytes > 0) {
               final progress = _qhtpBytesSent / sessionTotalBytes;
-              _progressController.add(progress > 1.0 ? 1.0 : progress);
+              // Byte counting only guesses at completion — retried Range
+              // requests count their bytes twice — so it must never reach
+              // 1.0: the receiver's POST /v2/session/complete is the one
+              // authoritative signal that everything arrived, and the only
+              // event allowed to release the session teardown.
+              _progressController.add(progress >= 1.0 ? 0.999 : progress);
             }
           },
           handleDone: (sink) => sink.close(),
-          handleError: (error, stackTrace, sink) => sink.addError(error, stackTrace),
+          handleError: (error, stackTrace, sink) =>
+              sink.addError(error, stackTrace),
         ),
       );
 
@@ -224,7 +256,8 @@ class LocalHttpServer {
       };
 
       if (isRange) {
-        responseHeaders['Content-Range'] = 'bytes $startOffset-$endOffset/$totalSize';
+        responseHeaders['Content-Range'] =
+            'bytes $startOffset-$endOffset/$totalSize';
         return Response(206, body: stream, headers: responseHeaders);
       }
 
@@ -255,10 +288,14 @@ class LocalHttpServer {
   }
 
   Future<int> _bindServer(Router router) async {
-    final handler = const Pipeline().addMiddleware(_authMiddleware()).addHandler(router.call);
+    final handler = const Pipeline()
+        .addMiddleware(_authMiddleware())
+        .addHandler(router.call);
 
     int? boundPort;
-    for (int port = AppConstants.serverPortMin; port <= AppConstants.serverPortMax; port++) {
+    for (int port = AppConstants.serverPortMin;
+        port <= AppConstants.serverPortMax;
+        port++) {
       try {
         _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
         boundPort = port;
@@ -292,7 +329,8 @@ class LocalHttpServer {
         if (authHeader == null || !authHeader.startsWith('Bearer ')) {
           return Response(
             401,
-            body: jsonEncode({'error': 'unauthorized', 'code': 'AUTH_REQUIRED'}),
+            body:
+                jsonEncode({'error': 'unauthorized', 'code': 'AUTH_REQUIRED'}),
             headers: {'Content-Type': 'application/json; charset=utf-8'},
           );
         }
@@ -339,6 +377,27 @@ class LocalHttpServer {
     });
   }
 
+  void _mergeChecksums(Map<String, String> hashes) {
+    final current = _activeManifest;
+    if (current == null || hashes.isEmpty) return;
+    _activeManifest = QhtpManifest(
+      sessionId: current.sessionId,
+      createdAt: current.createdAt,
+      itemCount: current.itemCount,
+      totalBytes: current.totalBytes,
+      items: [
+        for (final item in current.items)
+          QhtpItem(
+            id: item.id,
+            path: item.path,
+            size: item.size,
+            mtime: item.mtime,
+            mime: item.mime,
+            sha256: hashes[item.id] ?? item.sha256,
+          ),
+      ],
+    );
+  }
 
   Future<void> stop() async {
     try {
@@ -348,6 +407,7 @@ class LocalHttpServer {
     _authToken = null;
     _activeManifest = null;
     _itemIdToAbsPathMap = null;
+    _checksumsInFlight = null;
     if (_server != null) {
       // force:true (the old value) severs in-flight sockets immediately.
       // For small single-chunk files, the client's own byte count hits

@@ -83,9 +83,11 @@ class AutoTunnelService {
   }
 
   /// Explicitly checks whether UPnP/NAT-PMP port forwarding succeeded.
-  Future<PortMappingResult> checkServerlessReachability({int localPort = 3000}) async {
+  Future<PortMappingResult> checkServerlessReachability(
+      {int localPort = 3000}) async {
     try {
-      final upnpResult = await _upnpForwarder.forwardPort(internalPort: localPort);
+      final upnpResult =
+          await _upnpForwarder.forwardPort(internalPort: localPort);
       if (upnpResult.success) {
         return upnpResult;
       }
@@ -101,7 +103,8 @@ class AutoTunnelService {
 
   /// Generates a peer-reachable signaling URL for the receiver, attempting UPnP/NAT-PMP
   /// port mapping to obtain a public Internet-reachable endpoint.
-  Future<String> resolveReachableSignalingUrl(String configuredUrl, {int localPort = 3000}) async {
+  Future<String> resolveReachableSignalingUrl(String configuredUrl,
+      {int localPort = 3000}) async {
     final rawUrl = configuredUrl.trim();
     if (rawUrl.isNotEmpty && !isPrivateLanUrl(rawUrl)) {
       return rawUrl;
@@ -109,7 +112,8 @@ class AutoTunnelService {
 
     // 1. Attempt UPnP/NAT-PMP port mapping for serverless public reachability
     try {
-      final upnpResult = await _upnpForwarder.forwardPort(internalPort: localPort);
+      final upnpResult =
+          await _upnpForwarder.forwardPort(internalPort: localPort);
       if (upnpResult.success && upnpResult.publicIp != null) {
         final scheme = rawUrl.startsWith('wss://') ? 'wss://' : 'ws://';
         final mappedPort = upnpResult.externalPort ?? localPort;

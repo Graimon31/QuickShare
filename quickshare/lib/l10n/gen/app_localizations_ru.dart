@@ -263,18 +263,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get settingsDetailsCopied => 'Сведения скопированы';
 
   @override
-  String get settingsLogs => 'Журнал';
-
-  @override
-  String get settingsLogsSubtitle => 'Технический лог — скопируйте его, когда сообщаете о проблеме с передачей';
-
-  @override
-  String get logsCopyAll => 'Скопировать весь журнал';
-
-  @override
-  String get logsEmpty => 'Записей пока нет';
-
-  @override
   String get settingsTransferFootnote =>
       'Скорость объясняется маршрутом. Прямая связь — самая быстрая, передача через интернет-реле — самая медленная. Скопируйте сведения, если просите кого-то о помощи.';
 
@@ -381,7 +369,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get qrDisplayPhoneHint =>
-      'На телефоне: откройте DirectDrop → Получить и отсканируйте этот QR.\nСтрока Wi-Fi ниже нужна только для диагностики — это НЕ содержимое QR.';
+      'На телефоне: откройте DirectDrop → Получить и отсканируйте этот QR.';
 
   @override
   String qrDisplayRenderError(String error) {
@@ -395,12 +383,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get qrDisplayLinkCopied => 'Ссылка скопирована';
 
   @override
-  String get qrDisplayWifiAddressLabel => 'Wi-Fi адрес отправителя';
-
-  @override
-  String get qrDisplayWifiAddressCopied => 'Wi-Fi адрес скопирован';
-
-  @override
   String qrDisplayTotalSize(String size) {
     return 'Общий размер: $size';
   }
@@ -412,6 +394,49 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get qrDisplayCancelTransfer => 'Отменить передачу';
+
+  @override
+  String get precondWifiTitle => 'Включите Wi-Fi';
+
+  @override
+  String get precondWifiBody =>
+      'Передача по локальной сети работает только с включённым Wi-Fi-модулем.';
+
+  @override
+  String get precondBluetoothTitle => 'Включите Bluetooth';
+
+  @override
+  String get precondBluetoothBody =>
+      'Передача по Bluetooth работает только с включённым Bluetooth-модулем.';
+
+  @override
+  String get precondOpenSettings => 'Открыть настройки';
+
+  @override
+  String get precondWifiBlocked =>
+      'Передача невозможна, пока не включён Wi-Fi.';
+
+  @override
+  String get precondBluetoothBlocked =>
+      'Передача невозможна, пока не включён Bluetooth.';
+
+  @override
+  String get precondInternetBlocked =>
+      'Нет активного сетевого подключения. Передача через интернет недоступна.';
+
+  @override
+  String get pickerFilesMediaRejected =>
+      'Фото и видео не добавлены — отправляйте их через «Фото и видео».';
+
+  @override
+  String get sessionExpiredTitle => 'Сессия истекла';
+
+  @override
+  String get sessionExpiredBody =>
+      'За отведённое время никто не подключился. Обновите, чтобы создать новую сессию.';
+
+  @override
+  String get sessionRefresh => 'Обновить';
 
   @override
   String get senderProgressCancelTitle => 'Отменить передачу?';
@@ -694,4 +719,17 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get previewStartNow => 'Начать сейчас';
+
+  @override
+  String get settingsLogs => 'Журнал';
+
+  @override
+  String get settingsLogsSubtitle =>
+      'Технический лог — скопируйте его, когда сообщаете о проблеме с передачей';
+
+  @override
+  String get logsCopyAll => 'Скопировать весь журнал';
+
+  @override
+  String get logsEmpty => 'Записей пока нет';
 }

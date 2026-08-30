@@ -248,14 +248,15 @@ class _QRScanPageState extends State<QRScanPage>
       child: Scaffold(
         backgroundColor: Colors.black,
         body: BlocConsumer<ReceiverBloc, ReceiverState>(
-          listenWhen: (prev, next) =>
-              next is QRParsed || next is ReceiverError,
+          listenWhen: (prev, next) => next is QRParsed || next is ReceiverError,
           listener: (context, state) {
             if (!mounted || _isClosing) return;
 
             if (state is QRParsed) {
-              if (state.payload.mode == 'internet' || state.payload.ip == 'webrtc') {
-                _navigateAfterCameraRelease('/receive/code?room=${state.payload.token}');
+              if (state.payload.mode == 'internet' ||
+                  state.payload.ip == 'webrtc') {
+                _navigateAfterCameraRelease(
+                    '/receive/code?room=${state.payload.token}');
               } else {
                 unawaited(_openPreviewAfterParse());
               }
@@ -320,7 +321,8 @@ class _QRScanPageState extends State<QRScanPage>
                       ),
                       TextButton.icon(
                         style: TextButton.styleFrom(
-                          backgroundColor: AppColors.voidBg.withValues(alpha: 0.72),
+                          backgroundColor:
+                              AppColors.voidBg.withValues(alpha: 0.72),
                           foregroundColor: Colors.white,
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(20)),
@@ -391,8 +393,7 @@ class _QRScanPageState extends State<QRScanPage>
                             IconButton(
                               icon: const Icon(Icons.flip_camera_ios,
                                   color: Colors.white, size: 30),
-                              onPressed: () =>
-                                  cameraController!.switchCamera(),
+                              onPressed: () => cameraController!.switchCamera(),
                             )
                           else
                             const SizedBox(width: 48),

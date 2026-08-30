@@ -62,7 +62,8 @@ class WebRtcReceiverTransport {
       StreamController<WebRtcReceiveProgress>.broadcast();
   final _statusController = StreamController<TransferStatus>.broadcast();
 
-  Stream<WebRtcReceiveProgress> get progressStream => _progressController.stream;
+  Stream<WebRtcReceiveProgress> get progressStream =>
+      _progressController.stream;
   Stream<TransferStatus> get statusStream => _statusController.stream;
 
   final _completion = Completer<String>();
@@ -101,6 +102,16 @@ class WebRtcReceiverTransport {
   /// follows is not reported a second time as a connection error.
   bool _cancelledBySender = false;
 
+  /// Set once the session's outcome is decided, so a late `complete` frame
+  /// or the teardown's own ICE events cannot fail an already-finished
+  /// session.
+  bool _sessionFinished = false;
+
+  /// Holds the connection open briefly after a byte-counted completion, so
+  /// the sender's trailing `complete` frame still has somewhere to arrive —
+  /// closing immediately would turn the sender's final drain into a stall.
+  Timer? _teardownTimer;
+
   /// The manifest for a multi-file session, and where we are inside it.
   ///
   /// Empty for a legacy single-file sender, which opens with `file-meta` and
@@ -110,6 +121,16 @@ class WebRtcReceiverTransport {
 
   /// Absolute paths of everything written so far, in manifest order.
   final List<String> _writtenPaths = [];
+
+  /// A manifest still arriving in parts, and how many parts it owes.
+  ///
+  /// A folder of thousands of files cannot be announced in one frame, so the
+  /// sender splits it. Nothing is opened until every part is in: a session
+  /// that started from half a manifest would write files to the wrong places
+  /// and mis-report its own size the whole way through.
+  List<TransferItem>? _partialManifest;
+  int _manifestPartsExpected = 0;
+  int _manifestPartsSeen = 0;
 
   /// Bytes across the entire session, so progress does not snap back to zero
   /// once per file.
@@ -141,8 +162,32 @@ class WebRtcReceiverTransport {
         .basename(name)
         .replaceAll(RegExp(r'[\x00-\x1F\x7F/\\:*?"<>|]'), '_')
         .trim();
-    if (base.isEmpty || base.replaceAll('.', '').isEmpty) return 'received_file';
+    if (base.isEmpty || base.replaceAll('.', '').isEmpty) {
+      return 'received_file';
+    }
     return base;
+  }
+
+  /// The relative path an item is written to, cleaned segment by segment.
+  ///
+  /// A folder arrives as files carrying paths like `Trip/Day 1/IMG_0042.HEIC`,
+  /// and rebuilding that tree is the entire point — but every segment of it
+  /// came off the wire, so every segment is treated as hostile. `..` and `.`
+  /// are dropped rather than resolved, separators inside a segment cannot
+  /// smuggle a level in because each segment is put through the same filename
+  /// sanitizer as a flat name, and an absolute path loses its root. What is
+  /// left is always relative and always downward; [resolveTargetPath] still
+  /// checks the result against the destination afterwards, because one guard
+  /// in front of the filesystem is not enough.
+  String sanitizeRelativePath(String rawPath) {
+    final segments = rawPath
+        .replaceAll('\\', '/')
+        .split('/')
+        .where((s) => s.isNotEmpty && s != '.' && s != '..')
+        .map(sanitizeFileName)
+        .toList();
+    if (segments.isEmpty) return 'received_file';
+    return p.joinAll(segments);
   }
 
   String resolveTargetPath(String fileName, String baseDir) {
@@ -153,7 +198,8 @@ class WebRtcReceiverTransport {
     if (baseDir.isEmpty || !p.isAbsolute(baseDir)) {
       throw Exception('Receive directory is not set (got "$baseDir")');
     }
-    final resolved = p.normalize(p.join(baseDir, sanitizeFileName(fileName)));
+    final resolved =
+        p.normalize(p.join(baseDir, sanitizeRelativePath(fileName)));
     if (!p.isWithin(baseDir, resolved)) {
       throw Exception('Path traversal detected in "$fileName"');
     }
@@ -213,7 +259,8 @@ class WebRtcReceiverTransport {
 
       final rawSdp = SdpCompressor.decompress(sdpOffer);
 
-      _peerConnection = await createPeerConnection(await _buildIceConfiguration());
+      _peerConnection =
+          await createPeerConnection(await _buildIceConfiguration());
       await _startTurnRefresher(); // §9
 
       _peerConnection!.onDataChannel = (RTCDataChannel channel) {
@@ -236,9 +283,14 @@ class WebRtcReceiverTransport {
           tag: 'WEBRTC_RECEIVER');
 
       try {
-        await _peerConnection!.setRemoteDescription(RTCSessionDescription(rawSdp, 'offer'));
+        await _peerConnection!
+            .setRemoteDescription(RTCSessionDescription(rawSdp, 'offer'));
       } catch (e, st) {
-        AppLogger.error('Receiver setRemoteDescription failed for SDP length ${rawSdp.length}', error: e, stackTrace: st, tag: 'WEBRTC_RECEIVER');
+        AppLogger.error(
+            'Receiver setRemoteDescription failed for SDP length ${rawSdp.length}',
+            error: e,
+            stackTrace: st,
+            tag: 'WEBRTC_RECEIVER');
         rethrow;
       }
       final answer = await _peerConnection!.createAnswer();
@@ -265,7 +317,8 @@ class WebRtcReceiverTransport {
         if (status == TransferStatus.completed) {
           sub.cancel();
           if (!completer.isCompleted) {
-            completer.complete(_targetPath ?? p.join(_baseDir, 'received_file'));
+            completer
+                .complete(_targetPath ?? p.join(_baseDir, 'received_file'));
           }
         } else if (status == TransferStatus.failed) {
           sub.cancel();
@@ -313,8 +366,7 @@ class WebRtcReceiverTransport {
     String? signalingUrl,
   }) async {
     try {
-      _emit('connecting',
-          detail: 'Contacting signaling server…');
+      _emit('connecting', detail: 'Contacting signaling server…');
       _statusController.add(TransferStatus.connecting);
       await _wakelockGuard.acquire(); // §6
 
@@ -333,7 +385,8 @@ class WebRtcReceiverTransport {
 
       _signaling = WebRtcSignalingClient(serverUrl: url);
 
-      _peerConnection = await createPeerConnection(await _buildIceConfiguration());
+      _peerConnection =
+          await createPeerConnection(await _buildIceConfiguration());
       await _startTurnRefresher(); // §9
 
       _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
@@ -507,25 +560,35 @@ class WebRtcReceiverTransport {
 
       switch (type) {
         case TransferProtocol.manifest:
-          _manifest = TransferProtocol.parseManifest(data);
-          _sessionTotalBytes =
-              _manifest.fold<int>(0, (sum, i) => sum + i.size);
-          _sessionReceivedBytes = 0;
-          _writtenPaths.clear();
-          _totalBytes = _sessionTotalBytes;
-          _receivedBytes = 0;
-          _lastBytes = 0;
-          _lastTick = DateTime.now();
-          _fileName = _manifest.length == 1
-              ? sanitizeFileName(_manifest.first.name)
-              : '${_manifest.length} files';
-          _statusController.add(TransferStatus.transferring);
-          _emit('transferring');
+          _openSession(TransferProtocol.parseManifest(data));
+
+        case TransferProtocol.manifestBegin:
+          // Only the promise of a manifest so far. Sessions large enough to
+          // need this are folders, and a folder half-announced is worse than
+          // none: nothing opens until the last part lands.
+          final parts = data['parts'] as int?;
+          if (parts == null || parts <= 0) {
+            _fail('manifest-begin announced $parts parts');
+            return;
+          }
+          _partialManifest = <TransferItem>[];
+          _manifestPartsExpected = parts;
+          _manifestPartsSeen = 0;
           _armIdleWatchdog();
-          AppLogger.info(
-              'Receiving ${_manifest.length} file(s), '
-              '$_sessionTotalBytes bytes total',
-              tag: 'WEBRTC_RECEIVER');
+
+        case TransferProtocol.manifestPart:
+          final pending = _partialManifest;
+          if (pending == null) {
+            _fail('a manifest part arrived before the manifest it belongs to');
+            return;
+          }
+          pending.addAll(TransferProtocol.parseManifest(data));
+          _manifestPartsSeen++;
+          _armIdleWatchdog();
+          if (_manifestPartsSeen >= _manifestPartsExpected) {
+            _partialManifest = null;
+            _openSession(pending);
+          }
 
         case TransferProtocol.fileStart:
           final index = data['index'] as int?;
@@ -536,16 +599,26 @@ class WebRtcReceiverTransport {
           }
           final item = _manifest[index];
           _isCompressed = item.compressed;
-          _targetPath =
-              _uniquePath(resolveTargetPath(sanitizeFileName(item.name), _baseDir));
+          _targetPath = _uniquePath(resolveTargetPath(item.path, _baseDir));
+          // The folder the sender kept has to exist before its first file can
+          // be written into it. Directories are created as their contents
+          // arrive rather than up front: the manifest may list thousands, and
+          // an empty one is not worth creating for a transfer that fails.
+          final parent = Directory(p.dirname(_targetPath!));
+          if (!parent.existsSync()) parent.createSync(recursive: true);
           _fileSink = File(_targetPath!).openWrite();
           _emit('transferring');
 
         case TransferProtocol.fileEnd:
-          await _fileSink?.flush();
-          await _fileSink?.close();
-          _fileSink = null;
-          if (_targetPath != null) _writtenPaths.add(_targetPath!);
+          await _sealCurrentFile();
+          // A full byte count is completion in its own right: the sender's
+          // trailing `complete` frame can die in its closing channel over a
+          // relay, and waiting for it is what left receivers hanging on
+          // 98-100% forever.
+          if (_sessionTotalBytes > 0 &&
+              _sessionReceivedBytes >= _sessionTotalBytes) {
+            await _completeSession(holdConnection: true);
+          }
 
         case TransferProtocol.legacyFileMeta:
         case TransferProtocol.legacyMetadata:
@@ -589,12 +662,7 @@ class WebRtcReceiverTransport {
         case TransferProtocol.legacyFileComplete:
           // A legacy sender closes the only file here rather than with
           // file-end, so flush whatever is still open.
-          await _fileSink?.flush();
-          await _fileSink?.close();
-          _fileSink = null;
-          if (_targetPath != null && !_writtenPaths.contains(_targetPath)) {
-            _writtenPaths.add(_targetPath!);
-          }
+          await _sealCurrentFile();
           _idleWatchdog?.cancel();
 
           if (_sessionTotalBytes > 0 &&
@@ -602,14 +670,7 @@ class WebRtcReceiverTransport {
             _fail('Transfer completed prematurely: received '
                 '$_sessionReceivedBytes of $_sessionTotalBytes bytes');
           } else {
-            _statusController.add(TransferStatus.completed);
-            _emit('completed');
-            if (!_completion.isCompleted) {
-              _completion.complete(_writtenPaths.isNotEmpty
-                  ? _writtenPaths.first
-                  : (_targetPath ?? ''));
-            }
-            await _cleanup();
+            await _completeSession();
           }
       }
     } catch (e) {
@@ -620,11 +681,99 @@ class WebRtcReceiverTransport {
   void _armIdleWatchdog() {
     _idleWatchdog ??= IdleWatchdog(
       timeout: _idleTimeout,
-      onTimeout: () => _fail(
-          'No data received for ${_idleTimeout.inSeconds}s — the '
-          'connection appears to have died'),
+      onTimeout: () =>
+          _fail('No data received for ${_idleTimeout.inSeconds}s — the '
+              'connection appears to have died'),
     );
     _idleWatchdog!.kick();
+  }
+
+  /// Starts a session from the manifest it opened with, however many frames
+  /// that manifest took to arrive.
+  void _openSession(List<TransferItem> items) {
+    _manifest = items;
+    _sessionTotalBytes = items.fold<int>(0, (sum, i) => sum + i.size);
+    _sessionReceivedBytes = 0;
+    _writtenPaths.clear();
+    _totalBytes = _sessionTotalBytes;
+    _receivedBytes = 0;
+    _lastBytes = 0;
+    _lastTick = DateTime.now();
+    // A folder is named after the folder, not after the first photo in it and
+    // not "412 files": that is what the sender picked and what the progress
+    // screen should be counting down.
+    final folderRoot = _commonRootFolder(items);
+    _fileName = folderRoot ??
+        (items.length == 1
+            ? sanitizeFileName(items.first.name)
+            : '${items.length} files');
+    _statusController.add(TransferStatus.transferring);
+    _emit('transferring');
+    _armIdleWatchdog();
+    AppLogger.info(
+        'Receiving ${items.length} file(s), $_sessionTotalBytes bytes total'
+        '${folderRoot != null ? ' under "$folderRoot"' : ''}',
+        tag: 'WEBRTC_RECEIVER');
+  }
+
+  /// The single folder every item in [items] sits under, if there is one.
+  ///
+  /// Null when the session is a flat set of files, or a mix of folders — both
+  /// of which are better described by a count than by a name.
+  String? _commonRootFolder(List<TransferItem> items) {
+    String? root;
+    for (final item in items) {
+      final segments = p.posix.split(item.path);
+      if (segments.length < 2) return null;
+      final first = sanitizeFileName(segments.first);
+      if (root == null) {
+        root = first;
+      } else if (root != first) {
+        return null;
+      }
+    }
+    return root;
+  }
+
+  /// Flushes and closes the file currently being written, if any, and records
+  /// it among the received paths exactly once.
+  Future<void> _sealCurrentFile() async {
+    await _fileSink?.flush();
+    await _fileSink?.close();
+    _fileSink = null;
+    if (_targetPath != null && !_writtenPaths.contains(_targetPath)) {
+      _writtenPaths.add(_targetPath!);
+    }
+  }
+
+  /// Declares the session received: every byte the manifest announced is on
+  /// disk. Runs once; later calls only get a chance to tear down immediately
+  /// whatever an earlier call deliberately kept open.
+  ///
+  /// [holdConnection] keeps the channel alive for the sender's trailing
+  /// `complete` frame — the sender drains its send buffer before reporting
+  /// completion, and closing under that drain turns its success into a
+  /// stall. The frame (or the timer) then finishes the teardown.
+  Future<void> _completeSession({bool holdConnection = false}) async {
+    if (!_sessionFinished) {
+      _sessionFinished = true;
+      _idleWatchdog?.cancel();
+      _statusController.add(TransferStatus.completed);
+      _emit('completed');
+      if (!_completion.isCompleted) {
+        _completion.complete(_writtenPaths.isNotEmpty
+            ? _writtenPaths.first
+            : (_targetPath ?? ''));
+      }
+    }
+    if (holdConnection && _teardownTimer == null) {
+      _teardownTimer =
+          Timer(const Duration(seconds: 5), () => unawaited(_cleanup()));
+    } else if (!holdConnection) {
+      _teardownTimer?.cancel();
+      _teardownTimer = null;
+      await _cleanup();
+    }
   }
 
   String _uniquePath(String path) {
@@ -667,6 +816,11 @@ class WebRtcReceiverTransport {
     // as a fault would overwrite the real reason with a misleading one.
     if (_cancelledBySender) return;
 
+    // A finished session's own teardown surfaces here as closed/failed, and
+    // the sender leaving right after its last frame looks the same — neither
+    // may overwrite a completed status.
+    if (_sessionFinished) return;
+
     switch (state) {
       case RTCIceConnectionState.RTCIceConnectionStateConnected:
       case RTCIceConnectionState.RTCIceConnectionStateCompleted:
@@ -682,7 +836,15 @@ class WebRtcReceiverTransport {
       case RTCIceConnectionState.RTCIceConnectionStateClosed:
         _iceRecoveryTimer?.cancel();
         _iceRecoveryTimer = null;
-        _fail('Peer connection failed (ICE $state)');
+        // A dead peer with every announced byte already on disk is a finished
+        // transfer, not a failed one: the sender closes as soon as its last
+        // frame leaves, which can win the race against its `complete` frame.
+        if (_sessionTotalBytes > 0 &&
+            _sessionReceivedBytes >= _sessionTotalBytes) {
+          unawaited(_sealCurrentFile().then((_) => _completeSession()));
+        } else {
+          _fail('Peer connection failed (ICE $state)');
+        }
       default:
         break;
     }
@@ -702,6 +864,8 @@ class WebRtcReceiverTransport {
 
   Future<void> _cleanup() async {
     _idleWatchdog?.cancel();
+    _teardownTimer?.cancel();
+    _teardownTimer = null;
     _iceRecoveryTimer?.cancel();
     _iceRecoveryTimer = null;
     _turnRefresher?.cancel(); // §9

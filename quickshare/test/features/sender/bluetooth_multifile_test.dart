@@ -1,13 +1,14 @@
 // Selecting several files and sending them over Bluetooth used to send one.
 //
-// The native Bluetooth bridge advertises a single file and has no manifest,
+// The native Bluetooth bridge advertised a single file and had no manifest,
 // so the sender took `files.first` and the rest of the selection vanished
 // without a message, an error, or anything on screen to suggest it. The
-// DataChannel path had grown a manifest and this one silently had not.
+// stopgap after that was a .zip: it sent everything, at the price of handing
+// the recipient an archive to unpack instead of photos in their gallery.
 //
-// Now the selection is bundled for that transport. Worse than a manifest —
-// the recipient gets a .zip rather than photos in their gallery — but it
-// sends what the user picked, which is the part that was not negotiable.
+// The bridge now takes the whole list, each file carrying the relative path
+// it keeps on the far side — so a folder crosses Bluetooth as a folder and
+// nothing is bundled into anything.
 import 'dart:async';
 import 'dart:io';
 
@@ -82,8 +83,8 @@ void main() {
   File write(String name) => File(p.join(workspace.path, name))
     ..writeAsStringSync('contents of $name');
 
-  /// The path the native bridge was actually told to advertise.
-  Future<String> advertisedPath(List<String> paths) async {
+  /// The arguments the native bridge was actually handed.
+  Future<Map> advertised(List<String> paths) async {
     final bloc = SenderBloc(repository: repository);
     addTearDown(bloc.close);
 
@@ -92,8 +93,16 @@ void main() {
     await advertising.timeout(const Duration(seconds: 20));
 
     final call = nativeCalls.firstWhere((c) => c.method == 'startAdvertising');
-    return (call.arguments as Map)['filePath'] as String;
+    return call.arguments as Map;
   }
+
+  /// The path the native bridge leads with — the session's first file.
+  Future<String> advertisedPath(List<String> paths) async =>
+      (await advertised(paths))['filePath'] as String;
+
+  /// Every file the bridge was told to send, in order.
+  Future<List<Map>> advertisedFiles(List<String> paths) async =>
+      ((await advertised(paths))['files'] as List).cast<Map>();
 
   test('progress on the fast path moves the sender off its QR code', () async {
     // The file went out over the direct link, finished, and the sender screen
@@ -195,5 +204,43 @@ void main() {
 
     expect(sent, equals(only.path),
         reason: 'bundling one file would only make it harder to open');
+  });
+
+  test('every file in the selection reaches the bridge', () async {
+    // The whole list, not just the one whose name the QR screen shows.
+    final files = [write('one.txt'), write('two.txt'), write('three.txt')];
+
+    final advertised = await advertisedFiles([for (final f in files) f.path]);
+
+    expect(advertised.map((f) => f['filePath']).toSet(),
+        equals({for (final f in files) f.path}));
+  });
+
+  test('a folder goes as its files, each keeping where it sits', () async {
+    // What used to be a .zip. The bridge gets the tree flattened into a list
+    // of files, and the relative path on each is what puts the folder back
+    // together on the far side.
+    final trip = Directory(p.join(workspace.path, 'Trip'))..createSync();
+    Directory(p.join(trip.path, 'Day 2')).createSync();
+    File(p.join(trip.path, 'IMG_0001.jpg')).writeAsStringSync('a');
+    File(p.join(trip.path, 'Day 2', 'IMG_0002.jpg')).writeAsStringSync('b');
+
+    final advertised = await advertisedFiles([trip.path]);
+
+    expect(advertised.map((f) => f['relativePath']).toList(),
+        equals(['Trip/Day 2/IMG_0002.jpg', 'Trip/IMG_0001.jpg']));
+    expect(advertised.map((f) => f['fileName']).toList(),
+        equals(['IMG_0002.jpg', 'IMG_0001.jpg']));
+    expect(advertised.every((f) => !(f['filePath'] as String).endsWith('.zip')),
+        isTrue,
+        reason: 'no archive is written for a folder any more');
+  });
+
+  test('a plain file announces no folder to rebuild', () async {
+    final only = write('holiday.mov');
+
+    final advertised = await advertisedFiles([only.path]);
+
+    expect(advertised.single['relativePath'], equals('holiday.mov'));
   });
 }

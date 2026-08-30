@@ -147,15 +147,13 @@
   "qrDisplayScanOrShare": "Scan the QR or share the link",
   "qrDisplayShareLinkToReceive": "Share this link to receive the file",
   "qrDisplayScanToReceive": "Scan this QR code to receive the file",
-  "qrDisplayPhoneHint": "On the phone: open DirectDrop → Receive and scan this QR.\nThe Wi‑Fi line below is only for diagnostics — it is NOT the QR content.",
+  "qrDisplayPhoneHint": "On the phone: open DirectDrop → Receive and scan this QR.",
   "qrDisplayRenderError": "QR Render Error: {error}",
   "@qrDisplayRenderError": {
     "placeholders": { "error": { "type": "String" } }
   },
   "qrDisplayShareLinkLabel": "Share link",
   "qrDisplayLinkCopied": "Link copied to clipboard",
-  "qrDisplayWifiAddressLabel": "Sender Wi‑Fi address",
-  "qrDisplayWifiAddressCopied": "Wi‑Fi address copied",
   "qrDisplayTotalSize": "Total size: {size}",
   "@qrDisplayTotalSize": {
     "placeholders": { "size": { "type": "String" } }
@@ -165,6 +163,19 @@
     "placeholders": { "time": { "type": "String" } }
   },
   "qrDisplayCancelTransfer": "Cancel Transfer",
+
+  "precondWifiTitle": "Turn on Wi-Fi",
+  "precondWifiBody": "Local network transfer needs the Wi-Fi module to be on.",
+  "precondBluetoothTitle": "Turn on Bluetooth",
+  "precondBluetoothBody": "Bluetooth transfer needs the Bluetooth module to be on.",
+  "precondOpenSettings": "Open Settings",
+  "precondWifiBlocked": "Transfer is unavailable until Wi-Fi is turned on.",
+  "precondBluetoothBlocked": "Transfer is unavailable until Bluetooth is turned on.",
+  "precondInternetBlocked": "No active network connection. Internet transfer is unavailable.",
+  "pickerFilesMediaRejected": "Photos and videos were not added — send them via “Photos & Videos”.",
+  "sessionExpiredTitle": "Session expired",
+  "sessionExpiredBody": "Nobody connected in time. Refresh to create a new session.",
+  "sessionRefresh": "Refresh",
 
   "senderProgressCancelTitle": "Cancel Transfer?",
   "senderProgressCancelBody": "Are you sure you want to stop sending this file?",

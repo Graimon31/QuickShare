@@ -65,8 +65,7 @@ class _MediaPickerPageState extends State<MediaPickerPage> {
 
   void _maybeLoadMore() {
     if (_loadingMore || _exhausted) return;
-    if (_scroll.position.pixels >
-        _scroll.position.maxScrollExtent - 600) {
+    if (_scroll.position.pixels > _scroll.position.maxScrollExtent - 600) {
       _loadMore();
     }
   }
@@ -74,7 +73,8 @@ class _MediaPickerPageState extends State<MediaPickerPage> {
   Future<void> _loadMore() async {
     if (_loadingMore || _exhausted) return;
     _loadingMore = true;
-    final batch = await widget.library.loadPage(page: _page, pageSize: _pageSize);
+    final batch =
+        await widget.library.loadPage(page: _page, pageSize: _pageSize);
     if (!mounted) return;
     setState(() {
       _assets.addAll(batch);

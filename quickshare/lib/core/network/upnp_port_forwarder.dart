@@ -117,10 +117,11 @@ class UpnpPortForwarder {
           final datagram = socket?.receive();
           if (datagram != null) {
             final response = utf8.decode(datagram.data);
-            final locationHeader = RegExp(r'LOCATION:\s*(.+)', caseSensitive: false)
-                .firstMatch(response)
-                ?.group(1)
-                ?.trim();
+            final locationHeader =
+                RegExp(r'LOCATION:\s*(.+)', caseSensitive: false)
+                    .firstMatch(response)
+                    ?.group(1)
+                    ?.trim();
             if (locationHeader != null && !completer.isCompleted) {
               completer.complete(locationHeader);
             }
@@ -148,7 +149,8 @@ class UpnpPortForwarder {
         return const PortMappingResult(
           success: false,
           method: 'upnp',
-          error: 'Could not parse UPnP control URL or serviceType from router XML',
+          error:
+              'Could not parse UPnP control URL or serviceType from router XML',
         );
       }
 
@@ -172,8 +174,7 @@ class UpnpPortForwarder {
       );
 
       if (soapSuccess) {
-        _activeMappings
-            .add((device: deviceInfo, externalPort: externalPort));
+        _activeMappings.add((device: deviceInfo, externalPort: externalPort));
         final publicIp = await _getUpnpExternalIp(deviceInfo);
         return PortMappingResult(
           success: true,
@@ -218,14 +219,17 @@ class UpnpPortForwarder {
         ).firstMatch(xml);
 
         if (controlMatch != null) {
-          final serviceType = serviceMatch?.group(1) ?? 'urn:schemas-upnp-org:service:WANIPConnection:1';
+          final serviceType = serviceMatch?.group(1) ??
+              'urn:schemas-upnp-org:service:WANIPConnection:1';
           final relPath = controlMatch.group(1)!.trim();
           final baseUri = Uri.parse(locationUrl);
           final controlUrl = baseUri.resolve(relPath).toString();
-          return UpnpDeviceInfo(controlUrl: controlUrl, serviceType: serviceType);
+          return UpnpDeviceInfo(
+              controlUrl: controlUrl, serviceType: serviceType);
         }
       }
-    } catch (_) {} finally {
+    } catch (_) {
+    } finally {
       client.close();
     }
     return null;
@@ -288,7 +292,8 @@ class UpnpPortForwarder {
       final uri = Uri.parse(deviceInfo.controlUrl);
       final req = await client.postUrl(uri);
       req.headers.set('Content-Type', 'text/xml; charset="utf-8"');
-      req.headers.set('SOAPAction', '"${deviceInfo.serviceType}#AddPortMapping"');
+      req.headers
+          .set('SOAPAction', '"${deviceInfo.serviceType}#AddPortMapping"');
       req.add(utf8.encode(body));
       final res = await req.close();
       return res.statusCode == 200;
@@ -369,15 +374,19 @@ class UpnpPortForwarder {
       final uri = Uri.parse(deviceInfo.controlUrl);
       final req = await client.postUrl(uri);
       req.headers.set('Content-Type', 'text/xml; charset="utf-8"');
-      req.headers.set('SOAPAction', '"${deviceInfo.serviceType}#GetExternalIPAddress"');
+      req.headers.set(
+          'SOAPAction', '"${deviceInfo.serviceType}#GetExternalIPAddress"');
       req.add(utf8.encode(body));
       final res = await req.close();
       if (res.statusCode == 200) {
         final xml = await res.transform(utf8.decoder).join();
-        final match = RegExp(r'<NewExternalIPAddress>(.*?)</NewExternalIPAddress>').firstMatch(xml);
+        final match =
+            RegExp(r'<NewExternalIPAddress>(.*?)</NewExternalIPAddress>')
+                .firstMatch(xml);
         return match?.group(1)?.trim();
       }
-    } catch (_) {} finally {
+    } catch (_) {
+    } finally {
       client.close();
     }
     return null;
@@ -409,7 +418,8 @@ class UpnpPortForwarder {
       requestBytes.setUint32(8, 3600); // 1 hour lease
 
       // Send to multicast gateway 224.0.0.1 on UDP 5351
-      socket.send(requestBytes.buffer.asUint8List(), InternetAddress('224.0.0.1'), _natPmpPort);
+      socket.send(requestBytes.buffer.asUint8List(),
+          InternetAddress('224.0.0.1'), _natPmpPort);
 
       final completer = Completer<PortMappingResult>();
       socket.listen((event) {
@@ -457,7 +467,8 @@ class UpnpPortForwarder {
   Future<String?> _getLocalIpForTarget(String targetUrl) async {
     try {
       final uri = Uri.parse(targetUrl);
-      final socket = await Socket.connect(uri.host, uri.port, timeout: const Duration(seconds: 2));
+      final socket = await Socket.connect(uri.host, uri.port,
+          timeout: const Duration(seconds: 2));
       final localIp = socket.address.address;
       await socket.close();
       return localIp;

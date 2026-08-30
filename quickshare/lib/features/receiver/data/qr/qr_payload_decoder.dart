@@ -10,8 +10,8 @@ class QRPayloadDecoder {
 
   QRPayload decode(String rawQRData) {
     final share = DeepLinkService.parseShareLink(rawQRData);
-    final unwrapped = share?.qrPayload ??
-        DeepLinkService.unwrapToQrPayload(rawQRData);
+    final unwrapped =
+        share?.qrPayload ?? DeepLinkService.unwrapToQrPayload(rawQRData);
     if (ServerlessQr.looksLikeOne(unwrapped)) {
       // Validate by decoding — a corrupt scan should fail here rather than
       // halfway through the handshake.
@@ -33,7 +33,8 @@ class QRPayloadDecoder {
     try {
       final payload = QRPayload.decode(unwrapped);
       if (payload.version != 1 && payload.version != 2) {
-        throw Exception('Unsupported QR version: ${payload.version}. Expected 1 or 2.');
+        throw Exception(
+            'Unsupported QR version: ${payload.version}. Expected 1 or 2.');
       }
       if (!payload.isValid) {
         throw Exception('Invalid payload fields');
@@ -51,9 +52,8 @@ class QRPayloadDecoder {
         sessionId: payload.sessionId,
         mode: payload.mode,
         sdpOffer: payload.sdpOffer,
-        itemCount: payload.itemCount > 0
-            ? payload.itemCount
-            : (share?.itemCount ?? 0),
+        itemCount:
+            payload.itemCount > 0 ? payload.itemCount : (share?.itemCount ?? 0),
       );
     } catch (e) {
       final roomCode = DeepLinkService.parseFromText(unwrapped);

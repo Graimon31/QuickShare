@@ -554,30 +554,6 @@ abstract class AppLocalizations {
   /// **'Details copied'**
   String get settingsDetailsCopied;
 
-  /// No description provided for @settingsLogs.
-  ///
-  /// In en, this message translates to:
-  /// **'Logs'**
-  String get settingsLogs;
-
-  /// No description provided for @settingsLogsSubtitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Technical journal — copy it when reporting a transfer problem'**
-  String get settingsLogsSubtitle;
-
-  /// No description provided for @logsCopyAll.
-  ///
-  /// In en, this message translates to:
-  /// **'Copy entire log'**
-  String get logsCopyAll;
-
-  /// No description provided for @logsEmpty.
-  ///
-  /// In en, this message translates to:
-  /// **'No entries yet'**
-  String get logsEmpty;
-
   /// No description provided for @settingsTransferFootnote.
   ///
   /// In en, this message translates to:
@@ -737,7 +713,7 @@ abstract class AppLocalizations {
   /// No description provided for @qrDisplayPhoneHint.
   ///
   /// In en, this message translates to:
-  /// **'On the phone: open DirectDrop → Receive and scan this QR.\nThe Wi‑Fi line below is only for diagnostics — it is NOT the QR content.'**
+  /// **'On the phone: open DirectDrop → Receive and scan this QR.'**
   String get qrDisplayPhoneHint;
 
   /// No description provided for @qrDisplayRenderError.
@@ -758,18 +734,6 @@ abstract class AppLocalizations {
   /// **'Link copied to clipboard'**
   String get qrDisplayLinkCopied;
 
-  /// No description provided for @qrDisplayWifiAddressLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'Sender Wi‑Fi address'**
-  String get qrDisplayWifiAddressLabel;
-
-  /// No description provided for @qrDisplayWifiAddressCopied.
-  ///
-  /// In en, this message translates to:
-  /// **'Wi‑Fi address copied'**
-  String get qrDisplayWifiAddressCopied;
-
   /// No description provided for @qrDisplayTotalSize.
   ///
   /// In en, this message translates to:
@@ -787,6 +751,78 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Cancel Transfer'**
   String get qrDisplayCancelTransfer;
+
+  /// No description provided for @precondWifiTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn on Wi-Fi'**
+  String get precondWifiTitle;
+
+  /// No description provided for @precondWifiBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Local network transfer needs the Wi-Fi module to be on.'**
+  String get precondWifiBody;
+
+  /// No description provided for @precondBluetoothTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Turn on Bluetooth'**
+  String get precondBluetoothTitle;
+
+  /// No description provided for @precondBluetoothBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Bluetooth transfer needs the Bluetooth module to be on.'**
+  String get precondBluetoothBody;
+
+  /// No description provided for @precondOpenSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Open Settings'**
+  String get precondOpenSettings;
+
+  /// No description provided for @precondWifiBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Transfer is unavailable until Wi-Fi is turned on.'**
+  String get precondWifiBlocked;
+
+  /// No description provided for @precondBluetoothBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Transfer is unavailable until Bluetooth is turned on.'**
+  String get precondBluetoothBlocked;
+
+  /// No description provided for @precondInternetBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'No active network connection. Internet transfer is unavailable.'**
+  String get precondInternetBlocked;
+
+  /// No description provided for @pickerFilesMediaRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Photos and videos were not added — send them via “Photos & Videos”.'**
+  String get pickerFilesMediaRejected;
+
+  /// No description provided for @sessionExpiredTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Session expired'**
+  String get sessionExpiredTitle;
+
+  /// No description provided for @sessionExpiredBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Nobody connected in time. Refresh to create a new session.'**
+  String get sessionExpiredBody;
+
+  /// No description provided for @sessionRefresh.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh'**
+  String get sessionRefresh;
 
   /// No description provided for @senderProgressCancelTitle.
   ///
@@ -1297,6 +1333,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Start Now'**
   String get previewStartNow;
+
+  /// No description provided for @settingsLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'Logs'**
+  String get settingsLogs;
+
+  /// No description provided for @settingsLogsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Technical journal — copy it when reporting a transfer problem'**
+  String get settingsLogsSubtitle;
+
+  /// No description provided for @logsCopyAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy entire log'**
+  String get logsCopyAll;
+
+  /// No description provided for @logsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No entries yet'**
+  String get logsEmpty;
 }
 
 class _AppLocalizationsDelegate

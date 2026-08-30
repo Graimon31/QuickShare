@@ -91,9 +91,8 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
     final isQhtp = payload.isQhtp;
     final itemCount = preview?.itemCount ??
         (payload.itemCount > 0 ? payload.itemCount : (isQhtp ? 0 : 1));
-    final totalBytes = isQhtp
-        ? (preview?.totalBytes ?? payload.fileSize)
-        : payload.fileSize;
+    final totalBytes =
+        isQhtp ? (preview?.totalBytes ?? payload.fileSize) : payload.fileSize;
     final title = isQhtp
         ? (payload.fileName.isNotEmpty
             ? payload.fileName
@@ -124,7 +123,9 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                       ),
                       child: Icon(
                         isQhtp
-                            ? Icons.folder_zip_rounded
+                            // A folder now arrives as a folder, so it should
+                            // not be announced with an archive icon.
+                            ? Icons.folder_rounded
                             : Icons.insert_drive_file_rounded,
                         color: Colors.white,
                         size: 48,
@@ -171,8 +172,8 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                           const SizedBox(width: 10),
                           Text(
                             totalBytes > 0
-                                ? l10n.previewFolderSize(
-                                    _formatBytes(totalBytes))
+                                ? l10n
+                                    .previewFolderSize(_formatBytes(totalBytes))
                                 : l10n.previewCalculatingSize,
                             style: GoogleFonts.inter(
                               color: AppColors.primary,
@@ -227,8 +228,8 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                           icon: const Icon(Icons.download_rounded, size: 18),
                           label: Text(
                             l10n.previewStartNow,
-                            style: GoogleFonts.inter(
-                                fontWeight: FontWeight.w600),
+                            style:
+                                GoogleFonts.inter(fontWeight: FontWeight.w600),
                           ),
                           style: ElevatedButton.styleFrom(
                             backgroundColor: AppColors.primary,

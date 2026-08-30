@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:io';
-import 'dart:isolate';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
@@ -13,9 +11,7 @@ import 'package:quickshare/features/sender/domain/transports/transfer_transport.
 import 'package:quickshare/features/sender/data/repositories/sender_repository_impl.dart';
 import 'package:quickshare/features/sender/data/transports/webrtc_transfer_transport.dart';
 import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
-import 'package:mime/mime.dart';
-import 'package:path/path.dart' as p;
-import 'package:archive/archive_io.dart';
+import 'package:quickshare/features/sender/data/indexer/transfer_selection.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
@@ -24,7 +20,6 @@ import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
-import 'package:quickshare/core/utils/mime_compression.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
@@ -75,6 +70,10 @@ class StartQhtpSend extends SenderEvent {
 class StartLocalNetwork extends SenderEvent {}
 
 class CancelSending extends SenderEvent {}
+
+/// Re-creates the session that just expired, with the same payload and
+/// transport. Raised by the "Refresh" button on the expired-session panel.
+class RestartSession extends SenderEvent {}
 
 class TransferCompleted extends SenderEvent {}
 
@@ -131,6 +130,13 @@ class QRReady extends SenderState {
   /// [TransferSession]. Showing that alone made a multi-file send look like a
   /// single-file one, which read as "only one of my files is going".
   final int itemCount;
+
+  /// The folder this session is, when it is one.
+  ///
+  /// A folder should be announced by its own name. "412 files" is true and
+  /// useless — it is not what the sender picked and not what the recipient is
+  /// about to get.
+  final String? folderName;
   final int totalBytes;
 
   const QRReady(
@@ -139,21 +145,28 @@ class QRReady extends SenderState {
     this.mode, {
     this.webLinkUrl,
     this.itemCount = 1,
+    this.folderName,
     this.totalBytes = 0,
   });
 
   @override
   List<Object?> get props =>
-      [qrData, session, mode, webLinkUrl, itemCount, totalBytes];
+      [qrData, session, mode, webLinkUrl, itemCount, totalBytes, folderName];
 }
 
 /// Bluetooth is advertising and waiting for a receiver that scanned [qrData].
 class BluetoothAdvertising extends SenderState {
   final TransferSession session;
   final String qrData;
-  const BluetoothAdvertising(this.session, {required this.qrData});
+
+  /// How many files the session holds. More than one since folders stopped
+  /// being flattened into an archive to fit this channel.
+  final int itemCount;
+
+  const BluetoothAdvertising(this.session,
+      {required this.qrData, this.itemCount = 1});
   @override
-  List<Object?> get props => [session, qrData];
+  List<Object?> get props => [session, qrData, itemCount];
 }
 
 class Transferring extends SenderState {
@@ -224,84 +237,6 @@ class SenderError extends SenderState {
 }
 
 // BLoC
-/// Runs [writeTransferBundle] on an isolate of its own.
-///
-/// A plain `Isolate.run(() => ...)` written inside the bloc's own async
-/// method does not work: a closure captures its whole enclosing context, and
-/// inside an `async` body that context holds the completer driving it, which
-/// is not sendable. The send fails at runtime with "object is unsendable",
-/// the bundling is reported as a failed archive, and the transfer never
-/// starts. Building the closure out here keeps two strings and a list of
-/// strings as the only things it can capture.
-Future<int> bundleForTransfer(List<String> paths, String zipPath) =>
-    Isolate.run(() => writeTransferBundle(paths, zipPath));
-
-/// Packs [paths] into a zip at [zipPath] and reports the finished size.
-///
-/// Top level and free of any reference to the bloc so it can be handed to
-/// [Isolate.run]. That is the whole point: `ZipFileEncoder` deflates on
-/// whichever isolate calls it, at roughly 55 MB/s here for the media that
-/// does not compress at all. On the UI isolate a gigabyte of photos was
-/// therefore about eighteen seconds with the interface completely frozen and
-/// nothing moving on screen — which nobody reads as "slow", they read it as a
-/// hung app, and that is exactly how it came back.
-///
-/// The awaits matter as much as the isolate. Every one of these returns a
-/// future and none of them used to be awaited, so the central directory was
-/// still being flushed while the caller was already measuring the file and
-/// telling the receiver how many bytes to expect.
-Future<int> writeTransferBundle(List<String> paths, String zipPath) async {
-  final encoder = ZipFileEncoder();
-  encoder.create(zipPath);
-  for (final path in paths) {
-    final type = FileSystemEntity.typeSync(path);
-    if (type == FileSystemEntityType.directory) {
-      await _addTree(encoder, Directory(path), p.basename(path));
-    } else if (type == FileSystemEntityType.file) {
-      await _addOne(encoder, File(path), p.basename(path));
-    }
-  }
-  await encoder.close();
-  return File(zipPath).lengthSync();
-}
-
-/// Walks [directory] itself rather than handing it to `addDirectory`, which
-/// takes one compression level for a whole tree — and a tree of holiday
-/// photos is exactly where that decision has to be made per file.
-Future<void> _addTree(
-    ZipFileEncoder encoder, Directory directory, String prefix) async {
-  for (final entity in directory.listSync(followLinks: false)) {
-    final name = '$prefix/${p.basename(entity.path)}';
-    if (entity is Directory) {
-      await _addTree(encoder, entity, name);
-    } else if (entity is File) {
-      await _addOne(encoder, entity, name);
-    }
-  }
-}
-
-/// Stores already-compressed files instead of deflating them again.
-///
-/// Deflate on a JPEG or an H.264 stream buys nothing — the format has done
-/// the compressing already — and costs a full pass over every byte at about
-/// 55 MB/s. Storing them is a straight copy, so a 600 MB selection of photos
-/// stops being ten seconds of work and becomes as fast as the disk. It also
-/// keeps the promise the whole app is built on: photos and videos are not
-/// re-encoded on the way out, and a bundle that deflated them was quietly
-/// breaking that even though zip is lossless.
-Future<void> _addOne(
-    ZipFileEncoder encoder, File file, String nameInArchive) async {
-  final compressible = shouldCompressForTransfer(
-    lookupMimeType(file.path),
-    p.basename(file.path),
-  );
-  await encoder.addFile(
-    file,
-    nameInArchive,
-    compressible ? ZipFileEncoder.GZIP : ZipFileEncoder.STORE,
-  );
-}
-
 class SenderBloc extends Bloc<SenderEvent, SenderState> {
   final SenderRepository repository;
   StreamSubscription<double>? _progressSubscription;
@@ -317,7 +252,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   FileMetadata? _currentFile;
 
-
   /// Every file this session will send.
 
   ///
@@ -329,6 +263,12 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// the QR and progress screens still show a single name and size.
 
   List<FileMetadata>? _sessionFiles;
+
+  /// What the sender's own screens call this session, and the folder name
+  /// behind it when the session is a folder. Not what is sent — the list is —
+  /// only how it is described while it goes.
+  FileMetadata? _sessionDisplay;
+  String? _sessionFolderName;
   TransportType _selectedMode = TransportType.wifi;
   DateTime? _lastProgressUpdate;
   int _lastBytes = 0;
@@ -366,6 +306,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     on<StartQhtpSend>(_onStartQhtpSend);
     on<StartLocalNetwork>(_onStartLocalNetwork);
     on<CancelSending>(_onCancelSending);
+    on<RestartSession>(_onRestartSession);
     on<TransferCompleted>(_onTransferCompleted);
     on<TransferFailed>(_onTransferFailed);
     on<TransferProgressEvent>(_onTransferProgress);
@@ -547,8 +488,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
         _relayBlockedSubscription?.cancel();
         _relayBlockedSubscription = _activeWebRtcTransport!.relayBlockedStream
-            .listen((blocked) => add(
-                RelayBlocked(blocked.sessionBytes, blocked.limitBytes)));
+            .listen((blocked) =>
+                add(RelayBlocked(blocked.sessionBytes, blocked.limitBytes)));
 
         await _activeWebRtcTransport!
             .startSharingServerless(file, files: _sessionFiles ?? [file]);
@@ -570,10 +511,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         final session = _sessionFiles ?? [file];
         emit(QRReady(
           qrPayloadData,
-          _makeDummySession(file),
+          _makeDummySession(_sessionDisplay ?? file),
           mode,
           itemCount: session.length,
           totalBytes: session.fold<int>(0, (sum, f) => sum + f.size),
+          folderName: _sessionFolderName,
         ));
       } catch (e) {
         debugPrint('WebRTC init error: $e');
@@ -602,16 +544,27 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _statusSubscription =
             _activeBluetoothTransport!.statusStream.listen((status) {
           if (status == TransferStatus.failed) {
-            add(const TransferFailed('Bluetooth transfer failed unexpectedly'));
+            // The transport knows why — an unreadable file, a receiver too
+            // old to take a folder — and that reason is the only part the
+            // person sending can act on. It used to end in a debugPrint while
+            // the screen said "failed unexpectedly".
+            add(TransferFailed(_activeBluetoothTransport?.lastFailureReason ??
+                'Bluetooth transfer failed unexpectedly'));
           }
         });
 
         final token = const Uuid().v4();
-        await _activeBluetoothTransport!.startSharing(file, token);
+        await _activeBluetoothTransport!
+            .startSharing(file, token, files: _sessionFiles ?? [file]);
+        // Awaited on purpose: the fast path subscribes to the repository's
+        // progress stream, and that subscription must exist before the QR
+        // shows, or the first progress events fall on the floor. It is cheap
+        // now that indexing no longer hashes inline.
         await _offerBluetoothFastPath(token);
         emit(BluetoothAdvertising(
-          _makeDummySession(file),
+          _makeDummySession(_sessionDisplay ?? file),
           qrData: BluetoothQrPayload(token: token).encode(),
+          itemCount: (_sessionFiles ?? [file]).length,
         ));
       } catch (e) {
         debugPrint('Bluetooth init error: $e');
@@ -643,9 +596,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   Future<void> _onStartQhtpSend(
       StartQhtpSend event, Emitter<SenderState> emit) async {
     _currentPaths = event.paths;
-    // A fresh session: forget the last one's timing and route.
+    // A fresh session: forget the last one's timing, route and description.
     _sendStartedAt = null;
     _directLinkOffered = false;
+    _sessionDisplay = null;
+    _sessionFolderName = null;
     final mode = event.mode ?? _selectedMode;
     if (mode == TransportType.internet || mode == TransportType.bluetooth) {
       if (event.paths.isEmpty) {
@@ -653,98 +608,48 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         return;
       }
 
-      // Several plain files are never bundled. Both the DataChannel protocol
-      // and QHTP carry a manifest, so a .zip buys nothing and costs plenty:
-      // the recipient gets an archive to unpack instead of photos that land
-      // in their gallery, and the sender waits while it is written.
+      // Nothing is bundled any more, on any channel.
       //
-      // Zipping survives only for a *directory*, which is the one case a
-      // single-file channel genuinely cannot express.
+      // A folder is a tree, and every route out of this app now carries one:
+      // the DataChannel manifest and QHTP always could, and the Bluetooth
+      // bridge was taught to. Each file travels with the relative path it has
+      // to keep, so the folder is rebuilt on the far side rather than handed
+      // over as an archive to unpack — photos land in a gallery, a project
+      // folder arrives as a project folder.
       //
-      // Bluetooth included, which leaves a known gap: its native bridge
-      // carries one file, so a multi-file selection reaches a receiver that
-      // cannot take the direct Wi-Fi link as the first file only. That path
-      // is the fallback of a fallback — a non-Apple device, in the same room,
-      // with no network — and papering over it with an archive made every
-      // ordinary multi-file send worse to fix a rare one.
-      final allPlainFiles =
-          event.paths.every((path) => FileSystemEntity.isFileSync(path));
-
-      if (allPlainFiles && event.paths.length > 1) {
-        final files = <FileMetadata>[];
-        for (final path in event.paths) {
-          files.add(FileMetadata(
-            name: p.basename(path),
-            path: path,
-            size: await File(path).length(),
-            mimeType: lookupMimeType(path) ?? 'application/octet-stream',
-          ));
-        }
-        _sessionFiles = files;
-        _currentFile = files.first;
-        await _startSendingInternal(files.first, mode, emit);
+      // The zip that used to stand here was never about structure anyway. It
+      // was about turning a tree into one object of a known size because the
+      // channel could not express anything else, and it charged for that: a
+      // full deflate pass before the first byte could leave, and a .zip at
+      // the other end whatever the recipient actually wanted. Walking the
+      // selection costs directory reads and no payload pass at all.
+      emit(ServerStarting());
+      final List<FileMetadata> files;
+      try {
+        files = await expandSelection(event.paths);
+      } catch (e) {
+        // Empty folders, unreadable ones, selections past the size and depth
+        // ceilings — all of which used to surface as "failed to archive".
+        emit(SenderError('Could not read the selection: $e'));
         return;
       }
 
-      final isSingleFile = event.paths.length == 1 &&
-          FileSystemEntity.isFileSync(event.paths.first);
-
-      FileMetadata targetMetadata;
-
-      if (isSingleFile) {
-        final filePath = event.paths.first;
-        final file = File(filePath);
-        final size = await file.length();
-        final name = p.basename(filePath);
-
-        targetMetadata = FileMetadata(
-          name: name,
-          path: filePath,
-          // A real type, not a blanket octet-stream: it decides whether the
-          // payload is compressed in flight and whether the far side files it
-          // as a photo or as a document.
-          mimeType: lookupMimeType(filePath) ?? 'application/octet-stream',
-          size: size,
-        );
-      } else {
-        emit(ServerStarting());
-        String? zipPath;
-        try {
-          final tempDir = Directory.systemTemp;
-          final String folderOrBundleName = event.paths.length == 1
-              ? p.basename(event.paths.first)
-              : 'quickshare_bundle';
-          final timestamp = DateTime.now().millisecondsSinceEpoch;
-          final zipName = '${folderOrBundleName}_$timestamp.zip';
-          zipPath = p.join(tempDir.path, zipName);
-
-          final zipSize =
-              await bundleForTransfer(List<String>.from(event.paths), zipPath);
-
-          targetMetadata = FileMetadata(
-            name: zipName,
-            path: zipPath,
-            size: zipSize,
-            mimeType: 'application/zip',
-          );
-        } catch (e) {
-          if (zipPath != null) {
-            try {
-              final orphan = File(zipPath);
-              if (await orphan.exists()) await orphan.delete();
-            } catch (_) {}
-          }
-          emit(SenderError('Failed to archive folder for transfer: $e'));
-          return;
-        }
-      }
-
-      _currentFile = targetMetadata;
-      // Both branches above end with exactly one thing to send, and this has
-      // to be said for both: leaving the previous send's list in place made
-      // the next transfer offer a manifest of files it was not sending.
-      _sessionFiles = [targetMetadata];
-      await _startSendingInternal(targetMetadata, mode, emit);
+      _sessionFiles = files;
+      // The first item is what a single-file session is entirely made of, and
+      // what the transports lead with. Leaving the previous send's list in
+      // place once made the next transfer offer a manifest of files it was
+      // not sending, so both are always set here.
+      _currentFile = files.first;
+      _sessionFolderName = commonRootFolder(files);
+      _sessionDisplay = _sessionFolderName == null
+          ? files.first
+          : FileMetadata(
+              name: _sessionFolderName!,
+              path: event.paths.first,
+              size: files.fold<int>(0, (sum, f) => sum + f.size),
+              mimeType: 'inode/directory',
+            );
+      await _startSendingInternal(files.first, mode, emit);
       return;
     }
 
@@ -782,9 +687,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// at speed. If the link does not come up, the Bluetooth transfer that is
   /// already advertising carries them instead, slowly but surely.
   ///
-  /// The QHTP session is built from the original paths rather than the bundle
-  /// the Bluetooth path needs, so photos arrive as photos and land in the
-  /// recipient's gallery instead of inside a .zip.
+  /// Both routes carry the same thing now — the selection itself, folders
+  /// and all — so which one wins changes only how long it takes, never what
+  /// the recipient ends up holding.
   Future<void> _offerBluetoothFastPath(String sessionToken) async {
     if (!PeerLinkService.isSupported) return;
     final paths = _currentPaths;
@@ -857,17 +762,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       );
     } on PeerLinkException catch (e) {
       AppLogger.info('No direct Wi-Fi link this time: $e', tag: 'PEERLINK');
-    }
-  }
-
-  Future<void> _cleanupTempZipIfNeeded(FileMetadata? metadata) async {
-    if (metadata != null && metadata.mimeType == 'application/zip') {
-      try {
-        final zipFile = File(metadata.path);
-        if (await zipFile.exists()) {
-          await zipFile.delete();
-        }
-      } catch (_) {}
     }
   }
 
@@ -950,7 +844,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   Future<void> _onCancelSending(
       CancelSending event, Emitter<SenderState> emit) async {
     await hotspot.stopHosting();
-    await _cleanupTempZipIfNeeded(_currentFile);
     await repository.stopServer();
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
@@ -963,6 +856,19 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _subscribeToWifiProgress();
     _currentFile = null;
     emit(SenderInitial());
+  }
+
+  /// `_currentPaths` deliberately survives CancelSending: expiry is the one
+  /// flow that must start over with the same selection, and it gets here only
+  /// from the expired-session panel.
+  Future<void> _onRestartSession(
+      RestartSession event, Emitter<SenderState> emit) async {
+    final paths = _currentPaths;
+    if (paths != null && paths.isNotEmpty) {
+      await _onStartQhtpSend(StartQhtpSend(paths, mode: _selectedMode), emit);
+      return;
+    }
+    emit(const SenderError('Nothing to restart.'));
   }
 
   Future<void> _onTransferProgress(
@@ -1051,7 +957,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     final completedFile = _currentFile;
     if (completedFile != null) {
       emit(TransferComplete(completedFile));
-      await _cleanupTempZipIfNeeded(completedFile);
     } else {
       emit(SenderInitial());
     }
@@ -1059,7 +964,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onTransferFailed(
       TransferFailed event, Emitter<SenderState> emit) async {
-    await _cleanupTempZipIfNeeded(_currentFile);
     await repository.stopServer();
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
@@ -1075,7 +979,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   @override
   Future<void> close() async {
-    await _cleanupTempZipIfNeeded(_currentFile);
     _progressSubscription?.cancel();
     _statusSubscription?.cancel();
     await _closeAnswerChannel();

@@ -9,18 +9,27 @@ class DownloadFileUseCase {
 
   DownloadFileUseCase(this.repository);
 
-  Future<Either<Failure, String>> call(QRPayload payload, {void Function(int received, int total)? onProgress, void Function()? onVerifying}) async {
-    final serverCheck = await repository.checkServerAvailability(payload.ip, payload.port, payload.token);
-    if (serverCheck is Left) return Left((serverCheck as Left<Failure, bool>).value);
+  Future<Either<Failure, String>> call(QRPayload payload,
+      {void Function(int received, int total)? onProgress,
+      void Function()? onVerifying}) async {
+    final serverCheck = await repository.checkServerAvailability(
+        payload.ip, payload.port, payload.token);
+    if (serverCheck is Left) {
+      return Left((serverCheck as Left<Failure, bool>).value);
+    }
 
-    final downloadResult = await repository.downloadFile(payload, onProgress: onProgress);
-    if (downloadResult is Left) return Left((downloadResult as Left<Failure, String>).value);
+    final downloadResult =
+        await repository.downloadFile(payload, onProgress: onProgress);
+    if (downloadResult is Left) {
+      return Left((downloadResult as Left<Failure, String>).value);
+    }
 
     final tempPath = (downloadResult as Right<Failure, String>).value;
-    
+
     if (onVerifying != null) onVerifying();
 
-    final verifyResult = await repository.verifyChecksum(tempPath, payload.checksum);
+    final verifyResult =
+        await repository.verifyChecksum(tempPath, payload.checksum);
     if (verifyResult is Left) {
       final tempFile = File(tempPath);
       if (await tempFile.exists()) await tempFile.delete();

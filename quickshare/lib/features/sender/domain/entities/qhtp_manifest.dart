@@ -79,7 +79,8 @@ class QhtpManifest extends Equatable {
       protocol: json['protocol'] as String? ?? 'QHTP',
       protocolVersion: json['protocolVersion'] as int? ?? 1,
       sessionId: json['sessionId'] as String,
-      createdAt: json['createdAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+      createdAt:
+          json['createdAt'] as int? ?? DateTime.now().millisecondsSinceEpoch,
       itemCount: json['itemCount'] as int? ?? itemsList.length,
       totalBytes: json['totalBytes'] as int? ?? 0,
       items: itemsList,

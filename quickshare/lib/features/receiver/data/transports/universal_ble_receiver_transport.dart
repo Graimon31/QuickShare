@@ -8,11 +8,13 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:universal_ble/universal_ble.dart';
 
+import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// Progress event emitted by [UniversalBleReceiverTransport].
 class UniversalBleReceiveProgress {
-  final String phase; // 'scanning' | 'connecting' | 'transferring' | 'completed' | 'failed'
+  final String
+      phase; // 'scanning' | 'connecting' | 'transferring' | 'completed' | 'failed'
   final String fileName;
   final int received;
   final int total;
@@ -33,23 +35,37 @@ class UniversalBleReceiveProgress {
 /// | UUID suffix | Role |
 /// |-------------|------|
 /// | …6B11       | Control — receiver writes `START:<token>` here |
-/// | …6B12       | Metadata — sender notifies a JSON blob with name / size / mime / compressed |
+/// | …6B12       | Metadata — sender notifies a JSON blob per file |
 /// | …6B13       | Data — sender streams file chunks as GATT notify |
 ///
 /// This class handles the GATT-client side: scanning, connecting, writing the
 /// START command, receiving metadata + data chunks, and writing the assembled
-/// file to disk.
+/// files to disk.
+///
+/// ## A session is a list
+///
+/// One metadata notification per file — `{name, path, size, mime, compressed,
+/// index, count, sessionBytes}` — followed by that file's bytes. A new
+/// metadata means the previous file is finished; the session is finished when
+/// the last index announced has all its bytes. Notifications on a single
+/// characteristic arrive in order over one ATT connection, so nothing more is
+/// needed to tell the files apart.
+///
+/// `path` carries the folder structure: files land under the directories they
+/// came from rather than in one flat heap, which is what lets a folder cross
+/// this channel without being zipped into a single object first. A sender on
+/// an older build sends neither `path` nor `count`, which reads exactly as it
+/// should — one file, at the root.
 ///
 /// On iOS and macOS the native CoreBluetooth bridge is used instead — see
 /// [BluetoothReceiverTransport].
 class UniversalBleReceiverTransport {
-  static const _serviceUuid     = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10';
-  static const _controlUuid     = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
-  static const _metadataUuid    = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
-  static const _dataUuid        = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
+  static const _serviceUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10';
+  static const _controlUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
+  static const _metadataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
+  static const _dataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
 
-  final _devicesController =
-      StreamController<BleDevice>.broadcast();
+  final _devicesController = StreamController<BleDevice>.broadcast();
   final _progressController =
       StreamController<UniversalBleReceiveProgress>.broadcast();
 
@@ -72,6 +88,19 @@ class UniversalBleReceiverTransport {
   String? _targetPath;
   String _baseDir = '';
   bool _metadataReceived = false;
+
+  /// Bytes for the file currently open, and how many of them have landed.
+  int _fileTotalBytes = 0;
+  int _fileReceivedBytes = 0;
+
+  /// Where the session is in its list of files.
+  int _itemIndex = 0;
+  int _itemCount = 1;
+
+  /// Everything written so far, in arrival order.
+  final List<String> _writtenPaths = [];
+
+  List<String> get receivedPaths => List.unmodifiable(_writtenPaths);
 
   final _completion = Completer<String>();
 
@@ -99,7 +128,8 @@ class UniversalBleReceiverTransport {
 
   bool _filterDevice(BleDevice device) {
     if (_sessionToken == null) return true;
-    final prefix = _sessionToken!.substring(0, _sessionToken!.length.clamp(0, 8));
+    final prefix =
+        _sessionToken!.substring(0, _sessionToken!.length.clamp(0, 8));
     final name = device.name ?? '';
     return name.contains('QuickShare-$prefix') || name.contains('QuickShare');
   }
@@ -155,9 +185,36 @@ class UniversalBleReceiverTransport {
               .listen(_handleData),
         );
 
+      // Say what this build can take, before START rather than after: a
+      // sender that reaches START without having seen this knows the far side
+      // is old and refuses to half-deliver a folder to it.
+      //
+      // Best-effort on purpose. Senders up to v1.0.10 answer this write with
+      // an ATT error, which is not a failed connection — it is an older
+      // sender behaving exactly as it always did, and the transfer that
+      // follows is a perfectly good one-file transfer.
+      try {
+        await UniversalBle.write(
+          deviceId,
+          _serviceUuid,
+          _controlUuid,
+          Uint8List.fromList(utf8.encode(BleControlProtocol.capabilities())),
+          // With a response, not without: a write that can be silently
+          // dropped would make a current sender believe the receiver is old
+          // and refuse a folder it could perfectly well have taken. An older
+          // sender's error is caught below; a lost write could not be.
+          withoutResponse: false,
+        );
+      } catch (e) {
+        AppLogger.info(
+            'UniversalBleReceiver: sender did not take the CAPS write ($e) — '
+            'it is on an older build',
+            tag: 'BLE_RECEIVER');
+      }
+
       // Send the START command — the sender only starts streaming once it
       // receives this, so we cannot arrive before the notify subscriptions.
-      final command = utf8.encode('START:$token');
+      final command = utf8.encode(BleControlProtocol.start(token));
       await UniversalBle.write(
         deviceId,
         _serviceUuid,
@@ -165,7 +222,8 @@ class UniversalBleReceiverTransport {
         Uint8List.fromList(command),
         withoutResponse: false,
       );
-      AppLogger.info('UniversalBleReceiver: START command sent', tag: 'BLE_RECEIVER');
+      AppLogger.info('UniversalBleReceiver: START command sent',
+          tag: 'BLE_RECEIVER');
     } catch (e) {
       if (!_completion.isCompleted) {
         _completion.completeError(e);
@@ -179,19 +237,38 @@ class UniversalBleReceiverTransport {
   void _handleMetadata(Uint8List value) {
     try {
       final json = jsonDecode(utf8.decode(value)) as Map<String, dynamic>;
-      _fileName = json['name'] as String? ?? 'received_file';
-      _totalBytes = json['size'] as int? ?? 0;
-      _isCompressed = (json['compressed'] as bool?) ?? false;
-      _metadataReceived = true;
-      _receivedBytes = 0;
+      // Whatever was open belongs to the previous file: a metadata frame is
+      // the only end-of-file marker this channel has.
+      unawaited(_sealCurrentFile());
 
-      final safeName = _sanitize(_fileName);
-      _targetPath = _uniquePath(p.join(_baseDir, safeName));
+      _fileName = json['name'] as String? ?? 'received_file';
+      _fileTotalBytes = json['size'] as int? ?? 0;
+      _isCompressed = (json['compressed'] as bool?) ?? false;
+      _itemIndex = json['index'] as int? ?? 0;
+      // A sender that says nothing is a sender with one file — which is what
+      // every build before folders could carry.
+      _itemCount = json['count'] as int? ?? 1;
+      _metadataReceived = true;
+      _fileReceivedBytes = 0;
+
+      if (_itemIndex <= 0) {
+        _receivedBytes = 0;
+        _writtenPaths.clear();
+        _totalBytes = json['sessionBytes'] as int? ?? _fileTotalBytes;
+      }
+
+      final relative = json['path'] as String? ?? _fileName;
+      _targetPath = _uniquePath(_resolveTargetPath(relative));
+      // The folder this file came from has to exist before it can be written
+      // into. Created as the files arrive rather than up front: a session may
+      // announce thousands, and one that fails leaves no empty shells behind.
+      Directory(p.dirname(_targetPath!)).createSync(recursive: true);
       _fileSink = File(_targetPath!).openWrite();
 
       AppLogger.info(
-          'UniversalBleReceiver: metadata — $_fileName, '
-          '$_totalBytes bytes, compressed=$_isCompressed',
+          'UniversalBleReceiver: metadata — $relative, '
+          '$_fileTotalBytes bytes, compressed=$_isCompressed, '
+          'item ${_itemIndex + 1} of $_itemCount',
           tag: 'BLE_RECEIVER');
       _emit('transferring');
     } catch (e) {
@@ -210,11 +287,18 @@ class UniversalBleReceiverTransport {
           : value;
 
       _fileSink!.add(bytes);
+      _fileReceivedBytes += bytes.length;
       _receivedBytes += bytes.length;
       _emit('transferring');
 
-      if (_totalBytes > 0 && _receivedBytes >= _totalBytes) {
-        _finalize();
+      if (_fileTotalBytes > 0 && _fileReceivedBytes >= _fileTotalBytes) {
+        // The last file the sender announced, with all of its bytes in: that
+        // is the session, and nothing more is coming.
+        if (_itemIndex >= _itemCount - 1) {
+          unawaited(_finalize());
+        } else {
+          unawaited(_sealCurrentFile());
+        }
       }
     } catch (e) {
       AppLogger.warning('UniversalBleReceiver: data chunk error: $e',
@@ -225,19 +309,57 @@ class UniversalBleReceiverTransport {
     }
   }
 
-  Future<void> _finalize() async {
-    await _fileSink?.flush();
-    await _fileSink?.close();
+  /// Flushes and closes whatever file is open, recording it exactly once.
+  ///
+  /// The sink and its path are taken before the first await on purpose. The
+  /// caller opens the next file immediately after — that is what a metadata
+  /// frame means — so reading `_targetPath` after the flush would file every
+  /// finished item under the name of the one that came next.
+  Future<void> _sealCurrentFile() async {
+    final sink = _fileSink;
+    final path = _targetPath;
     _fileSink = null;
+    if (sink == null) return;
+    if (path != null && !_writtenPaths.contains(path)) _writtenPaths.add(path);
+    await sink.flush();
+    await sink.close();
+  }
+
+  Future<void> _finalize() async {
+    await _sealCurrentFile();
     _emit('completed');
     AppLogger.info(
-        'UniversalBleReceiver: file saved to $_targetPath', tag: 'BLE_RECEIVER');
+        'UniversalBleReceiver: ${_writtenPaths.length} file(s) saved under '
+        '$_baseDir',
+        tag: 'BLE_RECEIVER');
     if (!_completion.isCompleted) {
-      _completion.complete(_targetPath ?? '');
+      _completion.complete(
+          _writtenPaths.isNotEmpty ? _writtenPaths.first : (_targetPath ?? ''));
     }
     if (_targetDeviceId != null) {
       await _cleanup(_targetDeviceId!);
     }
+  }
+
+  /// Where a file announced as [relative] is written, under [_baseDir].
+  ///
+  /// Every segment came off the wire, so every segment is cleaned the way a
+  /// flat filename is, and `.`/`..` are dropped rather than resolved — a
+  /// sender cannot climb out of the destination by naming its way out. The
+  /// containment check afterwards is deliberate belt and braces.
+  String _resolveTargetPath(String relative) {
+    final segments = relative
+        .replaceAll('\\', '/')
+        .split('/')
+        .where((s) => s.isNotEmpty && s != '.' && s != '..')
+        .map(_sanitize)
+        .toList();
+    final resolved = p.normalize(
+        p.join(_baseDir, segments.isEmpty ? 'received_file' : p.joinAll(segments)));
+    if (!p.isWithin(_baseDir, resolved)) {
+      throw Exception('Path traversal detected in "$relative"');
+    }
+    return resolved;
   }
 
   String _sanitize(String name) {

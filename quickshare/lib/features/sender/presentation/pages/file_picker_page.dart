@@ -7,11 +7,13 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:mime/mime.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/core/media/media_library.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/pages/media_picker_page.dart';
+import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
 import 'package:quickshare/features/sender/presentation/widgets/wifi_speed_prompt.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
@@ -36,15 +38,20 @@ class _FilePickerPageState extends State<FilePickerPage> {
     if (paths != null && paths.isNotEmpty) {
       _selectionInFlight = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) context.read<SenderBloc>().add(StartQhtpSend(paths, mode: _selectedMode));
+        if (mounted) {
+          context
+              .read<SenderBloc>()
+              .add(StartQhtpSend(paths, mode: _selectedMode));
+        }
       });
     }
   }
 
   /// Files, any number of them.
   ///
-  /// Multi-select rather than one at a time: the wire protocol carries a
-  /// manifest now, so several files no longer have to be zipped into one.
+  /// Multi-select rather than one at a time: every wire protocol here
+  /// carries a manifest, so nothing has to be bundled into a single object
+  /// first — which is equally why [_pickFolder] can hand over a whole tree.
   Future<void> _pickFile() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
@@ -58,9 +65,35 @@ class _FilePickerPageState extends State<FilePickerPage> {
       if (mounted) setState(() => _selectionInFlight = false);
       return;
     }
-    if (mounted) {
-      context.read<SenderBloc>().add(StartQhtpSend(paths, mode: _selectedMode));
+
+    // "Files" means files that are not photos or videos. No system picker can
+    // express that filter, so media is rejected after the fact instead.
+    final kept = <String>[];
+    var mediaSkipped = false;
+    for (final path in paths) {
+      final mime = lookupMimeType(path) ?? '';
+      if (mime.startsWith('image/') || mime.startsWith('video/')) {
+        mediaSkipped = true;
+      } else {
+        kept.add(path);
+      }
     }
+    if (!mounted) return;
+    if (mediaSkipped) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(AppLocalizations.of(context).pickerFilesMediaRejected),
+          backgroundColor: AppColors.error,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+    if (kept.isEmpty) {
+      setState(() => _selectionInFlight = false);
+      return;
+    }
+
+    context.read<SenderBloc>().add(StartQhtpSend(kept, mode: _selectedMode));
   }
 
   /// Photos and videos, straight from the library and untouched.
@@ -88,17 +121,23 @@ class _FilePickerPageState extends State<FilePickerPage> {
     }
   }
 
-  /// Picking Bluetooth is the moment to ask about Wi-Fi, not the moment the
-  /// files are already chosen.
+  /// Picking a mode is gated on what the mode needs: Wi-Fi on a live local
+  /// network, Bluetooth on a powered radio, Internet on any connection at
+  /// all. Without that, selecting the mode already creates a session that
+  /// cannot work.
   ///
-  /// The direct link is what makes this mode fast, and it needs the Wi-Fi
-  /// radio awake — not a network, just the radio. Asking here means the answer
-  /// is settled before anything is selected, and a "no" simply leaves the
-  /// transfer where it has always been: on Bluetooth, slowly.
+  /// Picking Bluetooth is additionally the moment to ask about Wi-Fi, not
+  /// the moment the files are already chosen: the direct link is what makes
+  /// this mode fast, and it needs the Wi-Fi radio awake — not a network, just
+  /// the radio.
   Future<void> _selectMode(TransportType type) async {
+    if (_selectionInFlight) return;
+    final allowed = await TransportPreconditions.ensure(context, type);
+    if (!allowed || !mounted) return;
     setState(() => _selectedMode = type);
-    if (type != TransportType.bluetooth) return;
-    await const WifiSpeedPrompt().ask(context);
+    if (type == TransportType.bluetooth) {
+      await const WifiSpeedPrompt().ask(context);
+    }
   }
 
   Future<void> _pickFolder() async {
@@ -106,7 +145,9 @@ class _FilePickerPageState extends State<FilePickerPage> {
     setState(() => _selectionInFlight = true);
     final folderPath = await FilePicker.platform.getDirectoryPath();
     if (folderPath != null && mounted) {
-      context.read<SenderBloc>().add(StartQhtpSend([folderPath], mode: _selectedMode));
+      context
+          .read<SenderBloc>()
+          .add(StartQhtpSend([folderPath], mode: _selectedMode));
     } else if (mounted) {
       setState(() => _selectionInFlight = false);
     }
@@ -150,11 +191,10 @@ class _FilePickerPageState extends State<FilePickerPage> {
             });
           } else if (state is NoUsablePathFound) {
             _selectionInFlight = false;
-            context.go('/send/fallback',
-                extra: const <String, int?>{
-                  'sessionBytes': null,
-                  'limitBytes': null,
-                });
+            context.go('/send/fallback', extra: const <String, int?>{
+              'sessionBytes': null,
+              'limitBytes': null,
+            });
           } else if (state is SenderError) {
             _selectionInFlight = false;
             ScaffoldMessenger.of(context).showSnackBar(
@@ -208,37 +248,46 @@ class _FilePickerPageState extends State<FilePickerPage> {
                       RadioGroup<TransportType>(
                         groupValue: _selectedMode,
                         onChanged: (val) {
-                          if (val != null) setState(() => _selectedMode = val);
+                          if (val != null) _selectMode(val);
                         },
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                      _buildModeTile(
-                        type: TransportType.wifi,
-                        title: AppLocalizations.of(context).pickerMethodWifiTitle,
-                        subtitle: AppLocalizations.of(context).pickerMethodWifiSubtitle,
-                        icon: Icons.wifi_rounded,
-                      ),
-                      const SizedBox(height: 10),
-                      if (defaultTargetPlatform == TargetPlatform.macOS ||
-                          defaultTargetPlatform == TargetPlatform.iOS ||
-                          defaultTargetPlatform == TargetPlatform.android ||
-                          defaultTargetPlatform == TargetPlatform.windows ||
-                          defaultTargetPlatform == TargetPlatform.linux) ...[
-                        _buildModeTile(
-                          type: TransportType.bluetooth,
-                          title: AppLocalizations.of(context).pickerMethodBluetoothTitle,
-                          subtitle: AppLocalizations.of(context).pickerMethodBluetoothSubtitle,
-                          icon: Icons.bluetooth_rounded,
-                        ),
-                        const SizedBox(height: 10),
-                      ],
-                      _buildModeTile(
-                        type: TransportType.internet,
-                        title: AppLocalizations.of(context).pickerMethodInternetTitle,
-                        subtitle: AppLocalizations.of(context).pickerMethodInternetSubtitle,
-                        icon: Icons.language_rounded,
-                      ),
+                            _buildModeTile(
+                              type: TransportType.wifi,
+                              title: AppLocalizations.of(context)
+                                  .pickerMethodWifiTitle,
+                              subtitle: AppLocalizations.of(context)
+                                  .pickerMethodWifiSubtitle,
+                              icon: Icons.wifi_rounded,
+                            ),
+                            const SizedBox(height: 10),
+                            if (defaultTargetPlatform == TargetPlatform.macOS ||
+                                defaultTargetPlatform == TargetPlatform.iOS ||
+                                defaultTargetPlatform ==
+                                    TargetPlatform.android ||
+                                defaultTargetPlatform ==
+                                    TargetPlatform.windows ||
+                                defaultTargetPlatform ==
+                                    TargetPlatform.linux) ...[
+                              _buildModeTile(
+                                type: TransportType.bluetooth,
+                                title: AppLocalizations.of(context)
+                                    .pickerMethodBluetoothTitle,
+                                subtitle: AppLocalizations.of(context)
+                                    .pickerMethodBluetoothSubtitle,
+                                icon: Icons.bluetooth_rounded,
+                              ),
+                              const SizedBox(height: 10),
+                            ],
+                            _buildModeTile(
+                              type: TransportType.internet,
+                              title: AppLocalizations.of(context)
+                                  .pickerMethodInternetTitle,
+                              subtitle: AppLocalizations.of(context)
+                                  .pickerMethodInternetSubtitle,
+                              icon: Icons.language_rounded,
+                            ),
                           ],
                         ),
                       ),
@@ -258,7 +307,8 @@ class _FilePickerPageState extends State<FilePickerPage> {
 
                       if (defaultTargetPlatform == TargetPlatform.iOS) ...[
                         _buildPickerCard(
-                          title: AppLocalizations.of(context).pickerPhotosVideos,
+                          title:
+                              AppLocalizations.of(context).pickerPhotosVideos,
                           icon: Icons.photo_library_rounded,
                           gradient: const LinearGradient(
                             colors: [AppColors.primary, AppColors.primaryDeep],
@@ -273,7 +323,8 @@ class _FilePickerPageState extends State<FilePickerPage> {
                         children: [
                           Expanded(
                             child: _buildPickerCard(
-                              title: AppLocalizations.of(context).pickerSelectFile,
+                              title:
+                                  AppLocalizations.of(context).pickerSelectFile,
                               icon: Icons.insert_drive_file_rounded,
                               gradient: const LinearGradient(
                                 colors: [
@@ -287,7 +338,8 @@ class _FilePickerPageState extends State<FilePickerPage> {
                           const SizedBox(width: 16),
                           Expanded(
                             child: _buildPickerCard(
-                              title: AppLocalizations.of(context).pickerSelectFolder,
+                              title: AppLocalizations.of(context)
+                                  .pickerSelectFolder,
                               icon: Icons.folder_open_rounded,
                               gradient: const LinearGradient(
                                 colors: [

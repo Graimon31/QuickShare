@@ -110,8 +110,8 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
                 _Step(
                   number: 2,
                   title: l10n.localNetStep2Title,
-                  subtitle: l10n
-                      .localNetStep2Subtitle(state.credentials.hostAddress ?? ''),
+                  subtitle: l10n.localNetStep2Subtitle(
+                      state.credentials.hostAddress ?? ''),
                   active: _joined,
                   child: _joined
                       ? _QrCard(data: state.transferQr)

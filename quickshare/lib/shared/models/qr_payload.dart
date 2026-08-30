@@ -111,9 +111,8 @@ class QRPayload extends Equatable {
           .replaceAll('-', '+')
           .replaceAll('_', '/');
       // Prefer base64Url.normalize on the original url-safe form.
-      final urlSafe = encoded
-          .trim()
-          .replaceAll(RegExp(r'[\u200B-\u200D\uFEFF\r\n\s]'), '');
+      final urlSafe =
+          encoded.trim().replaceAll(RegExp(r'[\u200B-\u200D\uFEFF\r\n\s]'), '');
       late final List<int> bytes;
       try {
         bytes = base64Url.decode(base64Url.normalize(urlSafe));
@@ -145,7 +144,9 @@ class QRPayload extends Equatable {
   bool get isValid =>
       version > 0 &&
       ip.isNotEmpty &&
-      (mode == 'webrtc-sdp' || (sdpOffer != null && sdpOffer!.isNotEmpty) || port > 0) &&
+      (mode == 'webrtc-sdp' ||
+          (sdpOffer != null && sdpOffer!.isNotEmpty) ||
+          port > 0) &&
       token.isNotEmpty &&
       (isQhtp
           ? (sessionId != null && sessionId!.isNotEmpty)

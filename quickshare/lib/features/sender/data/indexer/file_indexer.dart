@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:mime/mime.dart';
@@ -51,10 +52,15 @@ class FileIndexer {
   };
 
   /// Index files and directories recursively into a QHTP Indexer Result (manifest + abs path map)
+  ///
+  /// [includeChecksums]: hashing reads every byte of the selection, so the
+  /// caller that needs a QR on screen in under two seconds indexes without
+  /// hashes and fills them in later via [computeChecksums].
   Future<QhtpIndexerResult> buildResult({
     required String sessionId,
     required List<String> paths,
     bool skipHidden = true,
+    bool includeChecksums = true,
   }) async {
     final List<_RawIndexedItem> rawItems = [];
     int totalBytes = 0;
@@ -65,8 +71,12 @@ class FileIndexer {
         final file = File(rawPath);
         if (!await file.exists()) continue;
 
+        // No skip check here on purpose. The hidden/junk filter exists to
+        // keep `.DS_Store` and friends out of a folder somebody dragged in
+        // wholesale; a file named on its own was named deliberately, and
+        // dropping it silently left the caller with an empty selection and no
+        // idea why.
         final name = p.basename(rawPath);
-        if (_shouldSkipFile(name, skipHidden)) continue;
 
         final size = await file.length();
         _checkFileLimits(size, totalBytes, rawItems.length + 1, name);
@@ -113,7 +123,7 @@ class FileIndexer {
 
     // Hashing reads every byte a second time, so it is worth it for ordinary
     // transfers and ruinous for the 500 GB ones this protocol also allows.
-    final withChecksums =
+    final withChecksums = includeChecksums &&
         totalBytes <= AppConstants.qhtpChecksumMaxSessionBytes;
 
     for (int i = 0; i < rawItems.length; i++) {
@@ -158,6 +168,29 @@ class FileIndexer {
     }
   }
 
+  /// SHA-256 for every item, off the UI isolate.
+  ///
+  /// Runs while the QR is already on screen: hashing a 500 MB session on the
+  /// UI isolate froze the "indexing" spinner for ten-plus seconds, and the
+  /// manifest endpoint holds its answer until these are in, so the receiver
+  /// never sees a hash-less manifest for a session under the checksum budget.
+  static Future<Map<String, String>> computeChecksums(
+    Map<String, String> itemIdToAbsPath,
+  ) {
+    return Isolate.run(() async {
+      final result = <String, String>{};
+      for (final entry in itemIdToAbsPath.entries) {
+        try {
+          final digest = await sha256.bind(File(entry.value).openRead()).first;
+          result[entry.key] = 'sha256:$digest';
+        } catch (_) {
+          // Vanished files stay hash-less; the receiver gets a 410 later.
+        }
+      }
+      return result;
+    });
+  }
+
   Future<QhtpManifest> buildManifest({
     required String sessionId,
     required List<String> paths,
@@ -182,7 +215,8 @@ class FileIndexer {
     required int Function() currentTotalBytes,
   }) async {
     if (depth > AppConstants.qhtpMaxPathDepth) {
-      throw FileIndexerException('Directory depth exceeds limit of ${AppConstants.qhtpMaxPathDepth} levels');
+      throw FileIndexerException(
+          'Directory depth exceeds limit of ${AppConstants.qhtpMaxPathDepth} levels');
     }
 
     await for (final entity in dir.list(recursive: false, followLinks: false)) {
@@ -239,25 +273,31 @@ class FileIndexer {
 
   void _validatePathString(String relPath) {
     if (relPath.length > AppConstants.qhtpMaxRelPathChars) {
-      throw FileIndexerException('Relative path length exceeds limit (${AppConstants.qhtpMaxRelPathChars} chars): $relPath');
+      throw FileIndexerException(
+          'Relative path length exceeds limit (${AppConstants.qhtpMaxRelPathChars} chars): $relPath');
     }
     final segments = relPath.split('/');
     for (final seg in segments) {
       if (seg == '.' || seg == '..' || seg.isEmpty) {
-        throw FileIndexerException('Invalid path segment "$seg" in path $relPath');
+        throw FileIndexerException(
+            'Invalid path segment "$seg" in path $relPath');
       }
     }
   }
 
-  void _checkFileLimits(int fileSize, int currentTotalBytes, int currentCount, String name) {
+  void _checkFileLimits(
+      int fileSize, int currentTotalBytes, int currentCount, String name) {
     if (fileSize > AppConstants.qhtpMaxFileBytes) {
-      throw FileIndexerException('File "$name" (${(fileSize / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB) exceeds max limit of 100 GB');
+      throw FileIndexerException(
+          'File "$name" (${(fileSize / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB) exceeds max limit of 100 GB');
     }
     if (currentTotalBytes + fileSize > AppConstants.qhtpMaxSessionBytes) {
-      throw FileIndexerException('Total session size exceeds max limit of 500 GB');
+      throw FileIndexerException(
+          'Total session size exceeds max limit of 500 GB');
     }
     if (currentCount > AppConstants.qhtpMaxFileCount) {
-      throw FileIndexerException('Total file count exceeds max limit of ${AppConstants.qhtpMaxFileCount} files');
+      throw FileIndexerException(
+          'Total file count exceeds max limit of ${AppConstants.qhtpMaxFileCount} files');
     }
   }
 }

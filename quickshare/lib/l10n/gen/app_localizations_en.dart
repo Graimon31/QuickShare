@@ -263,18 +263,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsDetailsCopied => 'Details copied';
 
   @override
-  String get settingsLogs => 'Logs';
-
-  @override
-  String get settingsLogsSubtitle => 'Technical journal — copy it when reporting a transfer problem';
-
-  @override
-  String get logsCopyAll => 'Copy entire log';
-
-  @override
-  String get logsEmpty => 'No entries yet';
-
-  @override
   String get settingsTransferFootnote =>
       'The route explains the speed. A direct link is the fastest, a relayed internet transfer the slowest — copy the details if you are asking someone for help.';
 
@@ -377,7 +365,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get qrDisplayPhoneHint =>
-      'On the phone: open DirectDrop → Receive and scan this QR.\nThe Wi‑Fi line below is only for diagnostics — it is NOT the QR content.';
+      'On the phone: open DirectDrop → Receive and scan this QR.';
 
   @override
   String qrDisplayRenderError(String error) {
@@ -391,12 +379,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get qrDisplayLinkCopied => 'Link copied to clipboard';
 
   @override
-  String get qrDisplayWifiAddressLabel => 'Sender Wi‑Fi address';
-
-  @override
-  String get qrDisplayWifiAddressCopied => 'Wi‑Fi address copied';
-
-  @override
   String qrDisplayTotalSize(String size) {
     return 'Total size: $size';
   }
@@ -408,6 +390,49 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get qrDisplayCancelTransfer => 'Cancel Transfer';
+
+  @override
+  String get precondWifiTitle => 'Turn on Wi-Fi';
+
+  @override
+  String get precondWifiBody =>
+      'Local network transfer needs the Wi-Fi module to be on.';
+
+  @override
+  String get precondBluetoothTitle => 'Turn on Bluetooth';
+
+  @override
+  String get precondBluetoothBody =>
+      'Bluetooth transfer needs the Bluetooth module to be on.';
+
+  @override
+  String get precondOpenSettings => 'Open Settings';
+
+  @override
+  String get precondWifiBlocked =>
+      'Transfer is unavailable until Wi-Fi is turned on.';
+
+  @override
+  String get precondBluetoothBlocked =>
+      'Transfer is unavailable until Bluetooth is turned on.';
+
+  @override
+  String get precondInternetBlocked =>
+      'No active network connection. Internet transfer is unavailable.';
+
+  @override
+  String get pickerFilesMediaRejected =>
+      'Photos and videos were not added — send them via “Photos & Videos”.';
+
+  @override
+  String get sessionExpiredTitle => 'Session expired';
+
+  @override
+  String get sessionExpiredBody =>
+      'Nobody connected in time. Refresh to create a new session.';
+
+  @override
+  String get sessionRefresh => 'Refresh';
 
   @override
   String get senderProgressCancelTitle => 'Cancel Transfer?';
@@ -688,4 +713,17 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get previewStartNow => 'Start Now';
+
+  @override
+  String get settingsLogs => 'Logs';
+
+  @override
+  String get settingsLogsSubtitle =>
+      'Technical journal — copy it when reporting a transfer problem';
+
+  @override
+  String get logsCopyAll => 'Copy entire log';
+
+  @override
+  String get logsEmpty => 'No entries yet';
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:archive/archive.dart';
@@ -81,7 +82,8 @@ class WebRtcTransferTransport implements TransferTransport {
   /// is the real unit of work. Single-file callers still pass one item.
   List<FileMetadata>? _sessionFiles;
 
-  final _degradationController = StreamController<RelayLimitExceeded>.broadcast();
+  final _degradationController =
+      StreamController<RelayLimitExceeded>.broadcast();
 
   /// Fires when the connection came up but the session is too large to push
   /// through the relay it landed on. Nothing has been sent at that point.
@@ -174,8 +176,8 @@ class WebRtcTransferTransport implements TransferTransport {
 
       // Reliable ordered channel (do not set maxRetransmits).
       final dataChannelDict = RTCDataChannelInit()..ordered = true;
-      _dataChannel =
-          await _peerConnection!.createDataChannel('fileTransfer', dataChannelDict);
+      _dataChannel = await _peerConnection!
+          .createDataChannel('fileTransfer', dataChannelDict);
 
       _trackBufferedAmount(_dataChannel!);
 
@@ -347,14 +349,20 @@ class WebRtcTransferTransport implements TransferTransport {
   }
 
   Future<void> handleDirectAnswer(String sdp, String type) async {
-    AppLogger.info('handleDirectAnswer received SDP answer: type=$type, length=${sdp.length}', tag: 'WEBRTC_SENDER');
+    AppLogger.info(
+        'handleDirectAnswer received SDP answer: type=$type, length=${sdp.length}',
+        tag: 'WEBRTC_SENDER');
     if (_peerConnection == null) {
-      AppLogger.warning('handleDirectAnswer error: _peerConnection is null', tag: 'WEBRTC_SENDER');
+      AppLogger.warning('handleDirectAnswer error: _peerConnection is null',
+          tag: 'WEBRTC_SENDER');
       return;
     }
-    await _peerConnection!.setRemoteDescription(RTCSessionDescription(sdp, type));
+    await _peerConnection!
+        .setRemoteDescription(RTCSessionDescription(sdp, type));
     _remoteDescriptionSet = true;
-    AppLogger.info('Remote description set successfully on Sender. Applying ${_pendingRemoteCandidates.length} pending candidates', tag: 'WEBRTC_SENDER');
+    AppLogger.info(
+        'Remote description set successfully on Sender. Applying ${_pendingRemoteCandidates.length} pending candidates',
+        tag: 'WEBRTC_SENDER');
     for (final c in _pendingRemoteCandidates) {
       await _peerConnection?.addCandidate(c);
     }
@@ -390,7 +398,9 @@ class WebRtcTransferTransport implements TransferTransport {
         tag: 'WEBRTC_SENDER');
 
     final fullLocalDesc = await _peerConnection!.getLocalDescription();
-    AppLogger.info('Sender: Generated local SDP offer with gathered candidates (length=${fullLocalDesc?.sdp?.length})', tag: 'WEBRTC_SENDER');
+    AppLogger.info(
+        'Sender: Generated local SDP offer with gathered candidates (length=${fullLocalDesc?.sdp?.length})',
+        tag: 'WEBRTC_SENDER');
     return fullLocalDesc?.sdp ?? offer.sdp;
   }
 
@@ -419,14 +429,33 @@ class WebRtcTransferTransport implements TransferTransport {
           size: await File(f.path).length(),
           mimeType: f.mimeType,
           compressed: shouldCompressForTransfer(f.mimeType, f.name),
+          // What the receiver rebuilds the folder from. Equal to the name for
+          // anything the sender picked directly, so a flat selection puts
+          // nothing extra on the wire.
+          path: f.relPath,
         ));
       }
 
       final sessionBytes = items.fold<int>(0, (sum, i) => sum + i.size);
-      _dataChannel!
-          .send(RTCDataChannelMessage(TransferProtocol.buildManifest(items)));
+      final folders = items.where((i) => i.hasFolderPath).length;
+
+      // A folder of thousands of files does not fit in one frame, and the
+      // send is refused rather than slowed when it does not — so the manifest
+      // arrives in as many frames as it needs, under the same backpressure as
+      // the payload. Sessions that fit still go out in the single frame every
+      // build so far has sent.
+      for (final frame in TransferProtocol.buildManifestFrames(items)) {
+        _dataChannel!.send(RTCDataChannelMessage(frame));
+        _queuedBytes += utf8.encode(frame).length;
+        await SendBuffer.waitForRoom(
+          bufferedAmount: () => _queuedBytes,
+          isOpen: _isChannelOpen,
+          limit: AppConstants.webRtcMaxBufferedAmount,
+        );
+      }
       AppLogger.info(
-          'Sending ${items.length} file(s), $sessionBytes bytes total',
+          'Sending ${items.length} file(s), $sessionBytes bytes total'
+          '${folders > 0 ? ', $folders inside folders' : ''}',
           tag: 'WEBRTC_SENDER');
 
       const chunkSize = AppConstants.webRtcChunkSizeBytes;
@@ -482,7 +511,28 @@ class WebRtcTransferTransport implements TransferTransport {
 
       _dataChannel!
           .send(RTCDataChannelMessage(TransferProtocol.buildComplete()));
-      await Future.delayed(const Duration(milliseconds: 300));
+      // The complete frame itself has to leave the device, not just the
+      // queue: send() only enqueues, and the bloc closes the channel the
+      // moment the completed status lands, discarding whatever is still
+      // buffered. The flat 300 ms that stood here lost that race over a
+      // relay — the frame died in the closing channel and the receiver sat
+      // on 98-100% forever.
+      _queuedBytes += utf8.encode(TransferProtocol.buildComplete()).length;
+      try {
+        await SendBuffer.waitUntilEmpty(
+          bufferedAmount: () => _queuedBytes,
+          isOpen: _isChannelOpen,
+          onDrain: _awaitDrain,
+          stallTimeout: const Duration(seconds: 5),
+        );
+      } on TransferStalled {
+        // Not fatal here: the receiver treats a full byte count on disk as
+        // completion on its own, and a channel that closed underneath this
+        // frame means the far side already has everything it waited for.
+        AppLogger.error(
+            'Complete-frame drain went unconfirmed; finishing anyway',
+            tag: 'WEBRTC_SENDER');
+      }
       _statusController.add(TransferStatus.completed);
     } on TransferStalled catch (e) {
       // Reported separately from a generic failure because the cause is
@@ -589,7 +639,8 @@ class WebRtcTransferTransport implements TransferTransport {
     // and failing to send a courtesy message must not block the teardown.
     try {
       if (_isChannelOpen()) {
-        _dataChannel?.send(RTCDataChannelMessage(TransferProtocol.buildCancelled()));
+        _dataChannel
+            ?.send(RTCDataChannelMessage(TransferProtocol.buildCancelled()));
         // The frame is only queued by send(); give it a moment on the wire
         // before the channel closes underneath it.
         await Future<void>.delayed(const Duration(milliseconds: 150));

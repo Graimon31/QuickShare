@@ -1,9 +1,7 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -15,6 +13,8 @@ import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
+import 'package:quickshare/shared/widgets/copy_value_row.dart';
+import 'package:quickshare/shared/widgets/session_expired_panel.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class QRDisplayPage extends StatefulWidget {
@@ -25,25 +25,43 @@ class QRDisplayPage extends StatefulWidget {
 }
 
 class _QRDisplayPageState extends State<QRDisplayPage> {
-  late Timer _timer;
+  Timer? _timer;
   int _secondsLeft = AppConstants.sessionTimeoutSeconds;
+  bool _expired = false;
 
   @override
   void initState() {
     super.initState();
+    _startTimer();
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_secondsLeft > 0) {
         setState(() => _secondsLeft--);
       } else {
-        _timer.cancel();
+        _timer?.cancel();
+        setState(() => _expired = true);
+        // The QR is dead from this moment on; tear the session down so
+        // nobody connects to something the countdown already killed.
         context.read<SenderBloc>().add(CancelSending());
       }
     });
   }
 
+  void _refreshSession() {
+    setState(() {
+      _expired = false;
+      _secondsLeft = AppConstants.sessionTimeoutSeconds;
+    });
+    _startTimer();
+    context.read<SenderBloc>().add(RestartSession());
+  }
+
   @override
   void dispose() {
-    _timer.cancel();
+    _timer?.cancel();
     super.dispose();
   }
 
@@ -51,80 +69,6 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     final m = seconds ~/ 60;
     final s = seconds % 60;
     return '$m:${s.toString().padLeft(2, '0')}';
-  }
-
-  void _copyToClipboard(String text, String message) {
-    Clipboard.setData(ClipboardData(text: text));
-    HapticFeedback.mediumImpact();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: AppColors.secondaryDark,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  Widget _copyRow({
-    required IconData icon,
-    required String label,
-    required String value,
-    required String copiedMessage,
-    required String copyTooltip,
-  }) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            color: const Color.fromRGBO(255, 255, 255, 0.08),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: const Color.fromRGBO(255, 255, 255, 0.25),
-              width: 1,
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(icon, color: AppColors.primary, size: 22),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      label,
-                      style: GoogleFonts.inter(
-                        fontSize: 11,
-                        color: Colors.white.withValues(alpha: 0.55),
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    SelectableText(
-                      value,
-                      maxLines: 3,
-                      style: GoogleFonts.firaCode(
-                        fontSize: 13,
-                        color: Colors.white.withValues(alpha: 0.9),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              IconButton(
-                icon: const Icon(Icons.copy_rounded,
-                    color: Colors.white, size: 20),
-                onPressed: () => _copyToClipboard(value, copiedMessage),
-                tooltip: copyTooltip,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   @override
@@ -162,10 +106,15 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
             if (state is Transferring) {
               context.go('/send/progress');
             } else if (state is SenderInitial) {
-              context.go('/send');
+              // Expiry lands here too (the session is cancelled underneath),
+              // but then the expired panel owns the screen.
+              if (!_expired) context.go('/send');
             }
           },
           builder: (context, state) {
+            if (_expired) {
+              return SessionExpiredPanel(onRefresh: _refreshSession);
+            }
             if (state is! QRReady) {
               return Center(
                 child: TransferPhaseLoader(
@@ -177,19 +126,16 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
             }
 
             final isInternet = state.mode == TransportType.internet;
-            final showShareLink = defaultTargetPlatform == TargetPlatform.macOS ||
-                defaultTargetPlatform == TargetPlatform.windows ||
-                defaultTargetPlatform == TargetPlatform.linux;
-            final shareLink = showShareLink
-                ? DeepLinkService.buildPayloadLink(
-                    state.qrData,
-                    name: state.session.fileMetadata.name,
-                    bytes: state.totalBytes > 0
-                        ? state.totalBytes
-                        : state.session.fileMetadata.size,
-                    itemCount: state.itemCount,
-                  )
-                : null;
+            // The Room Link goes everywhere: it is the one way to hand a
+            // session over without a camera, so it is not platform-gated.
+            final shareLink = DeepLinkService.buildPayloadLink(
+              state.qrData,
+              name: state.session.fileMetadata.name,
+              bytes: state.totalBytes > 0
+                  ? state.totalBytes
+                  : state.session.fileMetadata.size,
+              itemCount: state.itemCount,
+            );
 
             return ScrollConfiguration(
               behavior:
@@ -207,11 +153,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                       children: [
                         // Subtitle instruction
                         Text(
-                          showShareLink
-                              ? l10n.qrDisplayScanOrShare
-                              : (isInternet
-                                  ? l10n.qrDisplayShareLinkToReceive
-                                  : l10n.qrDisplayScanToReceive),
+                          l10n.qrDisplayScanOrShare,
                           textAlign: TextAlign.center,
                           style: GoogleFonts.inter(
                             fontSize: 18,
@@ -240,13 +182,12 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(24),
                             child: BackdropFilter(
-                              filter:
-                                  ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+                              filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
                               child: Container(
                                 padding: const EdgeInsets.all(20.0),
                                 decoration: BoxDecoration(
-                                  color: const Color.fromRGBO(
-                                      255, 255, 255, 0.10),
+                                  color:
+                                      const Color.fromRGBO(255, 255, 255, 0.10),
                                   borderRadius: BorderRadius.circular(24),
                                   border: Border.all(
                                     color: const Color.fromRGBO(
@@ -255,7 +196,8 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                   ),
                                   boxShadow: [
                                     BoxShadow(
-                                      color: Colors.black.withValues(alpha: 0.35),
+                                      color:
+                                          Colors.black.withValues(alpha: 0.35),
                                       blurRadius: 28,
                                       offset: const Offset(0, 8),
                                     ),
@@ -280,7 +222,9 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                         child: Center(
                                           child: Text(
                                             l10n.qrDisplayRenderError('$err'),
-                                            style: const TextStyle(color: Colors.red, fontSize: 12),
+                                            style: const TextStyle(
+                                                color: Colors.red,
+                                                fontSize: 12),
                                             textAlign: TextAlign.center,
                                           ),
                                         ),
@@ -293,28 +237,14 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                           ),
                         ).animate().scale(delay: 150.ms, duration: 350.ms),
 
-                        if (shareLink != null) ...[
-                          const SizedBox(height: 20),
-                          _copyRow(
-                            icon: Icons.link,
-                            label: l10n.qrDisplayShareLinkLabel,
-                            value: shareLink,
-                            copiedMessage: l10n.qrDisplayLinkCopied,
-                            copyTooltip: l10n.commonCopy,
-                          ).animate().fadeIn(delay: 250.ms),
-                        ],
-
-                        if (!isInternet) ...[
-                          const SizedBox(height: 12),
-                          _copyRow(
-                            icon: Icons.wifi_tethering_rounded,
-                            label: l10n.qrDisplayWifiAddressLabel,
-                            value:
-                                '${state.session.localIp}:${state.session.serverPort}',
-                            copiedMessage: l10n.qrDisplayWifiAddressCopied,
-                            copyTooltip: l10n.commonCopy,
-                          ).animate().fadeIn(delay: 280.ms),
-                        ],
+                        const SizedBox(height: 20),
+                        CopyValueRow(
+                          icon: Icons.link,
+                          label: l10n.qrDisplayShareLinkLabel,
+                          value: shareLink,
+                          copiedMessage: l10n.qrDisplayLinkCopied,
+                          copyTooltip: l10n.commonCopy,
+                        ).animate().fadeIn(delay: 250.ms),
 
                         const SizedBox(height: 20),
 
@@ -329,9 +259,12 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                           child: Column(
                             children: [
                               Text(
-                                state.itemCount > 1
-                                    ? l10n.sharedItemsCount(state.itemCount)
-                                    : state.session.fileMetadata.name,
+                                // A folder by its own name; a pile of
+                                // loose files by how many there are.
+                                state.folderName ??
+                                    (state.itemCount > 1
+                                        ? l10n.sharedItemsCount(state.itemCount)
+                                        : state.session.fileMetadata.name),
                                 style: GoogleFonts.inter(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w600,
@@ -339,21 +272,27 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                 ),
                               ),
                               const SizedBox(height: 4),
-                              Text(
-                                l10n.qrDisplayTotalSize(_formatBytes(state.totalBytes > 0 ? state.totalBytes : state.session.fileMetadata.size)),
-                                style: GoogleFonts.inter(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.primary,
+                              if (state.totalBytes > 0 ||
+                                  state.session.fileMetadata.size > 0)
+                                Text(
+                                  l10n.qrDisplayTotalSize(_formatBytes(
+                                      state.totalBytes > 0
+                                          ? state.totalBytes
+                                          : state.session.fileMetadata.size)),
+                                  style: GoogleFonts.inter(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w700,
+                                    color: AppColors.primary,
+                                  ),
                                 ),
-                              ),
                             ],
                           ),
                         ),
                         const SizedBox(height: 12),
 
                         Text(
-                          l10n.qrDisplaySessionExpires(_formatTime(_secondsLeft)),
+                          l10n.qrDisplaySessionExpires(
+                              _formatTime(_secondsLeft)),
                           style: GoogleFonts.inter(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,

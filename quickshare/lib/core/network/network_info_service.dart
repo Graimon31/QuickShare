@@ -5,8 +5,23 @@ class NetworkInfoService {
   final NetworkInfo _networkInfo = NetworkInfo();
 
   static const List<String> _ignoredInterfaces = [
-    'utun', 'tun', 'tap', 'wg', 'tailscale', 'zerotier', 'docker', 'vboxnet',
-    'bridge', 'vmnet', 'ppp', 'clash', 'sing-box', 'v2ray', 'awdl', 'llw', 'ap'
+    'utun',
+    'tun',
+    'tap',
+    'wg',
+    'tailscale',
+    'zerotier',
+    'docker',
+    'vboxnet',
+    'bridge',
+    'vmnet',
+    'ppp',
+    'clash',
+    'sing-box',
+    'v2ray',
+    'awdl',
+    'llw',
+    'ap'
   ];
 
   Future<String?> getLocalIpAddress() async {
@@ -30,8 +45,16 @@ class NetworkInfoService {
         final bName = b.name.toLowerCase();
         if (aName == 'en0' || aName == 'wlan0') return -1;
         if (bName == 'en0' || bName == 'wlan0') return 1;
-        if (aName.startsWith('en') || aName.startsWith('wlan') || aName.startsWith('eth')) return -1;
-        if (bName.startsWith('en') || bName.startsWith('wlan') || bName.startsWith('eth')) return 1;
+        if (aName.startsWith('en') ||
+            aName.startsWith('wlan') ||
+            aName.startsWith('eth')) {
+          return -1;
+        }
+        if (bName.startsWith('en') ||
+            bName.startsWith('wlan') ||
+            bName.startsWith('eth')) {
+          return 1;
+        }
         return 0;
       });
 
@@ -78,7 +101,8 @@ class NetworkInfoService {
     return ip.isEmpty ||
         ip == '0.0.0.0' ||
         ip.startsWith('127.') ||
-        ip.startsWith('198.18.') || // Synthetic Proxy / VPN benchmark (RFC 2544)
+        ip.startsWith(
+            '198.18.') || // Synthetic Proxy / VPN benchmark (RFC 2544)
         ip.startsWith('169.254.'); // Link-local
   }
 
@@ -91,15 +115,55 @@ class NetworkInfoService {
     }
   }
 
+  /// Whether the "Wi-Fi / Local Network" transport has anything to run over.
+  ///
+  /// On mobile this must be a real Wi-Fi address: iOS hands the cellular
+  /// interface carrier-NAT IPv4s from 10.0.0.0/8, which the generic fallback
+  /// in [getLocalIpAddress] cannot tell apart from a LAN. On desktop an
+  /// Ethernet-only machine is a perfectly good LAN peer, so any usable local
+  /// address passes there.
+  Future<bool> hasWifiTransportNetwork() async {
+    if (Platform.isIOS || Platform.isAndroid) {
+      try {
+        final wifiIp = await _networkInfo.getWifiIP();
+        return wifiIp != null && _isValidPrivateIp(wifiIp);
+      } catch (_) {
+        return false;
+      }
+    }
+    return isConnectedToWifi();
+  }
+
+  /// Any active network connection at all, cellular included — the bar the
+  /// Internet transport has to clear.
+  Future<bool> hasAnyActiveConnection() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final interface in interfaces) {
+        final lowerName = interface.name.toLowerCase();
+        if (_ignoredInterfaces.any((ignored) => lowerName.contains(ignored))) {
+          continue;
+        }
+        for (final addr in interface.addresses) {
+          if (!_isIgnoredIp(addr.address)) return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
   Future<bool> isOnSameNetwork(String targetIp) async {
     final localIp = await getLocalIpAddress();
     if (localIp == null || targetIp.isEmpty) return false;
 
     final localParts = localIp.split('.');
     final targetParts = targetIp.split('.');
-    
+
     if (localParts.length != 4 || targetParts.length != 4) return false;
-    
+
     return localParts.take(3).join('.') == targetParts.take(3).join('.');
   }
 }

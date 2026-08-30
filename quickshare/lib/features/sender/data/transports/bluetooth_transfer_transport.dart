@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:universal_ble/universal_ble.dart';
 
+import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/core/utils/mime_compression.dart';
 import 'package:quickshare/core/utils/wakelock_guard.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
@@ -22,20 +23,30 @@ import 'linux_bluetooth_sender.dart';
 /// expose the same service, characteristics, START:<token> command, metadata
 /// and raw data stream. That means an iPhone or Mac can receive from either
 /// of those platforms without a second transfer protocol.
+///
+/// ## More than one file
+///
+/// A session is a list, not a file. The metadata characteristic is notified
+/// once per item — `{name, path, size, mime, compressed, index, count,
+/// sessionBytes}` — and the bytes of that item follow on the data
+/// characteristic before the next metadata arrives. Notifications on one
+/// characteristic are delivered in order over a single ATT connection, so the
+/// receiver needs no framing beyond "a new metadata means the previous file
+/// is finished".
+///
+/// `path` is what makes a folder possible here: the relative path each file
+/// keeps, root folder included. Before it, this channel could carry exactly
+/// one object of a known size, and a folder had to be zipped into one to fit
+/// — which is what the recipient then had to unpack.
 class BluetoothTransferTransport implements TransferTransport {
   static const _method = MethodChannel('quickshare/bluetooth');
   static const _events = EventChannel('quickshare/bluetooth/events');
 
-  static const _serviceUuid =
-      'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10';
-  static const _controlUuid =
-      'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
-  static const _metadataUuid =
-      'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
-  static const _dataUuid =
-      'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
-  static const _cccdUuid =
-      '00002902-0000-1000-8000-00805F9B34FB';
+  static const _serviceUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10';
+  static const _controlUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
+  static const _metadataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
+  static const _dataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
+  static const _cccdUuid = '00002902-0000-1000-8000-00805F9B34FB';
 
   final _progressController = StreamController<double>.broadcast();
   final _statusController = StreamController<TransferStatus>.broadcast();
@@ -49,10 +60,28 @@ class BluetoothTransferTransport implements TransferTransport {
   bool _universalDataSubscribed = false;
   bool _universalStartReceived = false;
   bool _universalTransferStarted = false;
+
+  /// What the receiver said it can take, from its `CAPS:` write.
+  ///
+  /// Null means it never sent one, which is what every build up to v1.0.10
+  /// does — and those finish at the first file and disconnect, so a list must
+  /// not be sent to them.
+  int? _universalPeerGeneration;
+
+  /// Bytes across the whole session, so progress does not restart per file.
   int _totalBytes = 0;
 
   /// §6 — keeps CPU/display awake during the BLE transfer (universal path).
   final _wakelockGuard = WakelockGuard();
+
+  /// Why the last failure happened, in words meant for the person sending.
+  ///
+  /// The status stream can only say "failed", and every reason this transport
+  /// has — an unreadable file, a receiver too old for a folder — used to end
+  /// up in a debugPrint while the screen said "Bluetooth transfer failed
+  /// unexpectedly". Read synchronously by the bloc when the status arrives;
+  /// it is always set before the status that follows it.
+  String? lastFailureReason;
 
   bool get _usesNativeAppleBridge =>
       defaultTargetPlatform == TargetPlatform.iOS ||
@@ -104,8 +133,13 @@ class BluetoothTransferTransport implements TransferTransport {
             value != null &&
             _universalSessionToken != null) {
           final command = utf8.decode(value, allowMalformed: true);
-          final expected = 'START:$_universalSessionToken';
-          if (command == 'START' || command == expected) {
+          // Always ahead of START, so it is on record before the decision
+          // about what this session may send is taken.
+          final generation = BleControlProtocol.parseCapabilities(command);
+          if (generation != null) {
+            _universalPeerGeneration = generation;
+          } else if (BleControlProtocol.isStart(
+              command, _universalSessionToken)) {
             _universalClientId = deviceId;
             _universalStartReceived = true;
             unawaited(_maybeStartUniversalTransfer());
@@ -136,18 +170,41 @@ class BluetoothTransferTransport implements TransferTransport {
         _statusController.add(TransferStatus.completed);
         break;
       case 'senderFailed':
-        debugPrint('Bluetooth send failed: ${map['error']}');
+        final error = map['error'] as String?;
+        debugPrint('Bluetooth send failed: $error');
+        lastFailureReason = error;
         _statusController.add(TransferStatus.failed);
         break;
     }
   }
 
+  /// Advertises [files] — or just [file] when a caller has only one.
+  ///
+  /// [file] still names the session for the screens that show it. The list is
+  /// what actually goes out, and it is the whole reason a folder no longer
+  /// has to be flattened into an archive to travel over Bluetooth.
   @override
-  Future<String> startSharing(FileMetadata file, String token) async {
-    _totalBytes = file.size;
+  Future<String> startSharing(FileMetadata file, String token,
+      {List<FileMetadata>? files}) async {
+    final session = (files == null || files.isEmpty) ? [file] : files;
+    _totalBytes = session.fold<int>(0, (sum, f) => sum + f.size);
+    lastFailureReason = null;
     if (_usesNativeAppleBridge) {
       try {
         await _method.invokeMethod('startAdvertising', {
+          // The list the bridge streams. Kept beside the single-file keys
+          // below, which every earlier build sent and which still name the
+          // session in the bridge's own logs.
+          'files': [
+            for (final f in session)
+              {
+                'filePath': f.path,
+                'fileName': f.name,
+                'relativePath': f.relPath,
+                'fileSize': f.size,
+                'mimeType': f.mimeType,
+              },
+          ],
           'filePath': file.path,
           'fileName': file.name,
           'fileSize': file.size,
@@ -165,7 +222,7 @@ class BluetoothTransferTransport implements TransferTransport {
     if (_usesLinuxBridge) {
       _linuxSender = LinuxBluetoothSender();
       await _linuxSender!.start(
-        file,
+        session,
         token,
         onProgress: (sent, total) {
           if (total > 0) _progressController.add(sent / total);
@@ -184,6 +241,7 @@ class BluetoothTransferTransport implements TransferTransport {
               break;
             case 'failed':
               debugPrint('Bluetooth Linux sender failed: $error');
+              lastFailureReason = error;
               _statusController.add(TransferStatus.failed);
               break;
           }
@@ -192,11 +250,12 @@ class BluetoothTransferTransport implements TransferTransport {
       return file.name;
     }
 
-    await _startUniversalAdvertising(file, token);
+    await _startUniversalAdvertising(session, token);
     return file.name;
   }
 
-  Future<void> _startUniversalAdvertising(FileMetadata file, String token) async {
+  Future<void> _startUniversalAdvertising(
+      List<FileMetadata> session, String token) async {
     await UniversalBle.requestPermissions(withAndroidFineLocation: false);
     final capabilities = await UniversalBlePeripheral.getCapabilities();
     if (!capabilities.supportsPeripheralMode) {
@@ -208,9 +267,8 @@ class BluetoothTransferTransport implements TransferTransport {
     }
 
     _universalSessionToken = token;
-    _universalFilePath = file.path;
-    _universalFileName = file.name;
-    _universalMime = file.mimeType;
+    _universalFiles = session;
+    _universalPeerGeneration = null;
     _universalClientId = null;
     _universalDataSubscribed = false;
     _universalStartReceived = false;
@@ -276,58 +334,90 @@ class BluetoothTransferTransport implements TransferTransport {
 
     await _wakelockGuard.acquire(); // §6
     try {
-      final path = _universalFilePath;
-      if (path == null) throw Exception('No file selected for Bluetooth transfer.');
-      _universalFile = await File(path).open();
-
-      // §8: decide whether to compress this payload.
-      final compress =
-          shouldCompressForTransfer(_universalMime, _universalFileName);
-
-      final metadata = utf8.encode(jsonEncode({
-        'name': _universalFileName,
-        'size': _totalBytes,
-        'mime': _universalMime,
-        'compressed': compress, // §8
-      }));
-      await UniversalBlePeripheral.updateCharacteristicValue(
-        characteristicId: _metadataUuid,
-        value: Uint8List.fromList(metadata),
-        deviceId: _universalClientId,
-      );
+      final session = _universalFiles;
+      if (session.isEmpty) {
+        throw Exception('No file selected for Bluetooth transfer.');
+      }
+      _refuseListToAnOlderPeer(session, _universalPeerGeneration);
 
       final maxNotify = await UniversalBlePeripheral.getMaximumNotifyLength(
         _universalClientId!,
       );
       final chunkSize = max((maxNotify ?? 185) - 3, 20);
 
-      var sent = 0;
-      while (sent < _totalBytes) {
-        final chunk = await _universalFile!.read(chunkSize);
-        if (chunk.isEmpty) break;
+      // Counted across the session rather than per file: a folder of forty
+      // photos should fill one progress ring, not forty.
+      var sessionSent = 0;
 
-        // §8: compress the chunk if applicable.
-        final payload = compress
-            ? Uint8List.fromList(GZipEncoder().encode(chunk)!)
-            : Uint8List.fromList(chunk);
+      for (var index = 0; index < session.length; index++) {
+        final item = session[index];
+        _universalFile = await File(item.path).open();
 
+        // §8: decide whether to compress this payload. Per file, because a
+        // folder holds documents worth deflating next to photos that are
+        // already compressed and would only be slowed down by it.
+        final compress = shouldCompressForTransfer(item.mimeType, item.name);
+
+        final metadata = utf8.encode(jsonEncode({
+          'name': item.name,
+          // The relative path this file keeps on the far side. Equal to the
+          // name for a file picked directly; `Trip/Day 1/IMG_0042.HEIC` for
+          // one inside a folder.
+          'path': item.relPath,
+          'size': item.size,
+          'mime': item.mimeType,
+          'compressed': compress, // §8
+          // What tells the receiver this is a list and where it is in it. A
+          // build that predates them reads a session of one, which is what
+          // every session used to be.
+          'index': index,
+          'count': session.length,
+          'sessionBytes': _totalBytes,
+        }));
         await UniversalBlePeripheral.updateCharacteristicValue(
-          characteristicId: _dataUuid,
-          value: payload,
+          characteristicId: _metadataUuid,
+          value: Uint8List.fromList(metadata),
           deviceId: _universalClientId,
         );
-        sent += chunk.length;
-        _progressController.add(_totalBytes > 0 ? sent / _totalBytes : 1.0);
+
+        var fileSent = 0;
+        try {
+          while (fileSent < item.size) {
+            final chunk = await _universalFile!.read(chunkSize);
+            if (chunk.isEmpty) break;
+
+            // §8: compress the chunk if applicable.
+            final payload = compress
+                ? Uint8List.fromList(GZipEncoder().encode(chunk)!)
+                : Uint8List.fromList(chunk);
+
+            await UniversalBlePeripheral.updateCharacteristicValue(
+              characteristicId: _dataUuid,
+              value: payload,
+              deviceId: _universalClientId,
+            );
+            fileSent += chunk.length;
+            sessionSent += chunk.length;
+            _progressController
+                .add(_totalBytes > 0 ? sessionSent / _totalBytes : 1.0);
+          }
+        } finally {
+          await _universalFile?.close();
+          _universalFile = null;
+        }
+
+        if (fileSent < item.size) {
+          throw Exception(
+              'Bluetooth sender reached the end of "${item.name}" with '
+              '$fileSent of ${item.size} bytes sent.');
+        }
       }
 
-      if (sent >= _totalBytes) {
-        _progressController.add(1.0);
-        _statusController.add(TransferStatus.completed);
-      } else {
-        throw Exception('Bluetooth sender reached end of file unexpectedly.');
-      }
+      _progressController.add(1.0);
+      _statusController.add(TransferStatus.completed);
     } catch (e) {
       debugPrint('Bluetooth universal sender failed: $e');
+      lastFailureReason = e is Exception ? '$e'.replaceFirst('Exception: ', '') : '$e';
       _statusController.add(TransferStatus.failed);
     } finally {
       await _universalFile?.close();
@@ -336,9 +426,24 @@ class BluetoothTransferTransport implements TransferTransport {
     }
   }
 
-  String? _universalFilePath;
-  String _universalFileName = 'file';
-  String _universalMime = 'application/octet-stream';
+  /// The session the universal path is serving, in the order it is sent.
+  List<FileMetadata> _universalFiles = const [];
+
+  /// Stops a multi-file session from being half-delivered in silence.
+  ///
+  /// A receiver older than [BleControlProtocol.generation] treats the first
+  /// file's last byte as the end of the transfer and disconnects. It shows a
+  /// completed transfer, with one file in it, and no indication that a folder
+  /// was ever sent — which is worse than any error, because nobody goes
+  /// looking for what is missing.
+  static void _refuseListToAnOlderPeer(
+      List<FileMetadata> session, int? peerGeneration) {
+    if (BleControlProtocol.peerCanTakeSession(
+        fileCount: session.length, peerGeneration: peerGeneration)) {
+      return;
+    }
+    throw Exception(BleControlProtocol.sessionRefusedMessage);
+  }
 
   @override
   Future<void> stopSharing() async {
@@ -372,7 +477,8 @@ class BluetoothTransferTransport implements TransferTransport {
       _universalDataSubscribed = false;
       _universalStartReceived = false;
       _universalTransferStarted = false;
-      _universalFilePath = null;
+      _universalFiles = const [];
+      _universalPeerGeneration = null;
     }
     _statusController.add(TransferStatus.cancelled);
   }
