@@ -257,6 +257,7 @@ class AppRouter {
                   fileName: extra?['fileName'] as String? ?? 'Unknown',
                   items: (extra?['items'] as List?)?.cast<ReceivedItem>() ??
                       const [],
+                  placed: extra?['placed'] as bool? ?? false,
                 ),
                 sharedAxis: true,
               );

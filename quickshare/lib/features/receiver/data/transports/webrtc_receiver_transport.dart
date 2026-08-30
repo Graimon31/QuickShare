@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/utils/wakelock_guard.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
@@ -70,9 +71,19 @@ class WebRtcReceiverTransport {
 
   int _totalBytes = 0;
   int _receivedBytes = 0;
-  IOSink? _fileSink;
+  DurableFile? _currentFile;
   String _fileName = 'received_file';
   String? _targetPath;
+
+  /// Folder sessions land under `<baseDir>/<name>.qs.partial/` and become real
+  /// in one atomic directory rename once every file is on disk — a folder
+  /// opened half-populated is worse than one that is not there yet. Off unless
+  /// the manifest is a single folder and its final name is still free; when
+  /// that name is already taken, files are merged into it individually instead.
+  bool _folderMode = false;
+  String? _stagedRoot;
+  String? _finalRoot;
+
   bool _isRemoteDescSet = false;
   final List<RTCIceCandidate> _pendingCandidates = [];
 
@@ -317,8 +328,7 @@ class WebRtcReceiverTransport {
         if (status == TransferStatus.completed) {
           sub.cancel();
           if (!completer.isCompleted) {
-            completer
-                .complete(_targetPath ?? p.join(_baseDir, 'received_file'));
+            completer.complete(_resultPath());
           }
         } else if (status == TransferStatus.failed) {
           sub.cancel();
@@ -430,15 +440,7 @@ class WebRtcReceiverTransport {
             case 'peer-disconnected':
               if (!_completion.isCompleted) {
                 if (_totalBytes > 0 && _receivedBytes >= _totalBytes) {
-                  await _fileSink?.flush();
-                  await _fileSink?.close();
-                  _fileSink = null;
-                  _statusController.add(TransferStatus.completed);
-                  _emit('completed');
-                  if (!_completion.isCompleted) {
-                    _completion.complete(_targetPath ?? '');
-                  }
-                  await _cleanup();
+                  await _completeSession();
                 } else {
                   _fail('Sender disconnected before the transfer finished');
                 }
@@ -530,7 +532,7 @@ class WebRtcReceiverTransport {
   Future<void> _processMessage(RTCDataChannelMessage message) async {
     try {
       if (message.isBinary) {
-        if (_fileSink == null) return;
+        if (_currentFile == null) return;
 
         // §8: decompress if the sender said so.
         final bytes = _isCompressed
@@ -538,7 +540,7 @@ class WebRtcReceiverTransport {
             : message.binary;
 
         _idleWatchdog?.kick();
-        _fileSink!.add(bytes);
+        await _currentFile!.add(bytes);
         _receivedBytes += bytes.length;
         // Progress is reported across the whole session, so a ten-photo
         // transfer does not snap back to 0% ten times.
@@ -599,14 +601,8 @@ class WebRtcReceiverTransport {
           }
           final item = _manifest[index];
           _isCompressed = item.compressed;
-          _targetPath = _uniquePath(resolveTargetPath(item.path, _baseDir));
-          // The folder the sender kept has to exist before its first file can
-          // be written into it. Directories are created as their contents
-          // arrive rather than up front: the manifest may list thousands, and
-          // an empty one is not worth creating for a transfer that fails.
-          final parent = Directory(p.dirname(_targetPath!));
-          if (!parent.existsSync()) parent.createSync(recursive: true);
-          _fileSink = File(_targetPath!).openWrite();
+          _currentFile = _openIncoming(item.path);
+          await _currentFile!.open();
           _emit('transferring');
 
         case TransferProtocol.fileEnd:
@@ -640,20 +636,19 @@ class WebRtcReceiverTransport {
           _receivedBytes = 0;
           _lastBytes = 0;
           _lastTick = DateTime.now();
-          _targetPath = _uniquePath(resolveTargetPath(_fileName, _baseDir));
-          _fileSink = File(_targetPath!).openWrite();
+          _currentFile = _openIncoming(_fileName);
+          await _currentFile!.open();
           _statusController.add(TransferStatus.transferring);
           _emit('transferring');
           _armIdleWatchdog();
 
         case TransferProtocol.cancelled:
           // Deliberate stop: react now rather than waiting out the disconnect
-          // grace period, and say what actually happened.
+          // grace period, and say what actually happened. Nothing half-written
+          // is kept — a cancelled transfer leaves no debris.
           AppLogger.info('Sender cancelled the transfer',
               tag: 'WEBRTC_RECEIVER');
-          await _fileSink?.flush();
-          await _fileSink?.close();
-          _fileSink = null;
+          await _discardInFlight();
           _cancelledBySender = true;
           _idleWatchdog?.cancel();
           _fail('The sender cancelled the transfer');
@@ -707,13 +702,102 @@ class WebRtcReceiverTransport {
         (items.length == 1
             ? sanitizeFileName(items.first.name)
             : '${items.length} files');
+    _armFolderStaging(folderRoot);
     _statusController.add(TransferStatus.transferring);
     _emit('transferring');
     _armIdleWatchdog();
     AppLogger.info(
         'Receiving ${items.length} file(s), $_sessionTotalBytes bytes total'
-        '${folderRoot != null ? ' under "$folderRoot"' : ''}',
+        '${folderRoot != null ? ' under "$folderRoot"' : ''}'
+        '${_folderMode ? ', staged as ${p.basename(_stagedRoot!)}' : ''}',
         tag: 'WEBRTC_RECEIVER');
+  }
+
+  /// Decides whether this session writes into a staged `<name>.qs.partial/`
+  /// directory that is renamed whole at the end (folder mode), or straight
+  /// into the destination.
+  ///
+  /// Folder mode needs a single common root *and* a final name that is still
+  /// free — a directory rename is atomic only onto a name that does not exist.
+  /// When `<baseDir>/<root>` is already there, [_folderMode] stays off and the
+  /// incoming files are merged into it one at a time instead.
+  void _armFolderStaging(String? folderRoot) {
+    _folderMode = false;
+    _stagedRoot = null;
+    _finalRoot = null;
+    if (folderRoot == null || _baseDir.isEmpty) return;
+
+    final finalRoot = p.normalize(p.join(_baseDir, folderRoot));
+    if (!p.isWithin(_baseDir, finalRoot)) return;
+    if (Directory(finalRoot).existsSync() || File(finalRoot).existsSync()) {
+      return;
+    }
+
+    _folderMode = true;
+    _finalRoot = finalRoot;
+    _stagedRoot = '$finalRoot$kPartialSuffix';
+    final staged = Directory(_stagedRoot!);
+    if (staged.existsSync()) {
+      try {
+        staged.deleteSync(recursive: true);
+      } catch (_) {
+        // A leftover we could not clear; open() will still write into it and
+        // the sweep gets it next launch.
+      }
+    }
+  }
+
+  /// A [DurableFile] for an incoming item announced with [manifestPath].
+  ///
+  /// In folder mode the file goes straight into the staged directory (the
+  /// directory rename is the atomic step, a per-file one would be redundant);
+  /// otherwise it is a staged single file with its own `.qs.partial`.
+  DurableFile _openIncoming(String manifestPath) {
+    if (_folderMode) {
+      final within = _pathBelowRoot(manifestPath);
+      final target = p.normalize(p.join(_stagedRoot!, within));
+      if (!p.isWithin(_stagedRoot!, target)) {
+        throw Exception('Path traversal detected in "$manifestPath"');
+      }
+      _targetPath = target;
+      return DurableFile(target, staged: false);
+    }
+    _targetPath = _uniquePath(resolveTargetPath(manifestPath, _baseDir));
+    return DurableFile(_targetPath!);
+  }
+
+  /// The part of a manifest path below its top folder, every segment cleaned.
+  /// `Trip/Day 1/IMG_0042.HEIC` → `Day 1/IMG_0042.HEIC`.
+  String _pathBelowRoot(String rawPath) {
+    final segments = p.split(sanitizeRelativePath(rawPath));
+    if (segments.length <= 1) {
+      return segments.isEmpty ? 'received_file' : segments.last;
+    }
+    return p.joinAll(segments.sublist(1));
+  }
+
+  /// Aborts whatever file is mid-write and clears every trace of the session
+  /// from disk — the in-flight partial, and a staged folder directory whole.
+  Future<void> _discardInFlight() async {
+    await _currentFile?.abort();
+    _currentFile = null;
+    if (_folderMode && _stagedRoot != null) {
+      final staged = Directory(_stagedRoot!);
+      if (staged.existsSync()) {
+        try {
+          await staged.delete(recursive: true);
+        } catch (_) {}
+      }
+    } else if (_targetPath != null) {
+      for (final path in [_targetPath!, '$_targetPath$kPartialSuffix']) {
+        final f = File(path);
+        if (f.existsSync()) {
+          try {
+            await f.delete();
+          } catch (_) {}
+        }
+      }
+    }
   }
 
   /// The single folder every item in [items] sits under, if there is one.
@@ -735,15 +819,14 @@ class WebRtcReceiverTransport {
     return root;
   }
 
-  /// Flushes and closes the file currently being written, if any, and records
-  /// it among the received paths exactly once.
+  /// fsyncs, closes and (outside folder mode) atomically renames the file
+  /// currently being written, if any, and records its committed path once.
   Future<void> _sealCurrentFile() async {
-    await _fileSink?.flush();
-    await _fileSink?.close();
-    _fileSink = null;
-    if (_targetPath != null && !_writtenPaths.contains(_targetPath)) {
-      _writtenPaths.add(_targetPath!);
-    }
+    final file = _currentFile;
+    _currentFile = null;
+    if (file == null) return;
+    final path = await file.commit();
+    if (!_writtenPaths.contains(path)) _writtenPaths.add(path);
   }
 
   /// Declares the session received: every byte the manifest announced is on
@@ -758,12 +841,12 @@ class WebRtcReceiverTransport {
     if (!_sessionFinished) {
       _sessionFinished = true;
       _idleWatchdog?.cancel();
+      await _sealCurrentFile();
+      await _commitFolderIfStaged();
       _statusController.add(TransferStatus.completed);
       _emit('completed');
       if (!_completion.isCompleted) {
-        _completion.complete(_writtenPaths.isNotEmpty
-            ? _writtenPaths.first
-            : (_targetPath ?? ''));
+        _completion.complete(_resultPath());
       }
     }
     if (holdConnection && _teardownTimer == null) {
@@ -773,6 +856,33 @@ class WebRtcReceiverTransport {
       _teardownTimer?.cancel();
       _teardownTimer = null;
       await _cleanup();
+    }
+  }
+
+  /// What the session resolves to: the folder in folder mode, otherwise the
+  /// first file written (or, before anything landed, the last target).
+  String _resultPath() {
+    if (_folderMode) return _finalRoot ?? '';
+    if (_writtenPaths.isNotEmpty) return _writtenPaths.first;
+    return _targetPath ?? p.join(_baseDir, 'received_file');
+  }
+
+  /// Renames a staged folder onto its real name in one atomic step, once every
+  /// file inside it is on disk. The session result then points at the folder,
+  /// not at some photo three levels down inside it.
+  Future<void> _commitFolderIfStaged() async {
+    if (!_folderMode || _stagedRoot == null || _finalRoot == null) return;
+    try {
+      await commitDirectory(_stagedRoot!, _finalRoot!);
+      _writtenPaths
+        ..clear()
+        ..add(_finalRoot!);
+    } catch (e) {
+      // The name was free when the session opened; if the rename still fails
+      // the staged directory stays for the sweep, and the result path below
+      // will not resolve — logged rather than silently dropped.
+      AppLogger.error('Could not commit the received folder "$_finalRoot": $e',
+          tag: 'WEBRTC_RECEIVER');
     }
   }
 
@@ -841,7 +951,7 @@ class WebRtcReceiverTransport {
         // frame leaves, which can win the race against its `complete` frame.
         if (_sessionTotalBytes > 0 &&
             _sessionReceivedBytes >= _sessionTotalBytes) {
-          unawaited(_sealCurrentFile().then((_) => _completeSession()));
+          unawaited(_completeSession());
         } else {
           _fail('Peer connection failed (ICE $state)');
         }
@@ -882,12 +992,7 @@ class WebRtcReceiverTransport {
   }
 
   Future<void> cancel() async {
-    await _fileSink?.close();
-    _fileSink = null;
-    if (_targetPath != null) {
-      final partial = File(_targetPath!);
-      if (await partial.exists()) await partial.delete();
-    }
+    await _discardInFlight();
     _statusController.add(TransferStatus.cancelled);
     if (!_completion.isCompleted) {
       _completion.completeError(Exception('Cancelled by user'));

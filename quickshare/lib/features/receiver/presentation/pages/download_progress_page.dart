@@ -116,6 +116,7 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
                 'filePath': state.filePath,
                 'fileName': state.fileName,
                 'items': state.items,
+                'placed': state.placed,
               });
             } else if (state is ReceiverError) {
               WakelockPlus.disable();

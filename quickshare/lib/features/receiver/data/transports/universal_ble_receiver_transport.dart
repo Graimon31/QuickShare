@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:universal_ble/universal_ble.dart';
 
+import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
@@ -84,8 +85,17 @@ class UniversalBleReceiverTransport {
   int _receivedBytes = 0;
   bool _isCompressed = false;
 
-  IOSink? _fileSink;
+  /// The current file's handle and where its bytes land before the rename.
+  ///
+  /// BLE has no manifest and its notify handlers are not awaited, so the write
+  /// is kept synchronous — a data frame can arrive the instant after the
+  /// metadata one, with no chance to await an open in between. Each file still
+  /// goes through its own `.qs.partial` and an fsync + atomic rename on close;
+  /// what BLE does not do is stage a whole folder, since the common root is
+  /// not known until the files have all arrived.
+  RandomAccessFile? _raf;
   String? _targetPath;
+  String? _partialPath;
   String _baseDir = '';
   bool _metadataReceived = false;
 
@@ -259,11 +269,12 @@ class UniversalBleReceiverTransport {
 
       final relative = json['path'] as String? ?? _fileName;
       _targetPath = _uniquePath(_resolveTargetPath(relative));
+      _partialPath = '${_targetPath!}$kPartialSuffix';
       // The folder this file came from has to exist before it can be written
       // into. Created as the files arrive rather than up front: a session may
       // announce thousands, and one that fails leaves no empty shells behind.
       Directory(p.dirname(_targetPath!)).createSync(recursive: true);
-      _fileSink = File(_targetPath!).openWrite();
+      _raf = File(_partialPath!).openSync(mode: FileMode.writeOnly);
 
       AppLogger.info(
           'UniversalBleReceiver: metadata — $relative, '
@@ -278,7 +289,7 @@ class UniversalBleReceiverTransport {
   }
 
   void _handleData(Uint8List value) {
-    if (!_metadataReceived || _fileSink == null) return;
+    if (!_metadataReceived || _raf == null) return;
 
     try {
       // §8: decompress if the sender said so.
@@ -286,7 +297,7 @@ class UniversalBleReceiverTransport {
           ? Uint8List.fromList(GZipDecoder().decodeBytes(value))
           : value;
 
-      _fileSink!.add(bytes);
+      _raf!.writeFromSync(bytes);
       _fileReceivedBytes += bytes.length;
       _receivedBytes += bytes.length;
       _emit('transferring');
@@ -309,20 +320,30 @@ class UniversalBleReceiverTransport {
     }
   }
 
-  /// Flushes and closes whatever file is open, recording it exactly once.
+  /// fsyncs, closes and atomically renames whatever file is open, recording it
+  /// exactly once.
   ///
-  /// The sink and its path are taken before the first await on purpose. The
+  /// The handle and its paths are taken before the first await on purpose. The
   /// caller opens the next file immediately after — that is what a metadata
-  /// frame means — so reading `_targetPath` after the flush would file every
-  /// finished item under the name of the one that came next.
+  /// frame means — so reading `_targetPath` after would file every finished
+  /// item under the name of the one that came next.
   Future<void> _sealCurrentFile() async {
-    final sink = _fileSink;
-    final path = _targetPath;
-    _fileSink = null;
-    if (sink == null) return;
-    if (path != null && !_writtenPaths.contains(path)) _writtenPaths.add(path);
-    await sink.flush();
-    await sink.close();
+    final raf = _raf;
+    final partial = _partialPath;
+    final finalPath = _targetPath;
+    _raf = null;
+    _partialPath = null;
+    if (raf == null || partial == null || finalPath == null) return;
+    if (!_writtenPaths.contains(finalPath)) _writtenPaths.add(finalPath);
+    try {
+      raf.flushSync(); // fsync the bytes onto the device
+      raf.closeSync();
+      File(partial).renameSync(finalPath);
+      await syncDirectory(p.dirname(finalPath));
+    } catch (e) {
+      AppLogger.warning('UniversalBleReceiver: could not seal $finalPath: $e',
+          tag: 'BLE_RECEIVER');
+    }
   }
 
   Future<void> _finalize() async {
@@ -405,12 +426,22 @@ class UniversalBleReceiverTransport {
   }
 
   Future<void> cancel() async {
-    await _fileSink?.close();
-    _fileSink = null;
-    if (_targetPath != null) {
-      final partial = File(_targetPath!);
-      if (await partial.exists()) await partial.delete();
+    try {
+      _raf?.closeSync();
+    } catch (_) {}
+    _raf = null;
+    // A cancelled transfer leaves no debris: the in-flight partial and any
+    // final name it might already carry both go.
+    for (final path in [_partialPath, _targetPath]) {
+      if (path == null) continue;
+      final f = File(path);
+      if (f.existsSync()) {
+        try {
+          f.deleteSync();
+        } catch (_) {}
+      }
     }
+    _partialPath = null;
     if (!_completion.isCompleted) {
       _completion.completeError(Exception('Cancelled by user'));
     }

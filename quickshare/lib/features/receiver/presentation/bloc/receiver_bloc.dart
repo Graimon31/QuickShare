@@ -1,8 +1,9 @@
 import 'dart:async';
-import 'dart:io' show File;
+import 'dart:io' show Directory, File, FileSystemEntity, FileSystemException;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:mime/mime.dart';
+import 'package:path/path.dart' as p;
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/receiver/domain/usecases/download_file_usecase.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
@@ -18,6 +19,7 @@ import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/transfer/interruption_guard.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
+import 'package:quickshare/core/storage/receive_destination.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/utils/transfer_speed.dart';
@@ -73,15 +75,21 @@ class DownloadCompleted extends ReceiverEvent {
   final String filePath;
   final String? fileName;
 
-  /// What arrived, still in the transfer cache, for the completion screen to
-  /// place. Empty only for a transport that has nothing to hand over.
+  /// What arrived, for the completion screen to place. Empty only for a
+  /// transport that has nothing to hand over.
   final List<ReceivedItem> items;
 
+  /// True when [items] are already at their final home (desktop direct-write)
+  /// and the completion screen only reports them, rather than copying them out
+  /// of the transfer cache.
+  final bool placed;
+
   const DownloadCompleted(this.filePath,
-      {this.fileName, this.items = const []});
+      {this.fileName, this.items = const [], this.placed = false});
 
   @override
-  List<Object> get props => [filePath, if (fileName != null) fileName!, items];
+  List<Object> get props =>
+      [filePath, if (fileName != null) fileName!, items, placed];
 }
 
 class DownloadFailed extends ReceiverEvent {
@@ -126,18 +134,21 @@ class DownloadComplete extends ReceiverState {
   final String filePath;
   final String fileName;
 
-  /// Everything that arrived, still sitting in the transfer cache.
-  ///
-  /// Every transport fills this now — Wi-Fi, Bluetooth and the serverless
-  /// WebRTC path all stage into the cache and let the completion screen place
-  /// what they delivered. Empty only if the session left nothing behind, in
-  /// which case the screen falls back to [filePath].
+  /// Everything that arrived. Empty only if the session left nothing behind,
+  /// in which case the screen falls back to [filePath].
   final List<ReceivedItem> items;
 
-  const DownloadComplete(this.filePath, this.fileName, {this.items = const []});
+  /// True when [items] are already at their final home and the completion
+  /// screen only reports them — the desktop direct-write path. False when they
+  /// are in the transfer cache and still have to be placed (every phone
+  /// transfer, and desktop Wi-Fi/Bluetooth for now).
+  final bool placed;
+
+  const DownloadComplete(this.filePath, this.fileName,
+      {this.items = const [], this.placed = false});
 
   @override
-  List<Object> get props => [filePath, fileName, items];
+  List<Object> get props => [filePath, fileName, items, placed];
 }
 
 class ReceiverError extends ReceiverState {
@@ -383,7 +394,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       if (payload == null) return;
       final name = event.fileName ??
           (payload.isQhtp ? 'Received files' : payload.fileName);
-      emit(DownloadComplete(event.filePath, name, items: event.items));
+      emit(DownloadComplete(event.filePath, name,
+          items: event.items, placed: event.placed));
     });
 
     on<DownloadFailed>((event, emit) {
@@ -484,6 +496,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       QRPayload payload, Emitter<ReceiverState> emit) async {
     final channel = buildRendezvousChannel();
     StreamSubscription<WebRtcReceiveProgress>? progressSub;
+    ReceiveDestination? dest;
     try {
       final qr = ServerlessQr.decode(payload.sdpOffer!);
       final topic = await qr.topic;
@@ -502,14 +515,15 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           'candidates, answering on topic $topic',
           tag: 'WEBRTC_RECEIVER');
 
-      // Everything lands in the transfer cache first, on every platform.
-      // Where it goes afterwards is the completion screen's decision, and on
-      // a phone that decision belongs to the user.
-      final cacheDir = await const TransferCache().sessionDirectory();
+      // Desktop writes straight into the folder the user keeps things in —
+      // the file is crash-safe on the way (`.qs.partial` + rename), so there
+      // is nothing a staging copy would buy. A phone has no such folder and
+      // still lands in the cache for the completion screen to place.
+      dest = await ReceiveDestination.resolve();
 
       await transport.receiveWithSdpOffer(
         qr.offer.toSdp(isOffer: true),
-        targetDir: cacheDir.path,
+        targetDir: dest.path,
         deliverAnswer: (answerSdp) async {
           final sealed = await SealedEnvelope.seal(
             plaintext:
@@ -520,21 +534,30 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           await channel.publish(topic, sealed);
         },
       );
-      // Read off the filesystem rather than from the transport's own list of
-      // files. A folder now arrives as a folder — hundreds of files under one
-      // root — and the completion screen has one decision to offer about it,
-      // not one per photo inside it. The top level of the session directory is
-      // exactly that: whatever the sender picked.
-      final items = TransferCache.itemsIn(cacheDir);
-      emit(DownloadComplete(
-        // The item itself when one thing arrived — a file or a folder — and
-        // the session directory when several did. The transport's own answer
-        // was the first file it wrote, which for a folder is some photo three
-        // levels down rather than the thing the sender sent.
-        items.length == 1 ? items.first.cachePath : cacheDir.path,
-        items.length == 1 ? items.first.name : payload.fileName,
-        items: items,
-      ));
+
+      if (dest.placed) {
+        // Already at its final home: report what the transport wrote, don't
+        // walk the destination (it is Downloads now, full of other things).
+        final items = _placedItems(transport.receivedPaths);
+        emit(DownloadComplete(
+          items.length == 1 ? items.first.savedPath! : dest.path,
+          items.length == 1 ? items.first.name : payload.fileName,
+          items: items,
+          placed: true,
+        ));
+      } else {
+        // Read off the filesystem rather than from the transport's own list.
+        // A folder arrives as a folder — hundreds of files under one root —
+        // and the completion screen has one decision to offer about it, not
+        // one per photo. The top level of the session directory is exactly
+        // what the sender picked.
+        final items = TransferCache.itemsIn(Directory(dest.path));
+        emit(DownloadComplete(
+          items.length == 1 ? items.first.cachePath : dest.path,
+          items.length == 1 ? items.first.name : payload.fileName,
+          items: items,
+        ));
+      }
     } catch (e, st) {
       // A cancellation is not a fault, and calling it one sends the user
       // looking for a network problem that never existed. A genuine
@@ -551,6 +574,50 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     } finally {
       await progressSub?.cancel();
       await channel.close();
+      await dest?.release();
     }
+  }
+
+  /// Wraps the paths a transport wrote — files or a folder, already in place —
+  /// as items the completion screen can show as saved.
+  List<ReceivedItem> _placedItems(List<String> paths) {
+    return [
+      for (final path in paths)
+        if (FileSystemEntity.isDirectorySync(path))
+          ReceivedItem(
+            cachePath: path,
+            name: p.basename(path),
+            size: _treeSize(Directory(path)),
+            mimeType: 'inode/directory',
+            isDirectory: true,
+            savedPath: path,
+          )
+        else
+          ReceivedItem(
+            cachePath: path,
+            name: p.basename(path),
+            size: File(path).existsSync() ? File(path).lengthSync() : 0,
+            mimeType: lookupMimeType(path) ?? 'application/octet-stream',
+            savedPath: path,
+          ),
+    ];
+  }
+
+  static int _treeSize(Directory dir) {
+    var total = 0;
+    try {
+      for (final e in dir.listSync(recursive: true, followLinks: false)) {
+        if (e is File) {
+          try {
+            total += e.lengthSync();
+          } on FileSystemException {
+            // Vanished between listing and measuring.
+          }
+        }
+      }
+    } on FileSystemException {
+      // Unreadable; a size of nothing beats hiding the item.
+    }
+    return total;
   }
 }

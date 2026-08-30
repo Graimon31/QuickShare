@@ -28,6 +28,11 @@ class CompletePage extends StatefulWidget {
   /// reports [filePath].
   final List<ReceivedItem> items;
 
+  /// True when [items] are already at their final home (desktop direct-write):
+  /// the screen reports them rather than copying anything out of the cache,
+  /// and leaving without "saving" is not a thing — the files are kept.
+  final bool placed;
+
   final SaveCoordinator? coordinator;
 
   const CompletePage({
@@ -35,6 +40,7 @@ class CompletePage extends StatefulWidget {
     required this.fileName,
     required this.filePath,
     this.items = const [],
+    this.placed = false,
     this.coordinator,
   });
 
@@ -59,6 +65,15 @@ class _CompletePageState extends State<CompletePage> {
   Future<void> _runAutomaticSave() async {
     if (widget.items.isEmpty) {
       setState(() => _working = false);
+      return;
+    }
+    if (widget.placed) {
+      // Nothing to place — the transport wrote straight to the destination.
+      // The items already carry their saved path; just show them.
+      setState(() {
+        _outcomes = [for (final item in widget.items) SaveOutcome(item: item)];
+        _working = false;
+      });
       return;
     }
     try {
@@ -127,7 +142,9 @@ class _CompletePageState extends State<CompletePage> {
   Future<void> _leave(String route) async {
     if (_leaving) return;
     _leaving = true;
-    if (_outcomes.isNotEmpty) {
+    // Direct-write files are the user's now — there is no cache copy to drop,
+    // and "leave without saving" would be a lie about what already happened.
+    if (!widget.placed && _outcomes.isNotEmpty) {
       await _coordinator.discardSession(_outcomes);
     }
     if (mounted) context.go(route);

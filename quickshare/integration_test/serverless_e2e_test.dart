@@ -274,6 +274,94 @@ void main() {
         reason: 'session progress must finish at 100%, not per-file');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
+  testWidgets('a folder lands whole under its own name, with no .qs.partial left',
+      (tester) async {
+    // Variant B: the tree is written to `Trip.qs.partial/` and renamed onto
+    // `Trip/` in one atomic step once the last byte is in — a folder opened
+    // half-populated is worse than one that is not there yet.
+    final destination = Directory(p.join(workspace.path, 'incoming_folder'))
+      ..createSync();
+
+    final specs = [
+      (rel: 'Trip/cover.jpg', bytes: 96 * 1024, mime: 'image/jpeg'),
+      (rel: 'Trip/Day 1/hike.mp4', bytes: 200 * 1024, mime: 'video/mp4'),
+      (rel: 'Trip/Day 1/notes.txt', bytes: 12 * 1024, mime: 'text/plain'),
+    ];
+
+    final files = <FileMetadata>[];
+    final digests = <String, String>{};
+    for (final spec in specs) {
+      final made = makePayload(spec.bytes, name: p.basename(spec.rel));
+      digests[spec.rel] = made.digest;
+      files.add(FileMetadata(
+        name: p.basename(spec.rel),
+        path: made.file.path,
+        size: spec.bytes,
+        mimeType: spec.mime,
+        relativePath: spec.rel,
+      ));
+    }
+
+    final channel = _LoopbackAnswerChannel();
+    final sender = WebRtcTransferTransport();
+    final receiver = WebRtcReceiverTransport();
+    addTearDown(() async {
+      await sender.stopSharing();
+      await channel.close();
+    });
+
+    await sender.initialize();
+    await sender.startSharingServerless(files.first, files: files);
+
+    final offerSdp = await sender.createLocalOfferSdp();
+    final qr = ServerlessQr(
+      seed: SealedEnvelope.newSeed(),
+      offer: ServerlessQr.trimForQr(CompactSdp.fromSdp(offerSdp!)),
+    );
+    final topic = await qr.topic;
+    await channel.subscribe(topic);
+    channel.answers.listen((sealed) async {
+      final opened = await SealedEnvelope.open(
+        envelope: sealed,
+        seed: qr.seed,
+        offerFingerprint: qr.offerFingerprint,
+      );
+      await sender.handleDirectAnswer(
+          CompactSdp.fromBytes(opened).toSdp(isOffer: false), 'answer');
+    });
+
+    final result = await receiver.receiveWithSdpOffer(
+      qr.offer.toSdp(isOffer: true),
+      targetDir: destination.path,
+      deliverAnswer: (answerSdp) async {
+        await channel.publish(
+          topic,
+          await SealedEnvelope.seal(
+            plaintext:
+                ServerlessQr.trimForQr(CompactSdp.fromSdp(answerSdp)).toBytes(),
+            seed: qr.seed,
+            offerFingerprint: qr.offerFingerprint,
+          ),
+        );
+      },
+    );
+
+    expect(result, equals(p.join(destination.path, 'Trip')),
+        reason: 'the session result points at the folder, not a file inside it');
+    expect(
+        Directory(p.join(destination.path, 'Trip${'.qs.partial'}')).existsSync(),
+        isFalse,
+        reason: 'the staging directory is gone once renamed');
+
+    for (final spec in specs) {
+      final landed = File(p.join(destination.path, p.split(spec.rel).join(p.separator)));
+      expect(landed.existsSync(), isTrue, reason: '${spec.rel} is missing');
+      expect(sha256.convert(landed.readAsBytesSync()).toString(),
+          equals(digests[spec.rel]),
+          reason: '${spec.rel} arrived corrupted');
+    }
+  }, timeout: const Timeout(Duration(minutes: 3)));
+
   testWidgets('cancelling on the sender reaches the receiver as a cancellation',
       (tester) async {
     // Pressing Cancel and losing the network look identical on the wire — the

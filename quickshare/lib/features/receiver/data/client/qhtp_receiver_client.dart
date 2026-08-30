@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/errors/failures.dart';
+import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
@@ -485,11 +486,24 @@ class QhtpReceiverClient {
               item: item,
             );
 
+            // Durability parity with the WebRTC and BLE channels: fsync the
+            // bytes before the rename, fsync the directory after it, so a
+            // power cut leaves either the whole file under its real name or a
+            // `.qs.partial` the next run resumes — never a real name over a
+            // half-written body.
+            final fsyncHandle = await partialFile.open(mode: FileMode.append);
+            try {
+              await fsyncHandle.flush();
+            } finally {
+              await fsyncHandle.close();
+            }
+
             final finalFile = File(finalPath);
             if (await finalFile.exists()) {
               await finalFile.delete();
             }
             await partialFile.rename(finalPath);
+            await syncDirectory(p.dirname(finalPath));
 
             itemState = itemState.copyWith(
               status: 'completed',
