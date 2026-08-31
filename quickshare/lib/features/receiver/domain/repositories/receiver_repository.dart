@@ -7,8 +7,7 @@ import 'package:quickshare/features/receiver/domain/entities/qhtp_session_previe
 
 abstract class ReceiverRepository {
   Future<Either<Failure, QRPayload>> parseQRCode(String rawData);
-  Future<Either<Failure, bool>> checkServerAvailability(
-      String ip, int port, String token);
+  Future<Either<Failure, bool>> checkServerAvailability(QRPayload payload);
   Future<Either<Failure, QhtpSessionPreview>> fetchQhtpSessionPreview(
       QRPayload payload);
   Future<Either<Failure, String>> downloadFile(QRPayload payload,

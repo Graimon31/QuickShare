@@ -227,6 +227,15 @@ class SenderRepositoryImpl implements SenderRepository {
   Future<Either<Failure, String>> generateQRPayload(TransferSession session,
       {String? hostOverride}) async {
     try {
+      // The receiver pins the HTTPS connection to this. It is set the moment
+      // the server binds, which every path here has already done.
+      final fingerprint = localServer.tlsFingerprint;
+      if (fingerprint == null || fingerprint.isEmpty) {
+        return const Left(
+            ServerFailure('The local server did not come up with a '
+                'certificate — cannot make a safe QR code.'));
+      }
+
       // Legacy single-file session path
       if (!session.isQhtp) {
         final file = File(session.fileMetadata.path);
@@ -238,6 +247,7 @@ class SenderRepositoryImpl implements SenderRepository {
           fileName: session.fileMetadata.name,
           fileSize: session.fileMetadata.size,
           checksum: checksum,
+          tlsFingerprint: fingerprint,
         );
         return Right(qrData);
       }
@@ -254,6 +264,7 @@ class SenderRepositoryImpl implements SenderRepository {
         fileName: session.fileMetadata.name,
         fileSize: session.fileMetadata.size,
         itemCount: session.itemCount,
+        tlsFingerprint: fingerprint,
       );
 
       return Right(qrPayload.encode());

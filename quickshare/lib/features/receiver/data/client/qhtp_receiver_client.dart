@@ -3,11 +3,13 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/errors/failures.dart';
+import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
@@ -261,6 +263,26 @@ class QhtpReceiverClient {
       final host = payload.ip;
       final port = payload.port;
       final token = payload.token;
+
+      // HTTPS with a per-session self-signed certificate, pinned to the
+      // fingerprint the QR carried. No fingerprint means the QR is from a
+      // build that served the file in the clear — refused rather than
+      // silently downgraded.
+      final fingerprint = payload.tlsFingerprint;
+      if (fingerprint.isEmpty) {
+        return const Left(NetworkFailure(
+            'This code is from an older version that sends files unencrypted. '
+            'Update the sending device.'));
+      }
+      dio.httpClientAdapter = IOHttpClientAdapter(
+        createHttpClient: () {
+          final client =
+              HttpClient(context: SecurityContext(withTrustedRoots: false));
+          client.badCertificateCallback =
+              (cert, h, p) => SessionTlsIdentity.matches(cert, fingerprint);
+          return client;
+        },
+      );
       final sessionId = payload.sessionId ??
           'session_${DateTime.now().millisecondsSinceEpoch}';
 
@@ -288,7 +310,7 @@ class QhtpReceiverClient {
 
       // 1. GET /v2/session
       final sessionRes =
-          await dio.get('http://$host:$port/v2/session', options: options);
+          await dio.get('https://$host:$port/v2/session', options: options);
       if (sessionRes.statusCode != 200) {
         return Left(NetworkFailure(
             'Failed to connect to QHTP session (status ${sessionRes.statusCode})'));
@@ -333,7 +355,7 @@ class QhtpReceiverClient {
       ));
 
       final manifestRes =
-          await dio.get('http://$host:$port/v2/manifest', options: options);
+          await dio.get('https://$host:$port/v2/manifest', options: options);
       if (manifestRes.statusCode != 200) {
         return const Left(NetworkFailure('Failed to fetch session manifest'));
       }
@@ -465,7 +487,7 @@ class QhtpReceiverClient {
                 receiveTimeout: null,
               );
 
-              final fileUrl = 'http://$host:$port/v2/files/${item.id}';
+              final fileUrl = 'https://$host:$port/v2/files/${item.id}';
               // Bounded on the headers only — see [responseHeaderTimeout].
               // Without it a suspended sender left this await with no way to
               // end, and the receiver sat on its last screen forever, most
@@ -632,7 +654,7 @@ class QhtpReceiverClient {
           attempt++) {
         try {
           await dio.post(
-            'http://$host:$port/v2/session/complete',
+            'https://$host:$port/v2/session/complete',
             data: {
               'sessionId': sessionId,
               'receivedItems': manifest.itemCount,

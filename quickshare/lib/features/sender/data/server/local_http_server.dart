@@ -5,6 +5,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/features/sender/data/server/http_range.dart';
 import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -12,7 +13,12 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 class LocalHttpServer {
   HttpServer? _server;
   String? _authToken;
+  SessionTlsIdentity? _tls;
   Timer? _timeoutTimer;
+
+  /// The fingerprint the receiver must pin this session's HTTPS connection to
+  /// — belongs in the QR. Null until a server is started.
+  String? get tlsFingerprint => _tls?.fingerprint;
   QhtpManifest? _activeManifest;
   Map<String, String>? _itemIdToAbsPathMap;
   Future<Map<String, String>>? _checksumsInFlight;
@@ -292,12 +298,23 @@ class LocalHttpServer {
         .addMiddleware(_authMiddleware())
         .addHandler(router.call);
 
+    // HTTPS with a throwaway per-session certificate. The receiver pins its
+    // fingerprint from the QR, so both the bearer token and the file bytes
+    // are unreadable to anyone watching a shared network. Both this and the
+    // QHTP v2 routes go through here, so both are covered at once.
+    final tls = _tls = SessionTlsIdentity.generate();
+
     int? boundPort;
     for (int port = AppConstants.serverPortMin;
         port <= AppConstants.serverPortMax;
         port++) {
       try {
-        _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, port);
+        _server = await shelf_io.serve(
+          handler,
+          InternetAddress.anyIPv4,
+          port,
+          securityContext: tls.securityContext,
+        );
         boundPort = port;
         break;
       } catch (e) {
@@ -405,6 +422,7 @@ class LocalHttpServer {
     } catch (_) {}
     _timeoutTimer?.cancel();
     _authToken = null;
+    _tls = null;
     _activeManifest = null;
     _itemIdToAbsPathMap = null;
     _checksumsInFlight = null;

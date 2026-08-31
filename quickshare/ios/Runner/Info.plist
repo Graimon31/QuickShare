@@ -55,11 +55,13 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
+	<!--
+	  No App Transport Security exception. The Wi-Fi/LAN server now serves
+	  HTTPS with a per-session certificate pinned through the QR code, so the
+	  NSAllowsLocalNetworking that used to sit here — added for the old
+	  plain-HTTP transfer — is no longer needed. (dart:io's HTTP stack does
+	  not consult ATS in any case.)
+	-->
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_directdrop._tcp</string>

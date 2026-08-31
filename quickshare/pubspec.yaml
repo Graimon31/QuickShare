@@ -78,6 +78,7 @@ dependencies:
   flutter_localizations:
     sdk: flutter
   intl: ^0.20.2
+  basic_utils: ^5.7.0
 
 
 dev_dependencies:

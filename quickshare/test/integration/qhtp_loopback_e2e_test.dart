@@ -11,11 +11,13 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
+import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
 import 'package:quickshare/features/receiver/data/store/session_state_store.dart';
 import 'package:quickshare/features/sender/data/indexer/file_indexer.dart';
@@ -120,6 +122,7 @@ void main() {
       token: token,
       sessionId: indexResult.manifest.sessionId,
       mode: 'http-lan',
+      tlsFingerprint: server!.tlsFingerprint!,
     );
 
     final client = QhtpReceiverClient(store: _InMemorySessionStateStore());
@@ -188,6 +191,7 @@ void main() {
       token: token,
       sessionId: indexResult.manifest.sessionId,
       mode: 'http-lan',
+      tlsFingerprint: server!.tlsFingerprint!,
     );
 
     // Pre-seed a `.qs.partial` with the first half of the real bytes, as if
@@ -263,14 +267,21 @@ void main() {
     final senderProgress = <double>[];
     final progressSub = server!.transferProgress.listen(senderProgress.add);
 
-    final dio = Dio();
+    final fingerprint = server!.tlsFingerprint!;
+    final dio = Dio()
+      ..httpClientAdapter = IOHttpClientAdapter(createHttpClient: () {
+        final c = HttpClient(context: SecurityContext(withTrustedRoots: false));
+        c.badCertificateCallback =
+            (cert, h, p) => SessionTlsIdentity.matches(cert, fingerprint);
+        return c;
+      });
     final auth = Options(headers: {'Authorization': 'Bearer $token'});
 
     // Download the item directly, bypassing QhtpReceiverClient so nothing
     // sends the completion POST before this test says so.
     final item = indexResult.manifest.items.single;
     final response = await dio.get<ResponseBody>(
-      'http://127.0.0.1:$port/v2/files/${item.id}',
+      'https://127.0.0.1:$port/v2/files/${item.id}',
       options: auth.copyWith(responseType: ResponseType.stream),
     );
     await response.data!.stream
@@ -283,7 +294,7 @@ void main() {
             'receiver has them — progress must hold below 1.0');
 
     await dio.post(
-      'http://127.0.0.1:$port/v2/session/complete',
+      'https://127.0.0.1:$port/v2/session/complete',
       data: {
         'sessionId': indexResult.manifest.sessionId,
         'receivedItems': 1,
@@ -332,6 +343,7 @@ void main() {
           token: token,
           sessionId: indexResult.manifest.sessionId,
           mode: 'http-lan',
+          tlsFingerprint: server!.tlsFingerprint!,
         ), targetBaseDir: targetDir.path);
 
     expect(result.isRight, isTrue);
@@ -340,5 +352,46 @@ void main() {
     expect(await File(p.join(targetDir.path, 'report (1).pdf')).readAsString(),
         'the freshly sent version',
         reason: 'the received copy lands under a free name');
+  });
+
+  test('the transfer is refused without a fingerprint, and against a wrong one',
+      () async {
+    File(p.join(sourceDir.path, 'x.bin')).writeAsBytesSync(List.filled(2048, 7));
+    final indexed = await FileIndexer()
+        .buildResult(sessionId: 'e2e-pin', paths: [p.join(sourceDir.path, 'x.bin')]);
+
+    server = LocalHttpServer();
+    const token = 'e2e-token-pin';
+    final port = await server!.startQhtpSession(
+      manifest: indexed.manifest,
+      itemIdToAbsPathMap: indexed.itemIdToAbsPathMap,
+      authToken: token,
+    );
+
+    QRPayload payload(String fingerprint) => QRPayload(
+          version: 2,
+          ip: '127.0.0.1',
+          port: port,
+          token: token,
+          sessionId: indexed.manifest.sessionId,
+          mode: 'http-lan',
+          tlsFingerprint: fingerprint,
+        );
+
+    // No fingerprint — a QR from a plaintext-era build.
+    final noPin = await QhtpReceiverClient(store: _InMemorySessionStateStore())
+        .downloadSession(payload: payload(''), targetBaseDir: targetDir.path);
+    expect(noPin.isLeft, isTrue);
+
+    // A fingerprint that is not this server's — a man in the middle presenting
+    // its own certificate.
+    final wrongPin = await QhtpReceiverClient(store: _InMemorySessionStateStore())
+        .downloadSession(
+            payload: payload('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'),
+            targetBaseDir: targetDir.path);
+    expect(wrongPin.isLeft, isTrue);
+
+    // Nothing landed either way.
+    expect(Directory(targetDir.path).listSync(), isEmpty);
   });
 }

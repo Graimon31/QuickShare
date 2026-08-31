@@ -73,6 +73,7 @@ void main() {
       token: token,
       sessionId: 'integrity',
       mode: 'http-lan',
+      tlsFingerprint: server.tlsFingerprint!,
     );
   }
 

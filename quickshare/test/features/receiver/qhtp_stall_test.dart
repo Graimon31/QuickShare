@@ -13,6 +13,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
+import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
 import 'package:quickshare/features/receiver/data/store/session_state_store.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
@@ -43,8 +44,10 @@ class _InMemorySessionStateStore extends SessionStateStore {
 
 /// Answers the session and manifest requests, then goes silent on the file
 /// body — the shape a suspended sender presents to the receiver.
-Future<HttpServer> _startMuteFileServer() async {
-  final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+Future<(HttpServer, String)> _startMuteFileServer() async {
+  final tls = SessionTlsIdentity.generate();
+  final server = await HttpServer.bindSecure(
+      InternetAddress.loopbackIPv4, 0, tls.securityContext);
   // Held open deliberately: closing them would let the client fail fast, which
   // is the behaviour this test is asserting does *not* happen by accident.
   final stalled = <HttpRequest>[];
@@ -86,7 +89,7 @@ Future<HttpServer> _startMuteFileServer() async {
     stalled.add(request);
   });
 
-  return server;
+  return (server, tls.fingerprint);
 }
 
 void main() {
@@ -105,7 +108,8 @@ void main() {
 
   test('a sender that accepts the connection and never answers fails the '
       'transfer instead of hanging forever', () async {
-    server = await _startMuteFileServer();
+    final (muteServer, fingerprint) = await _startMuteFileServer();
+    server = muteServer;
 
     // Shortened from the shipping 20s purely so this takes seconds: what is
     // under test is that the wait is bounded at all, not the size of the bound.
@@ -123,6 +127,7 @@ void main() {
             token: 'stall-token',
             sessionId: 'stall-session',
             mode: 'http-lan',
+            tlsFingerprint: fingerprint,
           ),
           targetBaseDir: targetDir.path,
         )

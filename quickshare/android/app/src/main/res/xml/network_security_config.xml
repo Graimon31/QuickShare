@@ -2,27 +2,22 @@
 <!--
   QuickShare network security configuration.
 
-  The previous version set base-config cleartextTrafficPermitted="false" and
-  then tried to list LAN addresses as <domain> entries. That does not work:
-  Android's NSC matches domains, not IP ranges, and there is no CIDR or
-  wildcard syntax. The result was that plain-HTTP QHTP traffic to an arbitrary
-  192.168.x.x peer was blocked outright.
+  Cleartext is denied. The local Wi-Fi/LAN server used to speak plain HTTP —
+  it carries a bearer token from the QR code over the local network — so this
+  file had to permit cleartext for a transfer to work at all, and said as much
+  rather than pretend otherwise.
 
-  It was also broken in debug, not just release, which is worth spelling out
-  because the old comments claimed otherwise: android:usesCleartextTraffic in
-  the debug manifest is *ignored* on API 24+ whenever a networkSecurityConfig
-  is present, and this file is declared in the main manifest, so it merges into
-  every variant. minSdk here is 24.
+  That server now serves HTTPS with a throwaway per-session certificate whose
+  fingerprint rides in the QR code and is pinned by the receiver. Trust is
+  anchored in the QR, not the network, so there is nothing left that needs
+  cleartext and this goes back to refusing it.
 
-  QHTP is plain HTTP by design — it carries a bearer token from the QR code
-  over the local network — so cleartext has to be permitted for the transfer to
-  work at all. The honest fix is to give the local server a self-signed
-  certificate and pin its fingerprint through the QR code, at which point this
-  file goes back to denying cleartext. Until then this permits it, and says so
-  rather than pretending otherwise.
+  (dart:io's own HTTP stack does not consult this file — it never gated the
+  transfer either way — but denying cleartext here keeps any Android-stack
+  consumer, a WebView or a plugin, honest, and documents the intent.)
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+    <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>

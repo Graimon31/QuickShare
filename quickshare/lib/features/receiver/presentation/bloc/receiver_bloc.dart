@@ -477,19 +477,10 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       _directLinkOpen = true;
       AppLogger.info('Taking the direct Wi-Fi link to the sender',
           tag: 'PEERLINK');
-      return QRPayload(
-        version: payload.version,
-        ip: '127.0.0.1',
-        port: port,
-        token: payload.token,
-        fileName: payload.fileName,
-        fileSize: payload.fileSize,
-        checksum: payload.checksum,
-        sessionId: payload.sessionId,
-        mode: payload.mode,
-        sdpOffer: payload.sdpOffer,
-        itemCount: payload.itemCount,
-      );
+      // Only the address changes — the same session, the same token, and the
+      // same certificate fingerprint to pin (the tunnel forwards to the very
+      // server the QR describes).
+      return payload.copyWith(ip: '127.0.0.1', port: port);
     } on PeerLinkException catch (e) {
       // Expected whenever the sender is on another platform, is an older
       // build, or the two are already on one network: the LAN address in the

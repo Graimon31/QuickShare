@@ -18,6 +18,12 @@ class QRPayload extends Equatable {
   /// Number of files in a QHTP multi-file session (0 when unknown / single-file).
   final int itemCount;
 
+  /// `base64url(sha256(server cert DER))` — the fingerprint the receiver pins
+  /// the HTTPS connection to. Empty only for a WebRTC-only payload, which does
+  /// not run a local server, and for payloads from before the LAN server used
+  /// TLS (those are rejected: a plaintext fallback is a permanent hole).
+  final String tlsFingerprint;
+
   const QRPayload({
     required this.version,
     required this.ip,
@@ -30,11 +36,27 @@ class QRPayload extends Equatable {
     this.mode,
     this.sdpOffer,
     this.itemCount = 0,
+    this.tlsFingerprint = '',
   });
 
   bool get isQhtp =>
       version == AppConstants.qhtpPayloadVersion ||
       (sessionId != null && sessionId!.isNotEmpty);
+
+  QRPayload copyWith({String? ip, int? port}) => QRPayload(
+        version: version,
+        ip: ip ?? this.ip,
+        port: port ?? this.port,
+        token: token,
+        fileName: fileName,
+        fileSize: fileSize,
+        checksum: checksum,
+        sessionId: sessionId,
+        mode: mode,
+        sdpOffer: sdpOffer,
+        itemCount: itemCount,
+        tlsFingerprint: tlsFingerprint,
+      );
 
   factory QRPayload.fromJson(Map<String, dynamic> json) {
     final v = json['v'] as int? ?? AppConstants.qrPayloadVersion;
@@ -52,6 +74,7 @@ class QRPayload extends Equatable {
         fileName: json['fn'] as String? ?? '',
         fileSize: json['fs'] as int? ?? 0,
         itemCount: json['ic'] as int? ?? 0,
+        tlsFingerprint: json['tf'] as String? ?? '',
       );
     }
     return QRPayload(
@@ -63,6 +86,7 @@ class QRPayload extends Equatable {
       fileSize: json['fs'] as int? ?? 0,
       checksum: json['cs'] as String? ?? '',
       sdpOffer: json['sdp'] as String?,
+      tlsFingerprint: json['tf'] as String? ?? '',
     );
   }
 
@@ -79,6 +103,7 @@ class QRPayload extends Equatable {
         if (fileName.isNotEmpty) 'fn': fileName,
         if (fileSize > 0) 'fs': fileSize,
         if (itemCount > 0) 'ic': itemCount,
+        if (tlsFingerprint.isNotEmpty) 'tf': tlsFingerprint,
       };
     }
     return {
@@ -90,6 +115,7 @@ class QRPayload extends Equatable {
       'fs': fileSize,
       'cs': checksum,
       if (sdpOffer != null && sdpOffer!.isNotEmpty) 'sdp': sdpOffer,
+      if (tlsFingerprint.isNotEmpty) 'tf': tlsFingerprint,
     };
   }
 
@@ -164,5 +190,6 @@ class QRPayload extends Equatable {
         sessionId,
         mode,
         itemCount,
+        tlsFingerprint,
       ];
 }

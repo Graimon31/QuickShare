@@ -12,8 +12,7 @@ class DownloadFileUseCase {
   Future<Either<Failure, String>> call(QRPayload payload,
       {void Function(int received, int total)? onProgress,
       void Function()? onVerifying}) async {
-    final serverCheck = await repository.checkServerAvailability(
-        payload.ip, payload.port, payload.token);
+    final serverCheck = await repository.checkServerAvailability(payload);
     if (serverCheck is Left) {
       return Left((serverCheck as Left<Failure, bool>).value);
     }

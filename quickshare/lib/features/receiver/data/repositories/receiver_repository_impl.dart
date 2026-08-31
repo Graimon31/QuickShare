@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:path/path.dart' as p;
 import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/utils/either.dart';
@@ -76,13 +78,35 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
     }
   }
 
+  /// A Dio that trusts one server: the one whose certificate hashes to
+  /// [fingerprint]. No CA, no hostname check — the QR is the trust anchor.
+  Dio _pinnedDio(String fingerprint) {
+    return Dio()
+      ..httpClientAdapter = IOHttpClientAdapter(
+        createHttpClient: () {
+          final client =
+              HttpClient(context: SecurityContext(withTrustedRoots: false));
+          client.badCertificateCallback =
+              (cert, h, p) => SessionTlsIdentity.matches(cert, fingerprint);
+          return client;
+        },
+      );
+  }
+
   @override
-  Future<Either<Failure, bool>> checkServerAvailability(
-      String ip, int port, String token) async {
+  Future<Either<Failure, bool>> checkServerAvailability(QRPayload payload) async {
+    final ip = payload.ip;
+    final port = payload.port;
     if (!validatePrivateIp(ip)) return const Left(NetworkFailure('Invalid IP'));
+    if (payload.tlsFingerprint.isEmpty) {
+      return const Left(NetworkFailure(
+          'This code is from an older version that sends files unencrypted. '
+          'Update the sending device.'));
+    }
+    final pinned = _pinnedDio(payload.tlsFingerprint);
     try {
-      final response = await dio.get(
-        'http://$ip:$port/v2/health',
+      final response = await pinned.get(
+        'https://$ip:$port/v2/health',
         options: Options(
           connectTimeout: const Duration(seconds: 3),
           sendTimeout: const Duration(seconds: 3),
@@ -96,10 +120,10 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
     } catch (e) {
       // Fallback check legacy /info route
       try {
-        final legacyRes = await dio.get(
-          'http://$ip:$port/info',
+        final legacyRes = await pinned.get(
+          'https://$ip:$port/info',
           options: Options(
-            headers: {'Authorization': 'Bearer $token'},
+            headers: {'Authorization': 'Bearer ${payload.token}'},
             connectTimeout: const Duration(seconds: 3),
             sendTimeout: const Duration(seconds: 3),
             receiveTimeout: const Duration(seconds: 3),
@@ -109,6 +133,8 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       } catch (_) {}
       return const Left(
           NetworkFailure('Connection failed. Please check network.'));
+    } finally {
+      pinned.close();
     }
   }
 
@@ -118,9 +144,15 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
     if (!validatePrivateIp(payload.ip)) {
       return const Left(NetworkFailure('Invalid IP'));
     }
+    if (payload.tlsFingerprint.isEmpty) {
+      return const Left(NetworkFailure(
+          'This code is from an older version that sends files unencrypted. '
+          'Update the sending device.'));
+    }
+    final pinned = _pinnedDio(payload.tlsFingerprint);
     try {
-      final response = await dio.get(
-        'http://${payload.ip}:${payload.port}/v2/session',
+      final response = await pinned.get(
+        'https://${payload.ip}:${payload.port}/v2/session',
         options: Options(
           headers: {'Authorization': 'Bearer ${payload.token}'},
           // First LAN hop on iOS can wait on the Local Network permission sheet.
@@ -144,6 +176,8 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
     } catch (e) {
       debugPrint('Error details: $e');
       return const Left(NetworkFailure('Failed to connect to sender.'));
+    } finally {
+      pinned.close();
     }
   }
 
@@ -162,12 +196,13 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
     try {
       final tempDir = await getTemporaryDirectory();
       final tempPath = sanitizePath(payload.fileName, tempDir.path);
-      final url = 'http://${payload.ip}:${payload.port}/download';
+      final url = 'https://${payload.ip}:${payload.port}/download';
 
       final resultPath = await downloader.download(
         url: url,
         token: payload.token,
         savePath: tempPath,
+        tlsFingerprint: payload.tlsFingerprint,
         onProgress: onProgress,
       );
       return Right(resultPath);
