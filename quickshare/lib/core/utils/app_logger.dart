@@ -8,6 +8,11 @@ enum LogLevel { debug, info, warning, error }
 
 class AppLogger {
   static const int _maxInMemoryLogs = 1000;
+
+  /// How far back the on-disk log reaches. Anything older is dropped at
+  /// launch, so the journal the user can copy from Settings stays a
+  /// rolling window rather than a file that only ever grows.
+  static const Duration _retention = Duration(days: 7);
   static final List<String> _inMemoryLogs = [];
   static File? _logFile;
   static final StreamController<String> _logStreamController =
@@ -19,6 +24,7 @@ class AppLogger {
     try {
       final dir = await getApplicationDocumentsDirectory();
       _logFile = File(p.join(dir.path, 'directdrop.log'));
+      await _pruneToRetention();
       info('AppLogger initialized at ${_logFile?.path}');
     } catch (e) {
       debugPrint('AppLogger init error: $e');
@@ -84,6 +90,52 @@ class AppLogger {
       return _logFile;
     }
     return null;
+  }
+
+  /// Drops every log entry older than [_retention] and rewrites the file.
+  ///
+  /// Works line by line off the `[ISO-8601]` stamp each entry opens with; a
+  /// line without one (a wrapped stack trace) keeps whatever verdict its
+  /// entry's first line got, so a kept error keeps its trace and a dropped
+  /// one takes its trace with it.
+  static Future<void> _pruneToRetention() async {
+    final file = _logFile;
+    if (file == null || !await file.exists()) return;
+    try {
+      final lines = (await file.readAsString()).split('\n');
+      final kept = retainSince(
+          lines, DateTime.now().subtract(_retention));
+      if (kept.length != lines.length) {
+        await file.writeAsString(kept.join('\n'));
+      }
+    } catch (_) {
+      // Housekeeping only — never let it get in the way of logging.
+    }
+  }
+
+  /// The lines of a log at or after [cutoff].
+  ///
+  /// Each entry opens with an `[ISO-8601]` stamp; a line without one (a
+  /// wrapped stack trace) inherits its entry's verdict, so a kept error keeps
+  /// its trace and a dropped one takes its trace with it.
+  @visibleForTesting
+  static List<String> retainSince(List<String> lines, DateTime cutoff) {
+    final kept = <String>[];
+    var keeping = true;
+    for (final line in lines) {
+      final at = _entryTime(line);
+      if (at != null) keeping = !at.isBefore(cutoff);
+      if (keeping) kept.add(line);
+    }
+    return kept;
+  }
+
+  /// The timestamp a log line opens with, or null if it does not open with one.
+  static DateTime? _entryTime(String line) {
+    if (!line.startsWith('[')) return null;
+    final end = line.indexOf(']');
+    if (end < 2) return null;
+    return DateTime.tryParse(line.substring(1, end));
   }
 
   static Future<void> clearLogs() async {
