@@ -242,24 +242,25 @@ class UpnpPortForwarder {
     required int externalPort,
     required String description,
   }) async {
-    // Some IGD implementations answer 725 OnlyPermanentLeasesSupported for a
-    // finite lease, so ask for one first and fall back rather than give up.
-    if (await _addPortMapping(
+    // Only ever a finite lease. Some IGDs answer 725
+    // OnlyPermanentLeasesSupported and this returns false — the transfer then
+    // falls back to a relay or fails cleanly, which is the right outcome. The
+    // old code fell back to `NewLeaseDuration` of 0 (a permanent mapping) and
+    // never called DeletePortMapping, so a crash left the router open forever.
+    // A visible failure beats an invisible hole.
+    final ok = await _addPortMapping(
         deviceInfo: deviceInfo,
         localIp: localIp,
         internalPort: internalPort,
         externalPort: externalPort,
         description: description,
-        leaseSeconds: _leaseSeconds)) {
-      return true;
+        leaseSeconds: _leaseSeconds);
+    if (!ok) {
+      debugPrint('UPnP: router refused a ${_leaseSeconds}s lease for '
+          '$externalPort -> $localIp:$internalPort; not forwarding rather '
+          'than asking for a permanent mapping');
     }
-    return _addPortMapping(
-        deviceInfo: deviceInfo,
-        localIp: localIp,
-        internalPort: internalPort,
-        externalPort: externalPort,
-        description: description,
-        leaseSeconds: 0);
+    return ok;
   }
 
   Future<bool> _addPortMapping({

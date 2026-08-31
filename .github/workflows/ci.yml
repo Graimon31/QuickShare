@@ -3,6 +3,7 @@ name: QuickShare Cross-Platform CI
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
 
@@ -108,18 +109,31 @@ jobs:
       # Signing material comes from repository secrets. Without them the build
       # still runs and produces an unsigned APK rather than silently falling
       # back to the debug certificate.
+      #
+      # Missing secrets mean different things depending on the trigger. On a
+      # push to a release branch or a tag, they are a misconfiguration that
+      # would ship an unsigned build — fail. On a pull request (a fork cannot
+      # read repository secrets at all) it only means this run cannot produce
+      # a publishable artifact — warn, build unsigned to exercise the path,
+      # and let the upload step skip it.
       # The secrets context is not reliably usable in a step-level `if`, so the
-      # value is read into an env var and the emptiness check happens in shell.
+      # value is read into an env var and the check happens in shell.
       - name: Decode release keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.QUICKSHARE_KEYSTORE_BASE64 }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ -z "$KEYSTORE_BASE64" ]; then
-            echo "No keystore secret configured — the release APK will be unsigned."
-            exit 0
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+            echo "QUICKSHARE_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "RELEASE_SIGNED=true" >> "$GITHUB_ENV"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            echo "::error::No keystore secret configured on a $EVENT_NAME — a release build must be signed."
+            exit 1
+          else
+            echo "::warning::No keystore secret (expected on a fork PR) — building an unsigned APK; it will not be uploaded."
+            echo "RELEASE_SIGNED=false" >> "$GITHUB_ENV"
           fi
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
-          echo "QUICKSHARE_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
       # Per-ABI APKs rather than one fat binary. The universal APK is 102 MB
       # because it carries libflutter, libjingle_peerconnection and the ML Kit
@@ -139,7 +153,11 @@ jobs:
           QUICKSHARE_KEY_PASSWORD: ${{ secrets.QUICKSHARE_KEY_PASSWORD }}
         run: flutter build appbundle --release --no-pub
 
+      # Only a signed build is uploadable. An unsigned PR build has done its
+      # job by compiling; publishing it as an artifact is how one gets picked
+      # up and shipped by mistake.
       - name: Upload release artifacts
+        if: env.RELEASE_SIGNED == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: android-release

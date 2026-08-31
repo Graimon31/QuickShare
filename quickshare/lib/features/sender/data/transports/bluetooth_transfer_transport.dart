@@ -143,6 +143,12 @@ class BluetoothTransferTransport implements TransferTransport {
             _universalClientId = deviceId;
             _universalStartReceived = true;
             unawaited(_maybeStartUniversalTransfer());
+          } else if (BleControlProtocol.isUnauthorizedStart(
+              command, _universalSessionToken)) {
+            // A START without the session token — a receiver too old to pair
+            // securely. Say so rather than leaving both sides waiting.
+            lastFailureReason = BleControlProtocol.staleReceiverMessage;
+            _statusController.add(TransferStatus.failed);
           }
         }
         return PeripheralWriteRequestResult();

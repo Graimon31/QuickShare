@@ -29,7 +29,8 @@ import CoreBluetooth
 /// receiver announces itself before it starts a transfer.
 enum BTControl {
     /// 1 — one file per session. 2 — a list of files carrying relative paths.
-    static let generation = 2
+    /// 3 — START must carry the session token; a bare START is refused.
+    static let generation = 3
 
     static func capabilities() -> String { "CAPS:\(generation)" }
 
@@ -40,11 +41,22 @@ enum BTControl {
     }
 
     static func isStart(_ command: String?, token: String?) -> Bool {
-        guard let command else { return false }
-        if command == "START" { return true }
-        guard let token else { return false }
+        guard let command, let token, !token.isEmpty else { return false }
         return command == "START:\(token)"
     }
+
+    /// A START write that failed `isStart` — a device trying to begin a
+    /// transfer without the session token, almost always a receiver from
+    /// before the token was required.
+    static func isUnauthorizedStart(_ command: String?, token: String?) -> Bool {
+        guard let command else { return false }
+        return (command == "START" || command.hasPrefix("START:"))
+            && !isStart(command, token: token)
+    }
+
+    static let staleReceiverMessage =
+        "The receiving device is on an older version that cannot pair securely "
+        + "over Bluetooth. Update it, or send over Wi-Fi."
 }
 
 /// One file inside a Bluetooth session.
@@ -577,9 +589,17 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
                 continue
             }
 
-            peripheral.respond(to: request, withResult: .success)
             if BTControl.isStart(command, token: sendSessionToken) {
+                peripheral.respond(to: request, withResult: .success)
                 beginTransferIfReady()
+            } else if BTControl.isUnauthorizedStart(command, token: sendSessionToken) {
+                // A START without the session token — a receiver too old to
+                // pair securely. Refuse and say why, rather than leaving both
+                // sides waiting on a transfer that will never begin.
+                peripheral.respond(to: request, withResult: .insufficientAuthentication)
+                emit(["type": "senderFailed", "error": BTControl.staleReceiverMessage])
+            } else {
+                peripheral.respond(to: request, withResult: .success)
             }
         }
     }
@@ -698,8 +718,14 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
             // implement.
             peripheral.writeValue(Data(BTControl.capabilities().utf8), for: controlChar, type: writeType)
 
-            let command = expectedSessionToken.map { "START:\($0)" } ?? "START"
-            peripheral.writeValue(Data(command.utf8), for: controlChar, type: writeType)
+            guard let token = expectedSessionToken, !token.isEmpty else {
+                // No token means no QR was scanned — there is nothing to
+                // authorise the transfer with, and a bare START is no longer
+                // accepted. Stop rather than write a command that gets refused.
+                emit(["type": "receiverFailed", "error": "Missing session token — scan the QR code again."])
+                return
+            }
+            peripheral.writeValue(Data("START:\(token)".utf8), for: controlChar, type: writeType)
         }
     }
 

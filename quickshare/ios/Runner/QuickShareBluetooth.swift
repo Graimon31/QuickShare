@@ -28,7 +28,8 @@ private struct QuickShareSenderItem {
 /// receiver announces itself before it starts a transfer.
 private enum QuickShareBleControl {
   /// 1 — one file per session. 2 — a list of files carrying relative paths.
-  static let generation = 2
+  /// 3 — START must carry the session token; a bare START is refused.
+  static let generation = 3
 
   static func capabilities() -> String { "CAPS:\(generation)" }
 
@@ -39,11 +40,22 @@ private enum QuickShareBleControl {
   }
 
   static func isStart(_ command: String?, token: String?) -> Bool {
-    guard let command else { return false }
-    if command == "START" { return true }
-    guard let token else { return false }
+    guard let command, let token, !token.isEmpty else { return false }
     return command == "START:\(token)"
   }
+
+  /// A START write that failed `isStart` — a device trying to begin a
+  /// transfer without the session token, almost always a receiver from
+  /// before the token was required.
+  static func isUnauthorizedStart(_ command: String?, token: String?) -> Bool {
+    guard let command else { return false }
+    return (command == "START" || command.hasPrefix("START:"))
+      && !isStart(command, token: token)
+  }
+
+  static let staleReceiverMessage =
+    "The receiving device is on an older version that cannot pair securely "
+    + "over Bluetooth. Update it, or send over Wi-Fi."
 }
 
 private enum QuickShareBluetoothIDs {
@@ -605,6 +617,12 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
       if QuickShareBleControl.isStart(command, token: senderSessionToken) {
         peripheral.respond(to: request, withResult: .success)
         beginSenderTransferIfReady()
+      } else if QuickShareBleControl.isUnauthorizedStart(command, token: senderSessionToken) {
+        // A START without the session token — a receiver too old to pair
+        // securely. Refuse the write and say why, rather than leaving both
+        // sides waiting on a transfer that will never begin.
+        peripheral.respond(to: request, withResult: .insufficientAuthentication)
+        emit(["type": "senderFailed", "error": QuickShareBleControl.staleReceiverMessage])
       } else {
         peripheral.respond(to: request, withResult: .requestNotSupported)
       }
@@ -659,8 +677,14 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     // implement.
     peripheral.writeValue(Data(QuickShareBleControl.capabilities().utf8), for: control, type: writeType)
 
-    let command = expectedSessionToken.map { "START:\($0)" } ?? "START"
-    peripheral.writeValue(Data(command.utf8), for: control, type: writeType)
+    guard let token = expectedSessionToken, !token.isEmpty else {
+      // No token means no QR was scanned for this session — there is nothing
+      // to authorise the transfer with, and a bare START is no longer
+      // accepted. Stop here rather than write a command that will be refused.
+      emit(["type": "receiverFailed", "error": "Missing session token — scan the QR code again."])
+      return
+    }
+    peripheral.writeValue(Data("START:\(token)".utf8), for: control, type: writeType)
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {

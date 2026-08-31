@@ -300,4 +300,45 @@ void main() {
 
     await progressSub.cancel();
   });
+
+  test('an existing file in the destination is never overwritten', () async {
+    // A sender that names its file to match one the user already has must not
+    // replace it — the received copy lands beside it as `name (1).ext`.
+    final srcFile = File(p.join(sourceDir.path, 'report.pdf'));
+    await srcFile.writeAsString('the freshly sent version');
+
+    final indexResult = await FileIndexer().buildResult(
+      sessionId: 'e2e-session-noclobber',
+      paths: [srcFile.path],
+    );
+
+    server = LocalHttpServer();
+    const token = 'e2e-token-noclobber';
+    final port = await server!.startQhtpSession(
+      manifest: indexResult.manifest,
+      itemIdToAbsPathMap: indexResult.itemIdToAbsPathMap,
+      authToken: token,
+    );
+
+    // The user's own file, already sitting where the transfer would land.
+    final existing = File(p.join(targetDir.path, 'report.pdf'));
+    await existing.writeAsString('the original the user wants kept');
+
+    final result = await QhtpReceiverClient(store: _InMemorySessionStateStore())
+        .downloadSession(payload: QRPayload(
+          version: 2,
+          ip: '127.0.0.1',
+          port: port,
+          token: token,
+          sessionId: indexResult.manifest.sessionId,
+          mode: 'http-lan',
+        ), targetBaseDir: targetDir.path);
+
+    expect(result.isRight, isTrue);
+    expect(await existing.readAsString(), 'the original the user wants kept',
+        reason: 'the pre-existing file is untouched');
+    expect(await File(p.join(targetDir.path, 'report (1).pdf')).readAsString(),
+        'the freshly sent version',
+        reason: 'the received copy lands under a free name');
+  });
 }

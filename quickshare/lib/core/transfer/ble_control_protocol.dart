@@ -30,7 +30,10 @@ class BleControlProtocol {
   /// 1 — one file per session, the only shape that existed through v1.0.10.
   /// 2 — a list of files, each with the relative path it keeps, so a folder
   ///     crosses as a folder.
-  static const int generation = 2;
+  /// 3 — `START` must carry the session token. A bare `START` is refused:
+  ///     without the token any device in radio range could open the GATT
+  ///     server and pull the file the sender is offering to someone else.
+  static const int generation = 3;
 
   /// Sent before [startCommand], never instead of it.
   static String capabilities([int gen = generation]) => 'CAPS:$gen';
@@ -71,8 +74,25 @@ class BleControlProtocol {
 
   /// Whether [command] is a valid start for a session opened with [token].
   ///
-  /// The bare `START` spelling is still accepted: it is what the first builds
-  /// wrote and what an unauthenticated local test still writes.
+  /// The token is mandatory. It is the only thing that ties the write to the
+  /// QR code the sender showed: without it, a bare `START` from any device
+  /// that connected to the GATT server would begin the transfer.
   static bool isStart(String command, String? token) =>
-      command == 'START' || (token != null && command == 'START:$token');
+      token != null && token.isNotEmpty && command == 'START:$token';
+
+  /// Whether [command] is a `START` write that failed [isStart] — a device
+  /// trying to begin a transfer without the session token.
+  ///
+  /// Almost always a receiver on a build from before the token was required;
+  /// the sender turns this into [staleReceiverMessage] rather than ignoring
+  /// the write and leaving both sides waiting.
+  static bool isUnauthorizedStart(String command, String? token) =>
+      (command == 'START' || command.startsWith('START:')) &&
+      !isStart(command, token);
+
+  /// Shown to the person sending when a receiver writes a `START` without the
+  /// session token — see [isUnauthorizedStart].
+  static const String staleReceiverMessage =
+      'The receiving device is on an older version that cannot pair securely '
+      'over Bluetooth. Update it, or send over Wi-Fi.';
 }

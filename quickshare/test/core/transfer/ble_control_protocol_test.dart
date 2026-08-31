@@ -10,8 +10,8 @@ import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 void main() {
   group('capabilities', () {
     test('a receiver announces the generation it understands', () {
-      expect(BleControlProtocol.capabilities(), equals('CAPS:2'));
-      expect(BleControlProtocol.parseCapabilities('CAPS:2'), equals(2));
+      expect(BleControlProtocol.capabilities(), equals('CAPS:3'));
+      expect(BleControlProtocol.parseCapabilities('CAPS:3'), equals(3));
     });
 
     test('START is not mistaken for an announcement', () {
@@ -37,7 +37,7 @@ void main() {
     test('a peer that announced this generation takes the whole list', () {
       expect(
           BleControlProtocol.peerCanTakeSession(
-              fileCount: 412, peerGeneration: 2),
+              fileCount: 412, peerGeneration: 3),
           isTrue);
     });
 
@@ -85,15 +85,34 @@ void main() {
       expect(BleControlProtocol.isStart('START:abc', 'abc'), isTrue);
     });
 
-    test('the bare spelling still works', () {
-      // What the first builds wrote, and what an unauthenticated local test
-      // still writes.
-      expect(BleControlProtocol.isStart('START', 'abc'), isTrue);
-      expect(BleControlProtocol.isStart('START', null), isTrue);
+    test('a bare START is refused — the token is mandatory', () {
+      // Without the token, any device that connected to the GATT server could
+      // begin the transfer.
+      expect(BleControlProtocol.isStart('START', 'abc'), isFalse);
+      expect(BleControlProtocol.isStart('START', null), isFalse);
+      expect(BleControlProtocol.isStart('START:abc', null), isFalse);
+      expect(BleControlProtocol.isStart('START:abc', ''), isFalse);
     });
 
     test('somebody else\'s token does not start this session', () {
       expect(BleControlProtocol.isStart('START:other', 'abc'), isFalse);
+    });
+
+    test('a START-shaped write without the token is flagged as unauthorized',
+        () {
+      expect(BleControlProtocol.isUnauthorizedStart('START', 'abc'), isTrue);
+      expect(
+          BleControlProtocol.isUnauthorizedStart('START:other', 'abc'), isTrue);
+      // The real thing is not "unauthorized".
+      expect(
+          BleControlProtocol.isUnauthorizedStart('START:abc', 'abc'), isFalse);
+      // Neither is an unrelated command.
+      expect(BleControlProtocol.isUnauthorizedStart('CAPS:3', 'abc'), isFalse);
+    });
+
+    test('the stale-receiver message names the way out', () {
+      expect(BleControlProtocol.staleReceiverMessage, contains('Wi-Fi'));
+      expect(BleControlProtocol.staleReceiverMessage, contains('Update'));
     });
   });
 }

@@ -95,6 +95,10 @@ class LinuxBluetoothSender {
           if (BleControlProtocol.isStart(command, _token)) {
             _startReceived = true;
             await _maybeStartTransfer();
+          } else if (BleControlProtocol.isUnauthorizedStart(command, _token)) {
+            // A START without the session token — a receiver too old to pair
+            // securely. Say so rather than leaving both sides waiting.
+            _onStatus?.call('failed', BleControlProtocol.staleReceiverMessage);
           }
         },
       );

@@ -128,6 +128,24 @@ class QhtpReceiverClient {
     return resolvedPath;
   }
 
+  /// [path] if it is free, otherwise `stem (1).ext`, `stem (2).ext`, … — the
+  /// same `name (n).ext` convention the WebRTC receiver uses.
+  ///
+  /// Only the final name is checked, not the `.qs.partial`: a leftover partial
+  /// is either this session's to resume or stale debris the sweep will clear,
+  /// and neither is a reason to rename the file the user asked for.
+  String _uniquePath(String path) {
+    var candidate = path;
+    var counter = 1;
+    while (File(candidate).existsSync()) {
+      final ext = p.extension(path);
+      final stem = p.basenameWithoutExtension(path);
+      candidate = p.join(p.dirname(path), '$stem ($counter)$ext');
+      counter++;
+    }
+    return candidate;
+  }
+
   /// Uses the directory the caller asked for, when it can actually be
   /// written to.
   ///
@@ -361,8 +379,35 @@ class QhtpReceiverClient {
           continue;
         }
 
-        final finalPath = materializePath(item.path, resolvedTargetBaseDir);
+        // Never write over a file the user already has. A sender that names
+        // its file to match one in the destination folder would otherwise
+        // replace it silently — the WebRTC receiver already sidesteps this
+        // with `name (1).ext`, and this brings the two into line.
+        //
+        // The resolved name is pinned into the session state as soon as it is
+        // chosen, so a resumed transfer continues the same `.qs.partial`
+        // rather than picking a fresh name beside the half-written one. If the
+        // pinned name has since been taken by something else, the item starts
+        // over under a new name rather than deleting whatever is now there.
+        var finalPath = itemState.finalPath;
+        if (finalPath == null || File(finalPath).existsSync()) {
+          finalPath =
+              _uniquePath(materializePath(item.path, resolvedTargetBaseDir));
+        }
         final partialPath = '$finalPath.qs.partial';
+
+        if (itemState.finalPath != finalPath) {
+          itemState = itemState.copyWith(finalPath: finalPath);
+          localState[item.id] = itemState;
+          await stateStore.saveState(
+            sessionId: sessionId,
+            host: host,
+            port: port,
+            token: token,
+            baseDir: resolvedTargetBaseDir,
+            items: localState,
+          );
+        }
 
         final parentDir = Directory(p.dirname(finalPath));
         if (!await parentDir.exists()) {
@@ -524,10 +569,11 @@ class QhtpReceiverClient {
               await fsyncHandle.close();
             }
 
-            final finalFile = File(finalPath);
-            if (await finalFile.exists()) {
-              await finalFile.delete();
-            }
+            // No delete-then-rename: `finalPath` was resolved to a free name
+            // above, so there is nothing here to overwrite. If something has
+            // taken the name in the meantime the rename throws, the item
+            // fails, and the next run picks a new name — it never removes a
+            // file it did not write.
             await partialFile.rename(finalPath);
             await syncDirectory(p.dirname(finalPath));
 

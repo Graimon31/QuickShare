@@ -161,6 +161,12 @@ class UniversalBleReceiverTransport {
     required String token,
     String? targetDir,
   }) async {
+    if (token.isEmpty) {
+      // The sender no longer accepts a START without the session token, so a
+      // connect without one cannot go anywhere — fail here with something the
+      // user can act on rather than time out against a silent peer.
+      throw Exception('Missing session token — scan the QR code again.');
+    }
     await stopScanning();
 
     _targetDeviceId = deviceId;
