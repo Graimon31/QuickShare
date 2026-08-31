@@ -5,21 +5,11 @@ import 'package:flutter/foundation.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
 
-/// Parsed Internet-share invite (room + optional peer-reachable signaling URL).
-class InternetInvite {
-  final String roomCode;
-
-  /// WebSocket URL the *receiver* should dial (may differ from sender's localhost).
-  final String? signalingUrl;
-
-  const InternetInvite({required this.roomCode, this.signalingUrl});
-}
-
 /// A `directdrop://join?p=…` share link, with optional display metadata.
 ///
-/// The QR itself is [qrPayload]. Internet/serverless QR codes (`QS1…`) do not
-/// carry a file name or size — those go in `n` / `s` / `c` so the receiver
-/// can show what is coming before the DataChannel opens.
+/// The QR itself is [qrPayload]. Serverless (`QS1…`) QR codes do not carry a
+/// file name or size — those go in `n` / `s` / `c` so the receiver can show
+/// what is coming before the DataChannel opens.
 class ShareLinkContents {
   final String qrPayload;
   final String? name;
@@ -34,23 +24,13 @@ class ShareLinkContents {
   });
 }
 
-/// Listens for `directdrop://join?room=CODE` links and exposes the room codes.
-///
-/// Internet shares may also carry `sig=` (URL-encoded ws/wss endpoint) so the
-/// phone can reach the Mac's signaling server without guessing localhost.
+/// Listens for `directdrop://join?p=…` share links and hands the receiver the
+/// QR payload they carry — the same bytes a camera would have read.
 class DeepLinkService {
   final AppLinks _appLinks;
   StreamSubscription<Uri>? _sub;
 
-  final _roomCodes = StreamController<String>.broadcast();
-  final _invites = StreamController<InternetInvite>.broadcast();
   final _sharePayloads = StreamController<ShareLinkContents>.broadcast();
-
-  /// Room codes parsed from incoming share links (legacy).
-  Stream<String> get roomCodes => _roomCodes.stream;
-
-  /// Full invites including optional signaling URL.
-  Stream<InternetInvite> get invites => _invites.stream;
 
   /// QR payloads extracted from `directdrop://join?p=…` share links.
   ///
@@ -60,76 +40,6 @@ class DeepLinkService {
   Stream<ShareLinkContents> get sharePayloads => _sharePayloads.stream;
 
   DeepLinkService({AppLinks? appLinks}) : _appLinks = appLinks ?? AppLinks();
-
-  /// Extracts the room code from a share link, or null if it isn't one.
-  static String? parseRoomCode(Uri uri) {
-    return parseInternetInviteFromUri(uri)?.roomCode;
-  }
-
-  /// Parses `directdrop://join?room=CODE&sig=ws%3A%2F%2F…`.
-  static InternetInvite? parseInternetInviteFromUri(Uri uri) {
-    if (uri.scheme.toLowerCase() != AppConstants.deepLinkScheme) return null;
-
-    final fromQuery = uri.queryParameters['room'];
-    final candidate = (fromQuery != null && fromQuery.isNotEmpty)
-        ? fromQuery
-        : (uri.pathSegments.isNotEmpty ? uri.pathSegments.last : null);
-
-    if (candidate == null) return null;
-    final code = candidate.trim().toUpperCase();
-    if (!RegExp(r'^[A-Z0-9]{6}$').hasMatch(code)) return null;
-
-    final rawSig = uri.queryParameters['sig']?.trim();
-    String? signalingUrl;
-    if (rawSig != null && rawSig.isNotEmpty) {
-      final decoded = Uri.decodeComponent(rawSig);
-      final sigUri = Uri.tryParse(decoded);
-      if (sigUri != null &&
-          (sigUri.scheme == 'ws' || sigUri.scheme == 'wss') &&
-          sigUri.host.isNotEmpty) {
-        signalingUrl = decoded;
-      }
-    }
-
-    return InternetInvite(roomCode: code, signalingUrl: signalingUrl);
-  }
-
-  /// Parses a pasted full link or bare six-character room code.
-  static String? parseFromText(String text) {
-    return parseInternetInvite(text)?.roomCode;
-  }
-
-  /// Full invite parse for Internet receive (room + optional `sig=`).
-  static InternetInvite? parseInternetInvite(String text) {
-    final trimmed = text.trim();
-    if (trimmed.isEmpty) return null;
-
-    final uri = Uri.tryParse(trimmed);
-    if (uri != null && uri.scheme.isNotEmpty) {
-      final fromUri = parseInternetInviteFromUri(uri);
-      if (fromUri != null) return fromUri;
-    }
-
-    final bare = trimmed.toUpperCase();
-    if (RegExp(r'^[A-Z0-9]{6}$').hasMatch(bare)) {
-      return InternetInvite(roomCode: bare);
-    }
-    return null;
-  }
-
-  /// Builds a share link the receiver can open or paste.
-  static String buildShareLink({
-    required String roomCode,
-    String? signalingUrlForPeer,
-  }) {
-    final code = roomCode.trim().toUpperCase();
-    const base =
-        '${AppConstants.deepLinkScheme}://${AppConstants.deepLinkHost}';
-    if (signalingUrlForPeer == null || signalingUrlForPeer.isEmpty) {
-      return '$base?room=$code';
-    }
-    return '$base?room=$code&sig=${Uri.encodeComponent(signalingUrlForPeer)}';
-  }
 
   /// Query key for a share link that carries the QR payload itself.
   static const String payloadQuery = 'p';
@@ -189,7 +99,7 @@ class DeepLinkService {
   }
 
   /// The QR payload inside a payload share link, or null if this URI is
-  /// something else (a room invite, a foreign scheme, empty).
+  /// something else (a foreign scheme, empty).
   static String? parseSharePayloadFromUri(Uri uri) {
     if (uri.scheme.toLowerCase() != AppConstants.deepLinkScheme) return null;
     final raw = uri.queryParameters[payloadQuery];
@@ -226,22 +136,12 @@ class DeepLinkService {
 
   void _dispatch(Uri uri) {
     final share = parseShareLinkFromUri(uri);
-    if (share != null) {
-      _sharePayloads.add(share);
-      return;
-    }
-    final invite = parseInternetInviteFromUri(uri);
-    if (invite != null) {
-      _roomCodes.add(invite.roomCode);
-      _invites.add(invite);
-    }
+    if (share != null) _sharePayloads.add(share);
   }
 
   Future<void> dispose() async {
     await _sub?.cancel();
     _sub = null;
-    await _roomCodes.close();
-    await _invites.close();
     await _sharePayloads.close();
   }
 }

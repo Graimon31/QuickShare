@@ -13,9 +13,6 @@ import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/core/webrtc/send_buffer.dart';
 import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
-import 'package:quickshare/core/deep_link/deep_link_service.dart';
-import 'package:quickshare/core/network/auto_tunnel_service.dart';
-import 'package:quickshare/features/sender/data/signaling/webrtc_signaling_client.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
@@ -42,13 +39,9 @@ class WebRtcTransferTransport implements TransferTransport {
   final StreamController<TransferStatus> _statusController =
       StreamController<TransferStatus>.broadcast();
 
-  String? _roomId;
   // Only the LAN/room flow uses this. The serverless flow never constructs a
   // signaling client, so every use must stay null-safe.
-  WebRtcSignalingClient? _signalingClient;
-  StreamSubscription<Map<String, dynamic>>? _signalSub;
 
-  bool _remoteDescriptionSet = false;
   final _gathering = IceGatheringTracker();
 
   /// How long ICE may sit in `disconnected` before the session is written off.
@@ -89,7 +82,6 @@ class WebRtcTransferTransport implements TransferTransport {
   /// through the relay it landed on. Nothing has been sent at that point.
   Stream<RelayLimitExceeded> get relayBlockedStream =>
       _degradationController.stream;
-  final List<RTCIceCandidate> _pendingRemoteCandidates = [];
 
   /// §6 — keeps the CPU/display awake for the duration of a transfer.
   final _wakelockGuard = WakelockGuard();
@@ -97,15 +89,7 @@ class WebRtcTransferTransport implements TransferTransport {
   /// §9 — refreshes TURN credentials before they expire.
   TurnCredentialRefresher? _turnRefresher;
 
-  /// Overrides the signaling endpoint this sender dials.
-  ///
-  /// The receiver has taken one of these since it was written; the sender did
-  /// not, which made the room-based path impossible to exercise against
-  /// anything but a process listening on the compiled-in default. Production
-  /// leaves it null and gets [AppConstants.signalingServerUrl].
-  final String? signalingUrlOverride;
-
-  WebRtcTransferTransport({this.signalingUrlOverride});
+  WebRtcTransferTransport();
 
   @override
   Stream<double> get progressStream => _progressController.stream;
@@ -116,10 +100,6 @@ class WebRtcTransferTransport implements TransferTransport {
   @override
   Future<void> initialize() async {
     _statusController.add(TransferStatus.initial);
-    // Sender dials the configured URL as-is (localhost is fine on the Mac
-    // that hosts signaling_server).
-    _signalingClient = WebRtcSignalingClient(
-        serverUrl: signalingUrlOverride ?? AppConstants.signalingServerUrl);
   }
 
   Future<Map<String, dynamic>> _iceConfiguration() =>
@@ -151,99 +131,6 @@ class WebRtcTransferTransport implements TransferTransport {
       expiresAt: expiresAt,
     );
     _turnRefresher!.start();
-  }
-
-  @override
-  Future<String> startSharing(FileMetadata file, String token) async {
-    try {
-      _statusController.add(TransferStatus.connecting);
-      await _wakelockGuard.acquire(); // §6
-
-      _peerConnection = await _openPeerConnection();
-      await _startTurnRefresher(); // §9
-      // The room-based path had no ICE state handler at all, so a dropped
-      // connection here was even quieter than in the serverless one.
-      _peerConnection!.onIceConnectionState = _onIceStateChanged;
-
-      _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
-        if (candidate.candidate == null) return;
-        _signalingClient?.sendIceCandidate({
-          'candidate': candidate.candidate,
-          'sdpMid': candidate.sdpMid,
-          'sdpMLineIndex': candidate.sdpMLineIndex,
-        });
-      };
-
-      // Reliable ordered channel (do not set maxRetransmits).
-      final dataChannelDict = RTCDataChannelInit()..ordered = true;
-      _dataChannel = await _peerConnection!
-          .createDataChannel('fileTransfer', dataChannelDict);
-
-      _trackBufferedAmount(_dataChannel!);
-
-      _dataChannel!.onDataChannelState = (RTCDataChannelState state) {
-        debugPrint('WebRTC sender DataChannel state: $state');
-        if (state == RTCDataChannelState.RTCDataChannelOpen) {
-          _statusController.add(TransferStatus.transferring);
-          unawaited(_sendFilesInChunks([file]));
-        }
-      };
-
-      // Subscribe BEFORE createRoom so receiver-joined is never dropped.
-      _signalSub = _signalingClient!.messages.listen((msg) async {
-        try {
-          final type = msg['type'];
-          if (type == 'receiver-joined') {
-            debugPrint('WebRTC: receiver joined — creating offer');
-            await _createAndSendOffer();
-          } else if (type == 'answer') {
-            final sdpMap = Map<String, dynamic>.from(msg['payload'] as Map);
-            await _peerConnection?.setRemoteDescription(
-              RTCSessionDescription(
-                sdpMap['sdp'] as String?,
-                sdpMap['type'] as String?,
-              ),
-            );
-            _remoteDescriptionSet = true;
-            for (final c in _pendingRemoteCandidates) {
-              await _peerConnection?.addCandidate(c);
-            }
-            _pendingRemoteCandidates.clear();
-          } else if (type == 'ice-candidate') {
-            final candidateMap =
-                Map<String, dynamic>.from(msg['payload'] as Map);
-            final candidate = RTCIceCandidate(
-              candidateMap['candidate'] as String?,
-              candidateMap['sdpMid'] as String?,
-              candidateMap['sdpMLineIndex'] as int?,
-            );
-            if (_remoteDescriptionSet) {
-              await _peerConnection?.addCandidate(candidate);
-            } else {
-              _pendingRemoteCandidates.add(candidate);
-            }
-          }
-        } catch (e) {
-          debugPrint('WebRTC sender signaling handler error: $e');
-        }
-      });
-
-      _roomId = await _signalingClient!.createRoom();
-
-      // Peer must dial a host it can reach — not the sender's localhost.
-      final peerSignalingUrl = signalingUrlOverride ??
-          await WebRtcSignalingClient.resolvePeerReachableUrl(
-              AppConstants.signalingServerUrl);
-
-      return DeepLinkService.buildShareLink(
-        roomCode: _roomId!,
-        signalingUrlForPeer: peerSignalingUrl,
-      );
-    } catch (e) {
-      await _wakelockGuard.release(); // §6
-      _statusController.add(TransferStatus.failed);
-      throw Exception('WebRTC startSharing failed: $e');
-    }
   }
 
   /// Serverless share: brings up the peer connection and the data channel and
@@ -359,14 +246,7 @@ class WebRtcTransferTransport implements TransferTransport {
     }
     await _peerConnection!
         .setRemoteDescription(RTCSessionDescription(sdp, type));
-    _remoteDescriptionSet = true;
-    AppLogger.info(
-        'Remote description set successfully on Sender. Applying ${_pendingRemoteCandidates.length} pending candidates',
-        tag: 'WEBRTC_SENDER');
-    for (final c in _pendingRemoteCandidates) {
-      await _peerConnection?.addCandidate(c);
-    }
-    _pendingRemoteCandidates.clear();
+    AppLogger.info('Remote description set on the sender', tag: 'WEBRTC_SENDER');
   }
 
   /// Constraints that keep the offer to the one media section this app has
@@ -402,13 +282,6 @@ class WebRtcTransferTransport implements TransferTransport {
         'Sender: Generated local SDP offer with gathered candidates (length=${fullLocalDesc?.sdp?.length})',
         tag: 'WEBRTC_SENDER');
     return fullLocalDesc?.sdp ?? offer.sdp;
-  }
-
-  Future<void> _createAndSendOffer() async {
-    if (_peerConnection == null) return;
-    final offer = await _peerConnection!.createOffer(_dataChannelOnly);
-    await _peerConnection!.setLocalDescription(offer);
-    _signalingClient?.sendOffer({'sdp': offer.sdp, 'type': offer.type});
   }
 
   /// Sends every file in the session, newest protocol.
@@ -650,24 +523,15 @@ class WebRtcTransferTransport implements TransferTransport {
           tag: 'WEBRTC_SENDER');
     }
 
-    // Only the LAN/room flow ever asks the router for a mapping, but calling
-    // this unconditionally is free when there is nothing to release and means
-    // a future caller cannot forget.
-    await AutoTunnelService().releasePortMappings();
     _iceRecoveryTimer?.cancel();
     _iceRecoveryTimer = null;
     _turnRefresher?.cancel(); // §9
     _turnRefresher = null;
     await _wakelockGuard.release(); // §6
-    await _signalSub?.cancel();
-    _signalSub = null;
     await _dataChannel?.close();
     await _peerConnection?.close();
-    await _signalingClient?.dispose();
     _dataChannel = null;
     _peerConnection = null;
-    _pendingRemoteCandidates.clear();
-    _remoteDescriptionSet = false;
     if (!_degradationController.isClosed) {
       await _degradationController.close();
     }

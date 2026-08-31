@@ -189,7 +189,8 @@ class BluetoothTransferTransport implements TransferTransport {
   /// [file] still names the session for the screens that show it. The list is
   /// what actually goes out, and it is the whole reason a folder no longer
   /// has to be flattened into an archive to travel over Bluetooth.
-  @override
+  /// Advertises the session over BLE. Not part of [TransferTransport]: this
+  /// transport's UX is device discovery, not a shareable code.
   Future<String> startSharing(FileMetadata file, String token,
       {List<FileMetadata>? files}) async {
     final session = (files == null || files.isEmpty) ? [file] : files;

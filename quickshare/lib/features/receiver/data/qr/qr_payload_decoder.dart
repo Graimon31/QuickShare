@@ -56,17 +56,6 @@ class QRPayloadDecoder {
             payload.itemCount > 0 ? payload.itemCount : (share?.itemCount ?? 0),
       );
     } catch (e) {
-      final roomCode = DeepLinkService.parseFromText(unwrapped);
-      if (roomCode != null) {
-        return QRPayload(
-          version: 1,
-          ip: 'webrtc',
-          port: 0,
-          token: roomCode,
-          mode: 'internet',
-          fileName: 'Internet Transfer ($roomCode)',
-        );
-      }
       throw ServerException('Invalid QR Code data: $e');
     }
   }

@@ -143,7 +143,6 @@ and fill it in; the file is gitignored.
 | `QUICKSHARE_TURN_HOSTS` | — | Extra TURN hosts, comma separated |
 | `QUICKSHARE_TURN_USER` / `_PASS` | `openrelaymodule` | TURN credentials. **Not verified as working** — supply your own |
 | `QUICKSHARE_RELAY_LIMIT` | `52428800` | Relay transfer ceiling in bytes; `0` disables |
-| `QUICKSHARE_SIGNALING_URL` | `ws://localhost:3000` | Optional room-based signaling, used by the legacy link flow only |
 
 STUN is a pool rather than one host: measurements from the target network
 disagree with each other depending on whether a VPN is up, so no single server
@@ -157,7 +156,8 @@ is reliable across the user population.
 lib/
 ├── core/
 │   ├── crypto/      bip340.dart — Schnorr signatures, for Nostr events only
-│   ├── network/     local_hotspot_service.dart, upnp_port_forwarder.dart
+│   ├── network/     local_hotspot_service.dart, peer_link_service.dart,
+│   │                session_tls_identity.dart
 │   ├── signaling/   answer_channel.dart, nostr_answer_channel.dart,
 │   │                sealed_envelope.dart, serverless_qr.dart
 │   ├── webrtc/      compact_sdp.dart, ice_gathering.dart, ice_servers.dart
@@ -167,9 +167,6 @@ lib/
 │   └── receiver/    qhtp_receiver_client, transports, session store, receiver_bloc
 └── shared/          models, widgets
 ```
-
-`signaling_server/` is a small Node service for the older room-based flow. It is
-not needed for anything described above.
 
 ---
 

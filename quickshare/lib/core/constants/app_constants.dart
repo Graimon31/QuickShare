@@ -9,15 +9,6 @@ class AppConstants {
   static const int qrPayloadVersion = 1;
   static const String appName = 'DirectDrop';
   
-  /// Signaling server endpoint for the *sender process* (may be localhost).
-  /// The share link embeds a peer-reachable rewrite (LAN IP) via `sig=`.
-  /// Public Internet / LTE: use a reachable host, e.g.:
-  ///   --dart-define=QUICKSHARE_SIGNALING_URL=wss://share.example.com
-  static const String signalingServerUrl = String.fromEnvironment(
-    'QUICKSHARE_SIGNALING_URL',
-    defaultValue: 'ws://localhost:3000',
-  );
-
   /// STUN servers used to discover the public mapping, in the order ICE
   /// should try them.
   ///

@@ -22,7 +22,6 @@ class _DirectDropAppState extends State<DirectDropApp> {
   // raised it — the transfer moves on to the progress route while the network
   // stays up.
   final _hotspotGuard = HotspotLifecycleGuard();
-  StreamSubscription<InternetInvite>? _inviteSub;
   StreamSubscription<ShareLinkContents>? _payloadSub;
 
   @override
@@ -30,17 +29,8 @@ class _DirectDropAppState extends State<DirectDropApp> {
     super.initState();
     // A share link opened from Finder/Mail/Messages routes straight into the
     // receive flow, whether the app was already running or launched by it.
-    // Prefer full invites (room + optional sig=) so Internet receive dials the
-    // sender's signaling host, not the phone's localhost.
-    _inviteSub = _deepLinks.invites.listen((invite) {
-      final q = StringBuffer('/receive/code?room=${invite.roomCode}');
-      if (invite.signalingUrl != null && invite.signalingUrl!.isNotEmpty) {
-        q.write('&sig=${Uri.encodeComponent(invite.signalingUrl!)}');
-      }
-      AppRouter.router.go(q.toString());
-    });
-    // Payload links carry the QR itself (`?p=`). Receive/code submits that
-    // string the same way a paste would.
+    // The link carries the QR payload itself (`?p=`); receive/code submits it
+    // the same way a paste would.
     _payloadSub = _deepLinks.sharePayloads.listen((share) {
       final q = <String, String>{'p': share.qrPayload};
       if (share.name != null) q['n'] = share.name!;
@@ -54,7 +44,6 @@ class _DirectDropAppState extends State<DirectDropApp> {
 
   @override
   void dispose() {
-    _inviteSub?.cancel();
     _payloadSub?.cancel();
     _hotspotGuard.detach();
     _deepLinks.dispose();

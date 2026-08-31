@@ -17,7 +17,6 @@ import 'package:quickshare/core/webrtc/idle_watchdog.dart';
 import 'package:quickshare/core/webrtc/sdp_compressor.dart';
 import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
-import 'package:quickshare/features/sender/data/signaling/webrtc_signaling_client.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
@@ -52,12 +51,12 @@ class WebRtcReceiveProgress {
   });
 }
 
-/// Receives a file over a WebRTC DataChannel after joining a share room.
+/// Receives a file over a WebRTC DataChannel, negotiated serverlessly: the
+/// offer arrives in the QR code and the answer goes back through a sealed
+/// out-of-band channel.
 class WebRtcReceiverTransport {
   RTCPeerConnection? _peerConnection;
   RTCDataChannel? _dataChannel;
-  WebRtcSignalingClient? _signaling;
-  StreamSubscription<Map<String, dynamic>>? _signalSub;
 
   final _progressController =
       StreamController<WebRtcReceiveProgress>.broadcast();
@@ -69,8 +68,6 @@ class WebRtcReceiverTransport {
 
   final _completion = Completer<String>();
 
-  int _totalBytes = 0;
-  int _receivedBytes = 0;
   DurableFile? _currentFile;
   String _fileName = 'received_file';
   String? _targetPath;
@@ -84,8 +81,6 @@ class WebRtcReceiverTransport {
   String? _stagedRoot;
   String? _finalRoot;
 
-  bool _isRemoteDescSet = false;
-  final List<RTCIceCandidate> _pendingCandidates = [];
 
   DateTime _lastTick = DateTime.now();
   int _lastBytes = 0;
@@ -156,17 +151,6 @@ class WebRtcReceiverTransport {
   /// §9 — refreshes TURN credentials before they expire.
   TurnCredentialRefresher? _turnRefresher;
 
-  /// A backstop against `_completion` never resolving at all, not a deadline
-  /// on how long a transfer may take.
-  ///
-  /// Real failure detection is `_onIceStateChanged` plus the idle watchdog
-  /// (armed once data starts flowing, in `_handleMessage`). This used to be
-  /// 75 seconds counted across the *entire* transfer rather than just
-  /// connection setup — the same bug `receiveWithSdpOffer` had and was fixed
-  /// for, just not here. Any file that took longer than 75s over a relay was
-  /// killed by this method while still healthy; at the ~1-3 MB/s a TURN
-  /// relay realistically manages, that is anything upward of roughly 100 MB.
-  static const _transferBackstop = Duration(minutes: 30);
 
   String sanitizeFileName(String name) {
     final base = p
@@ -253,7 +237,7 @@ class WebRtcReceiverTransport {
       await _wakelockGuard.acquire(); // §6
 
       // This path returns a completer of its own; `_completion` belongs to the
-      // room-based receive() and nothing here awaits it. _fail() still
+      // room-based path this replaced. Nothing here awaits it; _fail() still
       // completes it, so without a handler every serverless failure surfaces
       // as an unhandled async error alongside the real one.
       unawaited(_completion.future.then((_) {}, onError: (Object _) {}));
@@ -369,146 +353,6 @@ class WebRtcReceiverTransport {
     }
   }
 
-  /// Joins [roomCode] on [signalingUrl] (or [AppConstants.signalingServerUrl]).
-  Future<String> receive(
-    String roomCode, {
-    String? targetDir,
-    String? signalingUrl,
-  }) async {
-    try {
-      _emit('connecting', detail: 'Contacting signaling server…');
-      _statusController.add(TransferStatus.connecting);
-      await _wakelockGuard.acquire(); // §6
-
-      final url = (signalingUrl != null && signalingUrl.isNotEmpty)
-          ? signalingUrl
-          : AppConstants.signalingServerUrl;
-
-      if (url.contains('localhost') || url.contains('127.0.0.1')) {
-        throw Exception(
-          'Signaling URL is localhost ($url). The phone cannot reach the '
-          'sender\'s loopback. Rebuild the sender so the share link includes '
-          'sig=ws://<sender-lan-ip>:3000, run signaling_server on the Mac, '
-          'and keep the phone on the same Wi‑Fi (not LTE-only).',
-        );
-      }
-
-      _signaling = WebRtcSignalingClient(serverUrl: url);
-
-      _peerConnection =
-          await createPeerConnection(await _buildIceConfiguration());
-      await _startTurnRefresher(); // §9
-
-      _peerConnection!.onIceCandidate = (RTCIceCandidate candidate) {
-        if (candidate.candidate == null) return;
-        _signaling?.sendIceCandidate({
-          'candidate': candidate.candidate,
-          'sdpMid': candidate.sdpMid,
-          'sdpMLineIndex': candidate.sdpMLineIndex,
-        });
-      };
-
-      // The shared handler rather than a bespoke inline one: this used to
-      // fail the instant ICE reported Disconnected, with no grace period —
-      // a momentary blip (normal, recoverable) killed the transfer outright.
-      // `_onIceStateChanged` gives it `_iceRecoveryGrace` (20s) to recover
-      // before giving up, same as the QR/serverless path already does.
-      _peerConnection!.onIceConnectionState = _onIceStateChanged;
-
-      _peerConnection!.onDataChannel = (RTCDataChannel channel) {
-        debugPrint('WebRTC receiver: data channel received');
-        _dataChannel = channel;
-        channel.onMessage = _handleMessage;
-      };
-
-      final baseDir = targetDir ??
-          (await getDownloadsDirectory())?.path ??
-          (await getApplicationDocumentsDirectory()).path;
-
-      _signalSub = _signaling!.messages.listen((msg) async {
-        try {
-          switch (msg['type']) {
-            case 'offer':
-              _emit('connecting', detail: 'Negotiating peer connection…');
-              await _handleOffer(
-                  Map<String, dynamic>.from(msg['payload'] as Map));
-              break;
-            case 'ice-candidate':
-              await _handleRemoteCandidate(
-                  Map<String, dynamic>.from(msg['payload'] as Map));
-              break;
-            case 'peer-disconnected':
-              if (!_completion.isCompleted) {
-                if (_totalBytes > 0 && _receivedBytes >= _totalBytes) {
-                  await _completeSession();
-                } else {
-                  _fail('Sender disconnected before the transfer finished');
-                }
-              }
-              break;
-          }
-        } catch (e) {
-          _fail('Signaling error: $e');
-        }
-      });
-
-      _emit('connecting', detail: 'Joining room $roomCode…');
-      await _signaling!.joinRoom(roomCode);
-      _baseDir = baseDir;
-      _emit('connecting',
-          detail:
-              'Waiting for sender peer connection (keep the Mac share screen open)…');
-
-      return await _completion.future.timeout(
-        _transferBackstop,
-        onTimeout: () {
-          throw Exception(
-            'No transfer completion after ${_transferBackstop.inMinutes} '
-            'minutes. If nothing was happening at all, check:\n'
-            '• Signaling server running on the sender machine\n'
-            '• Share link contains sig=ws://… and phone can open that host:port\n'
-            '• Same Wi‑Fi for LAN signaling (LTE often needs TURN)\n'
-            '• Sender still on the Share / QR screen',
-          );
-        },
-      );
-    } catch (e) {
-      await _wakelockGuard.release(); // §6
-      _statusController.add(TransferStatus.failed);
-      await _cleanup();
-      rethrow;
-    }
-  }
-
-  Future<void> _handleOffer(Map<String, dynamic> payload) async {
-    await _peerConnection!.setRemoteDescription(
-      RTCSessionDescription(
-          payload['sdp'] as String?, payload['type'] as String?),
-    );
-    _isRemoteDescSet = true;
-
-    for (final c in _pendingCandidates) {
-      await _peerConnection!.addCandidate(c);
-    }
-    _pendingCandidates.clear();
-
-    final answer = await _peerConnection!.createAnswer();
-    await _peerConnection!.setLocalDescription(answer);
-    _signaling!.sendAnswer({'sdp': answer.sdp, 'type': answer.type});
-  }
-
-  Future<void> _handleRemoteCandidate(Map<String, dynamic> payload) async {
-    final candidate = RTCIceCandidate(
-      payload['candidate'] as String?,
-      payload['sdpMid'] as String?,
-      payload['sdpMLineIndex'] as int?,
-    );
-    if (_isRemoteDescSet) {
-      await _peerConnection!.addCandidate(candidate);
-    } else {
-      _pendingCandidates.add(candidate);
-    }
-  }
 
   /// Serialises message handling.
   ///
@@ -541,7 +385,6 @@ class WebRtcReceiverTransport {
 
         _idleWatchdog?.kick();
         await _currentFile!.add(bytes);
-        _receivedBytes += bytes.length;
         // Progress is reported across the whole session, so a ten-photo
         // transfer does not snap back to 0% ten times.
         _sessionReceivedBytes += bytes.length;
@@ -631,9 +474,7 @@ class WebRtcReceiverTransport {
           _sessionReceivedBytes = 0;
           _writtenPaths.clear();
           _fileName = sanitizeFileName(item.name);
-          _totalBytes = item.size;
           _isCompressed = item.compressed;
-          _receivedBytes = 0;
           _lastBytes = 0;
           _lastTick = DateTime.now();
           _currentFile = _openIncoming(_fileName);
@@ -690,8 +531,6 @@ class WebRtcReceiverTransport {
     _sessionTotalBytes = items.fold<int>(0, (sum, i) => sum + i.size);
     _sessionReceivedBytes = 0;
     _writtenPaths.clear();
-    _totalBytes = _sessionTotalBytes;
-    _receivedBytes = 0;
     _lastBytes = 0;
     _lastTick = DateTime.now();
     // A folder is named after the folder, not after the first photo in it and
@@ -910,10 +749,10 @@ class WebRtcReceiverTransport {
     ));
   }
 
-  /// Reacts to ICE state changes on the serverless path, which — unlike the
-  /// room-based `receive()` — has no signaling channel left to carry a
-  /// `peer-disconnected` message, so this and the idle watchdog are the only
-  /// ways a dead connection is ever noticed here.
+  /// Reacts to ICE state changes. There is no signaling channel to carry a
+  /// `peer-disconnected` message — the answer travelled out of band and the
+  /// channel is gone — so this and the idle watchdog are the only ways a
+  /// dead connection is ever noticed.
   ///
   /// `disconnected` gets a grace period rather than an immediate failure: it
   /// is routine on a relayed path under a VPN and usually recovers within
@@ -981,10 +820,6 @@ class WebRtcReceiverTransport {
     _turnRefresher?.cancel(); // §9
     _turnRefresher = null;
     await _wakelockGuard.release(); // §6
-    await _signalSub?.cancel();
-    _signalSub = null;
-    await _signaling?.dispose();
-    _signaling = null;
     await _dataChannel?.close();
     _dataChannel = null;
     await _peerConnection?.close();

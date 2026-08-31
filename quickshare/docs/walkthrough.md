@@ -51,9 +51,8 @@
 
 **Отправитель**
 
-1. Поднимает `RTCPeerConnection` и DataChannel. Сигнальный сервер здесь не
-   участвует: `startSharingServerless()` намеренно не зовёт ни `createRoom()`,
-   ни `resolvePeerReachableUrl()`.
+1. Поднимает `RTCPeerConnection` и DataChannel. Сигнального сервера у приложения
+   больше нет вовсе — интернет-передача всегда serverless.
 2. Ждёт ICE-кандидатов до 6 секунд, но выходит раньше, как только собран relay.
    Trickle-канала нет: что не попало в SDP к моменту отрисовки QR, до пира не
    доедет никогда.
