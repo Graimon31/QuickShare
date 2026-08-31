@@ -54,6 +54,9 @@ class QRPayloadDecoder {
         sdpOffer: payload.sdpOffer,
         itemCount:
             payload.itemCount > 0 ? payload.itemCount : (share?.itemCount ?? 0),
+        // The whole reason the LAN transfer can be trusted — dropping it here
+        // is what made every scan report the sender as "unencrypted".
+        tlsFingerprint: payload.tlsFingerprint,
       );
     } catch (e) {
       throw ServerException('Invalid QR Code data: $e');

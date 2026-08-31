@@ -69,10 +69,14 @@ void main() {
         token: 't',
         sessionId: 'sid1',
         mode: 'http-lan',
+        tlsFingerprint: 'AbC-123_pinned',
       );
       final encoded = payload.encode();
       final decoded = decoder.decode(encoded);
       expect(decoded.sessionId, 'sid1');
+      expect(decoded.tlsFingerprint, 'AbC-123_pinned',
+          reason: 'the decoder must not drop the pin — losing it makes every '
+              'scan report the sender as unencrypted');
 
       // Manually craft base64url JSON with v=99 (encode() always forces v:2 for isQhtp)
       const badJson = '{"v":99,"ip":"1.1.1.1","p":1,"t":"t","sid":"x","mode":"http-lan"}';
@@ -92,11 +96,13 @@ void main() {
         fileName: 'Holiday',
         fileSize: 999,
         itemCount: 4,
+        tlsFingerprint: 'linkPinValue',
       );
       final encoded = payload.encode();
       final link = DeepLinkService.buildPayloadLink(encoded);
       final decoded = decoder.decode(link);
       expect(decoded.sessionId, 'sid-link');
+      expect(decoded.tlsFingerprint, 'linkPinValue');
       expect(decoded.ip, '192.168.0.5');
       expect(decoded.port, 9000);
       expect(decoded.fileName, 'Holiday');
