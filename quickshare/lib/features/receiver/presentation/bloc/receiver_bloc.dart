@@ -291,8 +291,11 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
               add(StartVerifying());
             }
           } else if (qp.phase == 'transferring') {
-            add(DownloadProgressUpdate(
-                qp.sessionReceived, qp.sessionTotal, qp.itemPath));
+            // No per-item name: the screen shows one session and its bar, so
+            // the label stays the session's — the folder's name, or whatever
+            // the QR carried for a loose selection — never the deep relative
+            // path of whichever file is on the wire this instant.
+            add(DownloadProgressUpdate(qp.sessionReceived, qp.sessionTotal));
           }
         }
 

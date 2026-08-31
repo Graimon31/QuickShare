@@ -34,18 +34,26 @@ class ReceivedItemsList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // A flat list of files needs no room for a disclosure arrow; only reserve
+    // that column when something here can actually be opened.
+    final anyExpandable = items.any((i) => i.isDirectory);
+
     return ConstrainedBox(
       constraints: BoxConstraints(maxHeight: maxHeight),
       child: Scrollbar(
+        thumbVisibility: true,
         child: ListView.builder(
           shrinkWrap: true,
-          padding: EdgeInsets.zero,
+          // Right inset is the scrollbar's lane, so the size column never sits
+          // under the thumb.
+          padding: const EdgeInsets.only(right: 14),
           itemCount: items.length,
           itemBuilder: (context, i) => _EntryRow(
             path: items[i].cachePath,
             name: items[i].name,
             isDirectory: items[i].isDirectory,
             sizeLabel: TransferCache.formatBytes(items[i].size),
+            showDisclosureColumn: anyExpandable,
           ),
         ),
       ),
@@ -59,6 +67,7 @@ class _EntryRow extends StatefulWidget {
     required this.path,
     required this.name,
     required this.isDirectory,
+    required this.showDisclosureColumn,
     this.sizeLabel,
     this.depth = 0,
   });
@@ -66,6 +75,11 @@ class _EntryRow extends StatefulWidget {
   final String path;
   final String name;
   final bool isDirectory;
+
+  /// Whether to leave space for a disclosure arrow even on file rows, so a
+  /// mixed list stays aligned. False for a folder-free list.
+  final bool showDisclosureColumn;
+
   final String? sizeLabel;
   final int depth;
 
@@ -105,6 +119,8 @@ class _EntryRowState extends State<_EntryRow> {
   @override
   Widget build(BuildContext context) {
     final indent = widget.depth * 16.0;
+    final childrenAreExpandable =
+        (_children ?? const []).any((e) => e is Directory);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -113,7 +129,7 @@ class _EntryRowState extends State<_EntryRow> {
           onTap: widget.isDirectory ? _toggle : null,
           borderRadius: BorderRadius.circular(8),
           child: Padding(
-            padding: EdgeInsets.only(left: indent, top: 5, bottom: 5, right: 4),
+            padding: EdgeInsets.only(left: indent, top: 5, bottom: 5),
             child: Row(
               children: [
                 if (widget.isDirectory)
@@ -124,9 +140,10 @@ class _EntryRowState extends State<_EntryRow> {
                     color: AppColors.textSecondary,
                     size: 18,
                   )
-                else
+                else if (widget.showDisclosureColumn)
                   const SizedBox(width: 18),
-                const SizedBox(width: 4),
+                if (widget.isDirectory || widget.showDisclosureColumn)
+                  const SizedBox(width: 6),
                 Icon(
                   widget.isDirectory
                       ? Icons.folder_rounded
@@ -143,7 +160,7 @@ class _EntryRowState extends State<_EntryRow> {
                   ),
                 ),
                 if (widget.sizeLabel != null) ...[
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   Text(
                     widget.sizeLabel!,
                     style: const TextStyle(
@@ -161,6 +178,7 @@ class _EntryRowState extends State<_EntryRow> {
               name: p.basename(child.path),
               isDirectory: child is Directory,
               sizeLabel: child is File ? _fileSize(child) : null,
+              showDisclosureColumn: childrenAreExpandable,
               depth: widget.depth + 1,
             ),
       ],
