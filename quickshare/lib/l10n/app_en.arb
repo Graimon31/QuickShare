@@ -46,10 +46,6 @@
   "wifiPromptAccept": "Open settings",
 
   "completeSaving": "Saving…",
-  "completeAndMore": "and {count} more",
-  "@completeAndMore": {
-    "placeholders": { "count": { "type": "int" } }
-  },
   "completeTitle": "Received!",
   "completeWhereTo": "Where should these go?",
   "completeSaveOne": "Save to device",
@@ -172,7 +168,6 @@
   "precondWifiBlocked": "Transfer is unavailable until Wi-Fi is turned on.",
   "precondBluetoothBlocked": "Transfer is unavailable until Bluetooth is turned on.",
   "precondInternetBlocked": "No active network connection. Internet transfer is unavailable.",
-  "pickerFilesMediaRejected": "Photos and videos were not added — send them via “Photos & Videos”.",
   "sessionExpiredTitle": "Session expired",
   "sessionExpiredBody": "Nobody connected in time. Refresh to create a new session.",
   "sessionRefresh": "Refresh",

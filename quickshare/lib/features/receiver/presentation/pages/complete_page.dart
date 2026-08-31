@@ -9,6 +9,7 @@ import 'package:quickshare/core/storage/save_coordinator.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/features/receiver/presentation/widgets/received_items_list.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/pressable_scale.dart';
 
@@ -225,11 +226,6 @@ class _CompletePageState extends State<CompletePage> {
   }
 
   Widget _summaryCard() {
-    final items = widget.items.isEmpty
-        ? [widget.fileName]
-        : widget.items.map((i) => i.name).toList();
-    final shown = items.take(4).toList();
-
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -241,32 +237,25 @@ class _CompletePageState extends State<CompletePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final name in shown)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(
-                children: [
-                  const Icon(Icons.insert_drive_file_outlined,
-                      color: AppColors.primary, size: 20),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      name,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: AppColors.textPrimary),
-                    ),
+          // Everything that arrived, scrolled rather than cut off at four, and
+          // folders open to show what is inside them.
+          if (widget.items.isEmpty)
+            Row(
+              children: [
+                const Icon(Icons.insert_drive_file_outlined,
+                    color: AppColors.primary, size: 20),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    widget.fileName,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(color: AppColors.textPrimary),
                   ),
-                ],
-              ),
-            ),
-          if (items.length > shown.length)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                  AppLocalizations.of(context)
-                      .completeAndMore(items.length - shown.length),
-                  style: const TextStyle(color: AppColors.textSecondary)),
-            ),
+                ),
+              ],
+            )
+          else
+            ReceivedItemsList(items: widget.items),
           for (final failure in _failures)
             Padding(
               padding: const EdgeInsets.only(top: 8),

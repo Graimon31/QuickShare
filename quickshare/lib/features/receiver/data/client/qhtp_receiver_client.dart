@@ -47,8 +47,23 @@ class QhtpReceiverClient {
   final SessionStateStore stateStore;
   CancelToken? _cancelToken;
 
-  QhtpReceiverClient({Dio? dioClient, SessionStateStore? store})
-      : dio = dioClient ?? Dio(),
+  /// How long to wait for a file request's response headers.
+  ///
+  /// `receiveTimeout` is disabled for the download itself so a long, healthy
+  /// body is never cut off mid-stream, and the guard on the body is the idle
+  /// timeout on its stream. But that one cannot start until the headers have
+  /// arrived, so without this the wait for *them* was unbounded: a suspended
+  /// sender still lets the OS accept the connection and then answers nothing,
+  /// and the receiver waited on it forever.
+  ///
+  /// Overridable only so tests need not spend a minute proving it.
+  final Duration responseHeaderTimeout;
+
+  QhtpReceiverClient({
+    Dio? dioClient,
+    SessionStateStore? store,
+    this.responseHeaderTimeout = const Duration(seconds: 20),
+  })  : dio = dioClient ?? Dio(),
         stateStore = store ?? SessionStateStore();
 
   void cancel() {
@@ -406,11 +421,22 @@ class QhtpReceiverClient {
               );
 
               final fileUrl = 'http://$host:$port/v2/files/${item.id}';
-              final response = await dio.get<ResponseBody>(
-                fileUrl,
-                options: downloadOptions,
-                cancelToken: _cancelToken,
-              );
+              // Bounded on the headers only — see [responseHeaderTimeout].
+              // Without it a suspended sender left this await with no way to
+              // end, and the receiver sat on its last screen forever, most
+              // visibly "verifying" when the break fell between two files.
+              final response = await dio
+                  .get<ResponseBody>(
+                    fileUrl,
+                    options: downloadOptions,
+                    cancelToken: _cancelToken,
+                  )
+                  .timeout(
+                    responseHeaderTimeout,
+                    onTimeout: () => throw TimeoutException(
+                        'The sender did not answer within '
+                        '${responseHeaderTimeout.inSeconds}s'),
+                  );
 
               if (existingBytes > 0 && response.statusCode == 200) {
                 // 200 means the server ignored the Range header and is sending

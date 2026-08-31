@@ -129,11 +129,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get completeSaving => 'Сохраняем…';
 
   @override
-  String completeAndMore(int count) {
-    return 'и ещё $count';
-  }
-
-  @override
   String get completeTitle => 'Получено!';
 
   @override
@@ -423,10 +418,6 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get precondInternetBlocked =>
       'Нет активного сетевого подключения. Передача через интернет недоступна.';
-
-  @override
-  String get pickerFilesMediaRejected =>
-      'Фото и видео не добавлены — отправляйте их через «Фото и видео».';
 
   @override
   String get sessionExpiredTitle => 'Сессия истекла';

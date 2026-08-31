@@ -280,7 +280,16 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         void report(QhtpProgress qp) {
           if (transferAttempt != _transferAttempt) return;
           if (qp.phase == 'verifying') {
-            add(StartVerifying());
+            // Checking each file as it lands is ordinary work inside a
+            // session, not a phase of its own. Taking the whole screen for it
+            // once per file made a ten-file folder look like ten separate
+            // transfers: the bar filled to 10%, the screen flipped to
+            // "verifying", the bar reappeared at 20%, and so on. The session
+            // bar stays up instead; only the last item's check — or the only
+            // item's — is a phase worth showing.
+            if (qp.itemCount <= 1 || qp.itemIndex >= qp.itemCount) {
+              add(StartVerifying());
+            }
           } else if (qp.phase == 'transferring') {
             add(DownloadProgressUpdate(
                 qp.sessionReceived, qp.sessionTotal, qp.itemPath));

@@ -130,11 +130,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get completeSaving => 'Saving…';
 
   @override
-  String completeAndMore(int count) {
-    return 'and $count more';
-  }
-
-  @override
   String get completeTitle => 'Received!';
 
   @override
@@ -419,10 +414,6 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get precondInternetBlocked =>
       'No active network connection. Internet transfer is unavailable.';
-
-  @override
-  String get pickerFilesMediaRejected =>
-      'Photos and videos were not added — send them via “Photos & Videos”.';
 
   @override
   String get sessionExpiredTitle => 'Session expired';

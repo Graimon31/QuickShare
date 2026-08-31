@@ -7,7 +7,6 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:mime/mime.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/core/media/media_library.dart';
@@ -47,11 +46,19 @@ class _FilePickerPageState extends State<FilePickerPage> {
     }
   }
 
-  /// Files, any number of them.
+  /// Files, any number of them — including photos and videos.
   ///
   /// Multi-select rather than one at a time: every wire protocol here
   /// carries a manifest, so nothing has to be bundled into a single object
   /// first — which is equally why [_pickFolder] can hand over a whole tree.
+  ///
+  /// Media used to be rejected here and pushed towards [_pickMedia], because
+  /// `image_picker` hands back a transcoded copy on iOS and re-encoding
+  /// somebody's photo is exactly what this app must not do. But that reasoning
+  /// never applied to this route: the document picker returns the file itself,
+  /// untouched, so a `.jpg` chosen here is already the original. The rejection
+  /// only stopped a perfectly good send. [_pickMedia] stays for reaching the
+  /// photo library, which the document picker cannot browse.
   Future<void> _pickFile() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
@@ -65,35 +72,9 @@ class _FilePickerPageState extends State<FilePickerPage> {
       if (mounted) setState(() => _selectionInFlight = false);
       return;
     }
-
-    // "Files" means files that are not photos or videos. No system picker can
-    // express that filter, so media is rejected after the fact instead.
-    final kept = <String>[];
-    var mediaSkipped = false;
-    for (final path in paths) {
-      final mime = lookupMimeType(path) ?? '';
-      if (mime.startsWith('image/') || mime.startsWith('video/')) {
-        mediaSkipped = true;
-      } else {
-        kept.add(path);
-      }
-    }
     if (!mounted) return;
-    if (mediaSkipped) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(AppLocalizations.of(context).pickerFilesMediaRejected),
-          backgroundColor: AppColors.error,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-    if (kept.isEmpty) {
-      setState(() => _selectionInFlight = false);
-      return;
-    }
 
-    context.read<SenderBloc>().add(StartQhtpSend(kept, mode: _selectedMode));
+    context.read<SenderBloc>().add(StartQhtpSend(paths, mode: _selectedMode));
   }
 
   /// Photos and videos, straight from the library and untouched.

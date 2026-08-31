@@ -332,12 +332,6 @@ abstract class AppLocalizations {
   /// **'Saving…'**
   String get completeSaving;
 
-  /// No description provided for @completeAndMore.
-  ///
-  /// In en, this message translates to:
-  /// **'and {count} more'**
-  String completeAndMore(int count);
-
   /// No description provided for @completeTitle.
   ///
   /// In en, this message translates to:
@@ -799,12 +793,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No active network connection. Internet transfer is unavailable.'**
   String get precondInternetBlocked;
-
-  /// No description provided for @pickerFilesMediaRejected.
-  ///
-  /// In en, this message translates to:
-  /// **'Photos and videos were not added — send them via “Photos & Videos”.'**
-  String get pickerFilesMediaRejected;
 
   /// No description provided for @sessionExpiredTitle.
   ///

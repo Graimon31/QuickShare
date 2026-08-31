@@ -46,7 +46,6 @@
   "wifiPromptAccept": "Открыть настройки",
 
   "completeSaving": "Сохраняем…",
-  "completeAndMore": "и ещё {count}",
   "completeTitle": "Получено!",
   "completeWhereTo": "Куда сохранить?",
   "completeSaveOne": "Сохранить на устройство",
@@ -133,7 +132,6 @@
   "precondWifiBlocked": "Передача невозможна, пока не включён Wi-Fi.",
   "precondBluetoothBlocked": "Передача невозможна, пока не включён Bluetooth.",
   "precondInternetBlocked": "Нет активного сетевого подключения. Передача через интернет недоступна.",
-  "pickerFilesMediaRejected": "Фото и видео не добавлены — отправляйте их через «Фото и видео».",
   "sessionExpiredTitle": "Сессия истекла",
   "sessionExpiredBody": "За отведённое время никто не подключился. Обновите, чтобы создать новую сессию.",
   "sessionRefresh": "Обновить",
