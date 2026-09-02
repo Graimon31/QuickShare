@@ -445,13 +445,38 @@ class _SettingsPageState extends State<SettingsPage> {
                     '${TransferReport.formatRate(report.bytesPerSecond)}',
                     style: const TextStyle(color: AppColors.textPrimary),
                   ),
-                  subtitle: Text(
-                    report.succeeded
-                        ? '${report.role} ${TransferReport.formatBytes(report.bytes)} '
-                            'in ${report.took.inSeconds}s'
-                        : report.failure,
-                    style: const TextStyle(
-                        color: AppColors.textSecondary, fontSize: 12),
+                  isThreeLine: report.peerAddress != null,
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        report.succeeded
+                            ? '${report.role} ${TransferReport.formatBytes(report.bytes)} '
+                                'in ${report.took.inSeconds}s'
+                            : report.failure,
+                        style: const TextStyle(
+                            color: AppColors.textSecondary, fontSize: 12),
+                      ),
+                      // The route label is a conclusion; this is the evidence
+                      // for it — the actual address that opened the socket,
+                      // for the one question a label can't answer on its
+                      // own: was this genuinely the LAN, whatever else (a
+                      // VPN, a second interface) happened to be running at
+                      // the time.
+                      if (report.peerAddress != null)
+                        Text(
+                          report.role == 'sent'
+                              ? l10n.settingsTransferPeerSent(
+                                  report.peerAddress!)
+                              : l10n.settingsTransferPeerReceived(
+                                  report.peerAddress!),
+                          style: TextStyle(
+                              color: AppColors.textSecondary
+                                  .withValues(alpha: 0.7),
+                              fontSize: 11),
+                        ),
+                    ],
                   ),
                   trailing: IconButton(
                     tooltip: l10n.settingsCopyDetails,

@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:network_info_plus/network_info_plus.dart';
+
+import 'package:quickshare/core/utils/app_logger.dart';
 
 class NetworkInfoService {
   final NetworkInfo _networkInfo = NetworkInfo();
@@ -24,13 +27,38 @@ class NetworkInfoService {
     'ap'
   ];
 
-  Future<String?> getLocalIpAddress() async {
+  /// How long the platform gets to answer "what is the Wi-Fi address".
+  ///
+  /// On the other side of this method channel are two syscalls; it answers in
+  /// single-digit milliseconds or it does not answer at all, and nothing here
+  /// can make it. Unbounded, it was the one wait on the path between choosing
+  /// files and the QR appearing that could last forever — a sender left on
+  /// "indexing" with no work happening anywhere in the process, because a
+  /// plugin reply never arrived. The interface enumeration below answers the
+  /// same question locally in about two milliseconds, so falling through to it
+  /// costs the transfer nothing.
+  static const Duration _pluginAnswerBudget = Duration(seconds: 2);
+
+  Future<String?> _wifiIpFromPlugin() async {
     try {
-      final wifiIp = await _networkInfo.getWifiIP();
-      if (wifiIp != null && _isValidPrivateIp(wifiIp)) {
-        return wifiIp;
-      }
-    } catch (_) {}
+      return await _networkInfo.getWifiIP().timeout(_pluginAnswerBudget);
+    } on TimeoutException {
+      AppLogger.warning(
+          'The Wi-Fi address lookup did not answer within '
+          '${_pluginAnswerBudget.inSeconds}s — reading the interface list '
+          'instead',
+          tag: 'NET');
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> getLocalIpAddress() async {
+    final wifiIp = await _wifiIpFromPlugin();
+    if (wifiIp != null && _isValidPrivateIp(wifiIp)) {
+      return wifiIp;
+    }
 
     // Fallback for Desktop / Ethernet / Multiple Interfaces
     try {
@@ -124,12 +152,8 @@ class NetworkInfoService {
   /// address passes there.
   Future<bool> hasWifiTransportNetwork() async {
     if (Platform.isIOS || Platform.isAndroid) {
-      try {
-        final wifiIp = await _networkInfo.getWifiIP();
-        return wifiIp != null && _isValidPrivateIp(wifiIp);
-      } catch (_) {
-        return false;
-      }
+      final wifiIp = await _wifiIpFromPlugin();
+      return wifiIp != null && _isValidPrivateIp(wifiIp);
     }
     return isConnectedToWifi();
   }

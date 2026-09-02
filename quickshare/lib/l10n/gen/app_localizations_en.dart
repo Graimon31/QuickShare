@@ -258,6 +258,16 @@ class AppLocalizationsEn extends AppLocalizations {
   String get settingsDetailsCopied => 'Details copied';
 
   @override
+  String settingsTransferPeerSent(String address) {
+    return 'Sent to $address';
+  }
+
+  @override
+  String settingsTransferPeerReceived(String address) {
+    return 'Connected to $address';
+  }
+
+  @override
   String get settingsTransferFootnote =>
       'The route explains the speed. A direct link is the fastest, a relayed internet transfer the slowest — copy the details if you are asking someone for help.';
 
@@ -684,6 +694,14 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get downloadPreparingDetail => 'Waiting for the sender';
+
+  @override
+  String get downloadErrorSenderUnreachable =>
+      'Lost the connection to the sender. It may have cancelled, closed the app, or lost Wi-Fi. Ask them to start the transfer again.';
+
+  @override
+  String get downloadErrorCancelledBySender =>
+      'The sender cancelled the transfer.';
 
   @override
   String get previewReadyTitle => 'Ready to Receive';

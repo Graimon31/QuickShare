@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:mime/mime.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
 
 class FileIndexerException implements Exception {
@@ -62,15 +64,24 @@ class FileIndexer {
     bool skipHidden = true,
     bool includeChecksums = true,
   }) async {
+    final sw = Stopwatch()..start();
     final List<_RawIndexedItem> rawItems = [];
     int totalBytes = 0;
 
     for (final rawPath in paths) {
-      final entity = FileSystemEntity.typeSync(rawPath);
-      if (entity == FileSystemEntityType.file) {
-        final file = File(rawPath);
-        if (!await file.exists()) continue;
-
+      // One stat per selected entry, and an asynchronous one.
+      //
+      // This used to ask the filesystem four times about the same file --
+      // `typeSync`, `exists`, `length`, `stat` -- where a single stat carries
+      // the type, the size and the modification time together. On a local SSD
+      // nobody could tell; on an external disk that has to spin up, or a
+      // network volume, it is four round-trips per file with a selection's
+      // worth of them in a row. And the first of the four was the synchronous
+      // one, on the isolate that draws the "indexing" screen: the spinner
+      // stopped animating for exactly as long as the disk took to answer,
+      // which is what "it looks frozen" means.
+      final stat = await FileStat.stat(rawPath);
+      if (stat.type == FileSystemEntityType.file) {
         // No skip check here on purpose. The hidden/junk filter exists to
         // keep `.DS_Store` and friends out of a folder somebody dragged in
         // wholesale; a file named on its own was named deliberately, and
@@ -78,21 +89,19 @@ class FileIndexer {
         // idea why.
         final name = p.basename(rawPath);
 
-        final size = await file.length();
+        final size = stat.size;
         _checkFileLimits(size, totalBytes, rawItems.length + 1, name);
         totalBytes += size;
 
-        final stat = await file.stat();
         rawItems.add(_RawIndexedItem(
           relPath: name,
-          absPath: file.path,
+          absPath: rawPath,
           size: size,
           mtime: stat.modified.millisecondsSinceEpoch,
           mime: lookupMimeType(rawPath) ?? 'application/octet-stream',
         ));
-      } else if (entity == FileSystemEntityType.directory) {
+      } else if (stat.type == FileSystemEntityType.directory) {
         final dir = Directory(rawPath);
-        if (!await dir.exists()) continue;
 
         final rootName = p.basename(rawPath);
         await _walkDirectory(
@@ -148,6 +157,17 @@ class FileIndexer {
       items: indexedItems,
     );
 
+    // The screen says "indexing" for exactly this long, so the journal has to
+    // be able to say how long that was and over how much. Without it, a
+    // selection sitting on a sleeping external disk and a genuinely stuck
+    // session look identical from the outside — and from the log.
+    AppLogger.info(
+        'Indexed ${indexedItems.length} item(s), $totalBytes bytes, from '
+        '${paths.length} selected entr${paths.length == 1 ? 'y' : 'ies'} '
+        'in ${sw.elapsedMilliseconds}ms'
+        '${withChecksums ? ' (with inline hashes)' : ''}',
+        tag: 'INDEX');
+
     return QhtpIndexerResult(
       manifest: manifest,
       itemIdToAbsPathMap: absPathMap,
@@ -168,27 +188,71 @@ class FileIndexer {
     }
   }
 
-  /// SHA-256 for every item, off the UI isolate.
+  /// SHA-256 for every item, each in its own isolate, [concurrency] at a
+  /// time, in manifest order.
   ///
-  /// Runs while the QR is already on screen: hashing a 500 MB session on the
-  /// UI isolate froze the "indexing" spinner for ten-plus seconds, and the
-  /// manifest endpoint holds its answer until these are in, so the receiver
-  /// never sees a hash-less manifest for a session under the checksum budget.
-  static Future<Map<String, String>> computeChecksums(
-    Map<String, String> itemIdToAbsPath,
-  ) {
-    return Isolate.run(() async {
-      final result = <String, String>{};
-      for (final entry in itemIdToAbsPath.entries) {
+  /// Returns a future per item rather than one future for the whole map.
+  /// Gating the manifest on the full session's digests put the entire hash
+  /// run on the receiver's connect path — seconds of "connecting" for any
+  /// session under the checksum budget. Per-item futures let the server
+  /// answer the manifest immediately and wait only for the one digest the
+  /// receiver is about to verify, which finished long ago: hashing outruns
+  /// the transfer by an order of magnitude. Running them in parallel
+  /// isolates additionally spreads the work across cores instead of one.
+  ///
+  /// A file that vanishes between indexing and hashing completes with null —
+  /// not worth failing the session over; the receiver gets a 410 for it
+  /// later and reports that item specifically.
+  static Map<String, Future<String?>> computeChecksums(
+    Map<String, String> itemIdToAbsPath, {
+    int concurrency = 4,
+  }) {
+    final completers = <String, Completer<String?>>{
+      for (final id in itemIdToAbsPath.keys) id: Completer<String?>(),
+    };
+    final entries = itemIdToAbsPath.entries.toList(growable: false);
+    var nextIndex = 0;
+
+    Future<void> worker() async {
+      while (nextIndex < entries.length) {
+        final entry = entries[nextIndex++];
+        String? digest;
         try {
-          final digest = await sha256.bind(File(entry.value).openRead()).first;
-          result[entry.key] = 'sha256:$digest';
+          digest = await _hashInIsolate(entry.value);
         } catch (_) {
-          // Vanished files stay hash-less; the receiver gets a 410 later.
+          digest = null;
         }
+        completers[entry.key]!.complete(digest);
       }
-      return result;
-    });
+    }
+
+    unawaited(Future.wait([
+      for (var i = 0; i < concurrency && i < entries.length; i++) worker(),
+    ]));
+    return {for (final c in completers.entries) c.key: c.value.future};
+  }
+
+  /// Hashes one file in a worker isolate.
+  ///
+  /// Lives in its own static scope on purpose: the `Isolate.run` closure may
+  /// capture only what an isolate message can carry, and a closure created
+  /// inside [computeChecksums] shares a context with that function's
+  /// Completers — which are unsendable, and the spawn fails.
+  static Future<String?> _hashInIsolate(String path) =>
+      Isolate.run(() => _digestOfPath(path));
+
+  /// `sha256:<hex>` over the file at [path], or null if it could not be read.
+  ///
+  /// A file that vanishes between indexing and hashing is not worth failing
+  /// the whole session over — the receiver will get a 410 for it later and
+  /// report that item specifically.
+  static Future<String?> _digestOfPath(String path) async {
+    try {
+      final digest = await sha256.bind(File(path).openRead()).first;
+      return 'sha256:$digest';
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<QhtpManifest> buildManifest({
@@ -248,11 +312,13 @@ class FileIndexer {
         final relPath = p.posix.join(prefix, baseName);
         _validatePathString(relPath);
 
-        final size = await entity.length();
+        // Size and mtime from the same stat, for the same reason as above:
+        // a folder walk asked twice per file, and a tree is where that adds up.
+        final stat = await entity.stat();
+        final size = stat.size;
         _checkFileLimits(size, currentTotalBytes(), items.length + 1, relPath);
 
         totalBytesRef(size);
-        final stat = await entity.stat();
 
         items.add(_RawIndexedItem(
           relPath: relPath,

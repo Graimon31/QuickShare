@@ -86,6 +86,8 @@
   "settingsNoTransfersYetSubtitle": "Здесь появится передача, как только она завершится.",
   "settingsCopyDetails": "Скопировать сведения",
   "settingsDetailsCopied": "Сведения скопированы",
+  "settingsTransferPeerSent": "Отправлено на {address}",
+  "settingsTransferPeerReceived": "Соединение с {address}",
   "settingsTransferFootnote": "Скорость объясняется маршрутом. Прямая связь — самая быстрая, передача через интернет-реле — самая медленная. Скопируйте сведения, если просите кого-то о помощи.",
 
   "commonSend": "Отправить",
@@ -222,6 +224,8 @@
   "downloadVerifyingDetail": "Проверяем целостность файла",
   "downloadPreparing": "Готовим скачивание…",
   "downloadPreparingDetail": "Ждём отправителя",
+  "downloadErrorSenderUnreachable": "Связь с отправителем потеряна. Возможно, он отменил передачу, закрыл приложение или у него пропал Wi-Fi. Попросите его начать передачу заново.",
+  "downloadErrorCancelledBySender": "Отправитель отменил передачу.",
 
   "previewReadyTitle": "Готово к приёму",
   "previewFolderTransfer": "Передача папки",

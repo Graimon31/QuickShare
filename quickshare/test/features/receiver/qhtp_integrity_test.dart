@@ -165,6 +165,74 @@ void main() {
         reason: 'a file that failed verification must not be published');
   });
 
+  test('a corrupted body is rejected when digests arrive out of band',
+      () async {
+    // Production shape: indexed without inline hashes (the QR goes up on
+    // sizes alone), digests follow through the per-item endpoint.
+    File(p.join(source.path, 'oob.bin'))
+        .writeAsBytesSync(List<int>.generate(20000, (i) => i % 256));
+    final indexed = await FileIndexer().buildResult(
+        sessionId: 'integrity-oob',
+        paths: [source.path],
+        includeChecksums: false);
+    expect(indexed.manifest.items.single.sha256, isNull,
+        reason: 'this test exists to exercise the out-of-band digest path');
+    port = await server.startQhtpSession(
+      manifest: indexed.manifest,
+      itemIdToAbsPathMap: indexed.itemIdToAbsPathMap,
+      authToken: token,
+      checksums: FileIndexer.computeChecksums(indexed.itemIdToAbsPathMap),
+    );
+    final payload = QRPayload(
+      version: 2,
+      ip: '127.0.0.1',
+      port: port,
+      token: token,
+      sessionId: 'integrity-oob',
+      mode: 'http-lan',
+      tlsFingerprint: server.tlsFingerprint!,
+    );
+
+    // Same one-bit flip as the inline-hash case: only the digest endpoint's
+    // answer can catch it.
+    final dio = Dio()
+      ..interceptors.add(InterceptorsWrapper(
+        onResponse: (response, handler) {
+          final body = response.data;
+          if (body is ResponseBody &&
+              response.requestOptions.path.contains('/v2/files/') &&
+              !response.requestOptions.path.endsWith('/digest')) {
+            var first = true;
+            response.data = ResponseBody(
+              body.stream.map((chunk) {
+                if (!first || chunk.isEmpty) return chunk;
+                first = false;
+                final copy = Uint8List.fromList(chunk);
+                copy[0] = copy[0] ^ 0xFF;
+                return copy;
+              }),
+              body.statusCode,
+              headers: body.headers,
+            );
+          }
+          handler.next(response);
+        },
+      ));
+
+    final result =
+        await QhtpReceiverClient(dioClient: dio, store: _InMemoryStore())
+            .downloadSession(payload: payload, targetBaseDir: destination.path);
+
+    expect(result.isRight, isFalse,
+        reason: 'corruption must fail the session even when the digest '
+            'arrived after the manifest');
+    expect(
+        File(p.join(destination.path, p.basename(source.path), 'oob.bin'))
+            .existsSync(),
+        isFalse,
+        reason: 'a file that failed verification must not be published');
+  });
+
   test('no .qs.partial survives a failed session', () async {
     final payload = await serve({
       'corrupt2.bin': List<int>.generate(20000, (i) => i % 256),

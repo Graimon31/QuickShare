@@ -283,9 +283,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   final PeerLinkService peerLink;
 
   /// Facts about the last transfer, for the settings screen to show.
-  final TransferDiagnostics _diagnostics = const TransferDiagnostics();
+  final TransferDiagnostics _diagnostics;
   DateTime? _sendStartedAt;
-  bool _directLinkOffered = false;
+
+  /// This device's own address for the active session — `ip:port`, from the
+  /// same session the QR names. Recorded alongside the peer address ground
+  /// truth ([SenderRepository.lastQhtpClientAddress]) so a transfer report
+  /// can show both ends of the connection, not just a route label.
+  String? _sessionLocalAddress;
   List<String>? _currentPaths;
 
   AnswerChannel? _answerChannel;
@@ -295,8 +300,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     required this.repository,
     LocalHotspotService? hotspotService,
     PeerLinkService? peerLinkService,
+    TransferDiagnostics? diagnostics,
   })  : hotspot = hotspotService ?? LocalHotspotService(),
         peerLink = peerLinkService ?? const PeerLinkService(),
+        _diagnostics = diagnostics ?? const TransferDiagnostics(),
         super(SenderInitial()) {
     on<PickFile>(_onPickFile);
     on<PickMedia>(_onPickMedia);
@@ -446,6 +453,17 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   void _subscribeToWifiProgress() {
     _progressSubscription?.cancel();
+    // A stale listener from an earlier Bluetooth fast-path attempt otherwise
+    // outlives that session: `transferProgress` is one stream shared by
+    // every QHTP session this server ever runs, so a fast-path subscription
+    // still around when a fresh Wi-Fi send starts hears that send's bytes
+    // too, and reports them as a second, spurious completion of whatever
+    // send happened to be in flight when it was created — a phantom entry
+    // in the transfer history with none of the real send's numbers, because
+    // by then this bloc's own session fields already belong to something
+    // else.
+    _fastPathSubscription?.cancel();
+    _fastPathSubscription = null;
     _progressSubscription = repository.transferProgress.listen((progress) {
       add(TransferProgressEvent(progress));
       if (progress >= 1.0) {
@@ -598,7 +616,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _currentPaths = event.paths;
     // A fresh session: forget the last one's timing, route and description.
     _sendStartedAt = null;
-    _directLinkOffered = false;
+    _sessionLocalAddress = null;
     _sessionDisplay = null;
     _sessionFolderName = null;
     final mode = event.mode ?? _selectedMode;
@@ -660,6 +678,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       (failure) async => emit(SenderError(failure.message)),
       (session) async {
         _currentFile = session.fileMetadata;
+        _sessionLocalAddress = '${session.localIp}:${session.serverPort}';
         await _offerOverDirectWiFi(session);
         final qrResult = await repository.generateQRPayload(session);
         qrResult.fold(
@@ -723,7 +742,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           // completion, nothing to say it worked. Functionally fine and
           // indistinguishable from a hung app, which is not a distinction
           // worth asking anyone to make.
-          _directLinkOffered = true;
+          _sessionLocalAddress = '${session.localIp}:${session.serverPort}';
           _fastPathSubscription?.cancel();
           _fastPathSubscription =
               repository.transferProgress.listen((progress) {
@@ -843,8 +862,24 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onCancelSending(
       CancelSending event, Emitter<SenderState> emit) async {
+    // Read before the server stops, not after: stopping it clears the one
+    // fact — which address, if any, ever connected — that says whether this
+    // was a send somebody was receiving or a QR nobody had scanned yet. A
+    // cancelled send used to leave no trace at all in the history, which
+    // read as "nothing happened here" to someone looking for why a transfer
+    // never finished.
+    await _reportSend(failure: 'Cancelled');
+    // The HTTP server goes down first, forced, and before either network
+    // path that carries it: a receiver mid-download is inside a socket read
+    // right now, and force-closing that socket while the hotspot or peer
+    // link is still up lands a TCP reset while there is still a network to
+    // carry it. Stopping the hotspot or peer link first was the bug —
+    // tearing down the radio out from under an open connection leaves the
+    // receiver's packets going nowhere and answered by nothing, which reads
+    // as a stall, not a reset, and used to cost the receiver most of a
+    // minute of retries before it gave up.
+    await repository.stopServer(force: true);
     await hotspot.stopHosting();
-    await repository.stopServer();
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
     _fastPathSubscription = null;
@@ -920,24 +955,44 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     if (started == null) return;
     _sendStartedAt = null;
 
+    // Ground truth, not intent: whether `peerLink.host()` returned without
+    // throwing says the direct link came up, not which address the far side
+    // actually opened a socket to. The two used to be treated as the same
+    // thing, which is how a session the receiver took over plain Wi-Fi still
+    // came out labelled "Direct Wi-Fi link" — the offer had succeeded, the
+    // receiver just never took it.
+    final clientAddress = repository.lastQhtpClientAddress;
     final ice = _activeWebRtcTransport?.lastIcePath;
     final route = switch (ice) {
       IcePathKind.relayed => 'Internet (relayed)',
       IcePathKind.peerToPeer => 'Internet (peer to peer)',
       IcePathKind.direct => 'Internet (direct, same network)',
-      _ when _activeBluetoothTransport != null && !_directLinkOffered =>
+      _ when _activeBluetoothTransport != null && clientAddress == null =>
         'Bluetooth',
-      _ when _directLinkOffered => 'Direct Wi-Fi link',
+      _ when clientAddress != null && clientAddress.isLoopback =>
+        'Direct Wi-Fi link',
       _ => 'Local network',
     };
+
+    // `_sessionFiles` only exists for the Bluetooth/internet branch, which
+    // hands this bloc the whole file list because it has to flatten folders
+    // itself. The plain Wi-Fi branch never sets it — QHTP does its own
+    // indexing server-side — but `_currentFile` there is the manifest's own
+    // total size, set from the session the server actually opened, so it is
+    // just as good a number and it is the one that was missing.
+    final bytes = (_sessionFiles != null && _sessionFiles!.isNotEmpty)
+        ? _sessionFiles!.fold<int>(0, (sum, f) => sum + f.size)
+        : (_currentFile?.size ?? 0);
 
     await _diagnostics.record(TransferReport(
       at: started,
       role: 'sent',
       route: route,
-      bytes: (_sessionFiles ?? const []).fold<int>(0, (sum, f) => sum + f.size),
+      bytes: bytes,
       took: DateTime.now().difference(started),
       failure: failure,
+      localAddress: _sessionLocalAddress,
+      peerAddress: clientAddress?.address,
     ));
   }
 
@@ -964,6 +1019,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onTransferFailed(
       TransferFailed event, Emitter<SenderState> emit) async {
+    // Same ordering as cancel, same reason: the server still knows who was
+    // connected, if anyone was, until it stops.
+    await _reportSend(failure: event.error);
     await repository.stopServer();
     await peerLink.stop();
     await _fastPathSubscription?.cancel();

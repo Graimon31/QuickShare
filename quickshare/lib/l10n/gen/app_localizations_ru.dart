@@ -258,6 +258,16 @@ class AppLocalizationsRu extends AppLocalizations {
   String get settingsDetailsCopied => 'Сведения скопированы';
 
   @override
+  String settingsTransferPeerSent(String address) {
+    return 'Отправлено на $address';
+  }
+
+  @override
+  String settingsTransferPeerReceived(String address) {
+    return 'Соединение с $address';
+  }
+
+  @override
   String get settingsTransferFootnote =>
       'Скорость объясняется маршрутом. Прямая связь — самая быстрая, передача через интернет-реле — самая медленная. Скопируйте сведения, если просите кого-то о помощи.';
 
@@ -690,6 +700,13 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get downloadPreparingDetail => 'Ждём отправителя';
+
+  @override
+  String get downloadErrorSenderUnreachable =>
+      'Связь с отправителем потеряна. Возможно, он отменил передачу, закрыл приложение или у него пропал Wi-Fi. Попросите его начать передачу заново.';
+
+  @override
+  String get downloadErrorCancelledBySender => 'Отправитель отменил передачу.';
 
   @override
   String get previewReadyTitle => 'Готово к приёму';

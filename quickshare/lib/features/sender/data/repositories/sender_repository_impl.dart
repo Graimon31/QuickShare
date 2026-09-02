@@ -12,6 +12,7 @@ import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/features/sender/data/indexer/file_indexer.dart';
 import 'package:quickshare/features/sender/data/qr/qr_payload_encoder.dart';
 import 'package:quickshare/features/sender/data/server/local_http_server.dart';
@@ -40,6 +41,9 @@ class SenderRepositoryImpl implements SenderRepository {
 
   @override
   Stream<double> get transferProgress => localServer.transferProgress;
+
+  @override
+  InternetAddress? get lastQhtpClientAddress => localServer.lastClientAddress;
 
   @override
   Stream<TransferStatus> get statusStream => _statusController.stream;
@@ -142,7 +146,20 @@ class SenderRepositoryImpl implements SenderRepository {
     try {
       _statusController.add(TransferStatus.serving);
 
-      final ip = await networkInfoService.getLocalIpAddress();
+      // Every step from here to the QR happens behind one "indexing" spinner
+      // with no way out, so each one says how long it took. A session that
+      // takes twenty seconds and a session that never starts at all used to
+      // leave the same trace in the journal: none.
+      final sw = Stopwatch()..start();
+
+      // The address lookup is two syscalls behind a platform channel, and
+      // nothing here can recover if the answer never comes — so it is not
+      // allowed to be the thing that hangs the session forever.
+      final ip = await networkInfoService
+          .getLocalIpAddress()
+          .timeout(const Duration(seconds: 6), onTimeout: () => null);
+      AppLogger.info('Session start: local address in ${sw.elapsedMilliseconds}ms',
+          tag: 'SENDER');
       if (ip == null) {
         return const Left(NetworkFailure('Could not determine local IP'));
       }
@@ -157,10 +174,11 @@ class SenderRepositoryImpl implements SenderRepository {
       );
 
       // Hashing waits for nobody: the QR goes up on sizes alone, and the
-      // manifest endpoint holds its answer until the digests are merged.
-      // Above the checksum budget the session skips hashes entirely, as
-      // before.
-      Future<Map<String, String>>? checksums;
+      // manifest answers immediately — the receiver picks up each digest
+      // from the per-item digest endpoint when it is about to verify that
+      // item, long after hashing has finished it. Above the checksum budget
+      // the session skips hashes entirely, as before.
+      Map<String, Future<String?>>? checksums;
       if (indexResult.manifest.totalBytes <=
           AppConstants.qhtpChecksumMaxSessionBytes) {
         checksums =
@@ -173,6 +191,10 @@ class SenderRepositoryImpl implements SenderRepository {
         authToken: token,
         checksums: checksums,
       );
+      AppLogger.info(
+          'Session start: serving on :$port, ${sw.elapsedMilliseconds}ms since '
+          'the selection was handed over',
+          tag: 'SENDER');
 
       // Prefer the original folder/file basename so receivers can show a real
       // name instead of a generic "N items" / Documents label.
@@ -275,9 +297,9 @@ class SenderRepositoryImpl implements SenderRepository {
   }
 
   @override
-  Future<Either<Failure, void>> stopServer() async {
+  Future<Either<Failure, void>> stopServer({bool force = false}) async {
     try {
-      await localServer.stop();
+      await localServer.stop(force: force);
       _statusController.add(TransferStatus.cancelled);
       return const Right(null);
     } catch (e) {

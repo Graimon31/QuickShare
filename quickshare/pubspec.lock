@@ -749,7 +749,7 @@ packages:
     source: hosted
     version: "6.1.4"
   network_info_plus_platform_interface:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: network_info_plus_platform_interface
       sha256: "7e7496a8a9d8136859b8881affc613c4a21304afeb6c324bcefc4bd0aff6b94b"

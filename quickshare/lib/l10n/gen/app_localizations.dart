@@ -548,6 +548,18 @@ abstract class AppLocalizations {
   /// **'Details copied'**
   String get settingsDetailsCopied;
 
+  /// No description provided for @settingsTransferPeerSent.
+  ///
+  /// In en, this message translates to:
+  /// **'Sent to {address}'**
+  String settingsTransferPeerSent(String address);
+
+  /// No description provided for @settingsTransferPeerReceived.
+  ///
+  /// In en, this message translates to:
+  /// **'Connected to {address}'**
+  String settingsTransferPeerReceived(String address);
+
   /// No description provided for @settingsTransferFootnote.
   ///
   /// In en, this message translates to:
@@ -1285,6 +1297,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Waiting for the sender'**
   String get downloadPreparingDetail;
+
+  /// No description provided for @downloadErrorSenderUnreachable.
+  ///
+  /// In en, this message translates to:
+  /// **'Lost the connection to the sender. It may have cancelled, closed the app, or lost Wi-Fi. Ask them to start the transfer again.'**
+  String get downloadErrorSenderUnreachable;
+
+  /// No description provided for @downloadErrorCancelledBySender.
+  ///
+  /// In en, this message translates to:
+  /// **'The sender cancelled the transfer.'**
+  String get downloadErrorCancelledBySender;
 
   /// No description provided for @previewReadyTitle.
   ///

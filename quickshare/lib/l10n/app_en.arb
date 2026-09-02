@@ -104,6 +104,14 @@
   "settingsNoTransfersYetSubtitle": "A transfer appears here once it finishes.",
   "settingsCopyDetails": "Copy details",
   "settingsDetailsCopied": "Details copied",
+  "settingsTransferPeerSent": "Sent to {address}",
+  "@settingsTransferPeerSent": {
+    "placeholders": { "address": { "type": "String" } }
+  },
+  "settingsTransferPeerReceived": "Connected to {address}",
+  "@settingsTransferPeerReceived": {
+    "placeholders": { "address": { "type": "String" } }
+  },
   "settingsTransferFootnote": "The route explains the speed. A direct link is the fastest, a relayed internet transfer the slowest — copy the details if you are asking someone for help.",
 
   "commonSend": "Send",
@@ -276,6 +284,8 @@
   "downloadVerifyingDetail": "Checking file integrity",
   "downloadPreparing": "Preparing download…",
   "downloadPreparingDetail": "Waiting for the sender",
+  "downloadErrorSenderUnreachable": "Lost the connection to the sender. It may have cancelled, closed the app, or lost Wi-Fi. Ask them to start the transfer again.",
+  "downloadErrorCancelledBySender": "The sender cancelled the transfer.",
 
   "previewReadyTitle": "Ready to Receive",
   "previewFolderTransfer": "Folder Transfer",

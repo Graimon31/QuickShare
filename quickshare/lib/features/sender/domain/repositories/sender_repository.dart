@@ -1,3 +1,5 @@
+import 'dart:io' show InternetAddress;
+
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
@@ -40,7 +42,16 @@ abstract class SenderRepository {
   /// Sets the active WebRTC transfer transport for direct HTTP SDP answer routing.
 
   /// Stops the local HTTP server.
-  Future<Either<Failure, void>> stopServer();
+  /// [force]: destroy an actively-streaming connection immediately instead
+  /// of letting it finish — see [LocalHttpServer.stop]. Only the user's own
+  /// explicit Cancel means this; every other caller wants the graceful
+  /// default.
+  Future<Either<Failure, void>> stopServer({bool force = false});
+
+  /// The real address that just downloaded a byte of the active QHTP
+  /// session — ground truth for which route actually carried it, as opposed
+  /// to which one was merely offered. Null until something has connected.
+  InternetAddress? get lastQhtpClientAddress;
 
   /// A stream of transfer progress values from 0.0 to 1.0.
   Stream<double> get transferProgress;

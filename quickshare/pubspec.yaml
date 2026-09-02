@@ -96,6 +96,9 @@ dev_dependencies:
   # has to be exact, and a real delay would make the suite slow and flaky.
   fake_async: ^1.3.1
   mocktail: ^1.0.4
+  # A platform side that never answers, for the test that the sender does not
+  # wait on it forever.
+  network_info_plus_platform_interface: ^2.0.2
   wakelock_plus_platform_interface: ^1.6.0
 
 flutter:

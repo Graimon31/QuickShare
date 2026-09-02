@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -66,18 +67,28 @@ class PeerLinkService {
 
   /// Announces this device under [serviceName] and forwards anything a peer
   /// sends to the QHTP server already listening on [localPort].
+  ///
+  /// Bounded by [timeout]: bringing up a listener is the work of a moment, and
+  /// this is an optional extra route offered while the sender waits to show
+  /// its QR code. A native side that never answers must cost that wait a few
+  /// seconds, not the whole session — both callers treat a failure here as
+  /// "no direct link this time" and carry on over the network.
   Future<void> host({
     required String serviceName,
     required int localPort,
+    Duration timeout = const Duration(seconds: 5),
   }) async {
     _requireSupport();
     try {
       await _channel.invokeMethod<void>('host', {
         'serviceName': serviceName,
         'localPort': localPort,
-      });
+      }).timeout(timeout);
       AppLogger.info('Peer link hosting as $serviceName -> :$localPort',
           tag: 'PEERLINK');
+    } on TimeoutException {
+      throw PeerLinkException(
+          'hosting did not come up within ${timeout.inSeconds}s');
     } on PlatformException catch (e) {
       throw PeerLinkException(e.message ?? 'could not start hosting');
     } on MissingPluginException {

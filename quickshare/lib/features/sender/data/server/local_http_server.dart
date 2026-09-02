@@ -21,8 +21,19 @@ class LocalHttpServer {
   String? get tlsFingerprint => _tls?.fingerprint;
   QhtpManifest? _activeManifest;
   Map<String, String>? _itemIdToAbsPathMap;
-  Future<Map<String, String>>? _checksumsInFlight;
+  Map<String, Future<String?>>? _itemChecksums;
   int _qhtpBytesSent = 0;
+
+  /// Where the bytes actually went, this session — not who was invited.
+  ///
+  /// The QR names one address and the direct Wi-Fi link offers another, but
+  /// whichever of them the receiver actually opened a socket to is a fact of
+  /// the connection, not of the UI state that set the session up. Recording
+  /// it here is what lets a transfer's history say which one carried the
+  /// bytes instead of guessing from whether the offer succeeded — an offer
+  /// that comes up says nothing about which route the far side picked.
+  InternetAddress? _lastClientAddress;
+  InternetAddress? get lastClientAddress => _lastClientAddress;
 
   final _progressController = StreamController<double>.broadcast();
   Stream<double> get transferProgress => _progressController.stream;
@@ -40,9 +51,10 @@ class LocalHttpServer {
     if (_server != null) {
       await stop();
     }
-    try {
-      await WakelockPlus.enable();
-    } catch (_) {}
+    // Keeping the screen awake is a nicety, and nothing here depends on it
+    // having happened. Awaiting it put a plugin call on the path between the
+    // user's selection and the QR — the QHTP start below never did.
+    unawaited(WakelockPlus.enable().catchError((_) {}));
     _authToken = authToken;
 
     final router = Router();
@@ -111,16 +123,20 @@ class LocalHttpServer {
 
   /// QHTP v2 Heavy Session Start Method
   ///
-  /// [checksums] is the background hashing of the selection, started after
-  /// the QR is already up. The manifest endpoint holds its answer until the
-  /// digests are merged in, so the receiver never sees a hash-less manifest
-  /// for a session that is meant to have them — and the QR never waits for
-  /// the hashing.
+  /// [checksums] is the background hashing of the selection as one future per
+  /// item, started after the QR is already up. The manifest answers without
+  /// waiting for it — gating the manifest on the full session's digests put
+  /// the entire hash run on the receiver's connect path, seconds of
+  /// "connecting" for any session under the checksum budget. The receiver
+  /// picks up each digest from `GET /v2/files/<id>/digest` when it is about
+  /// to verify that item, and hashing outruns the transfer by an order of
+  /// magnitude, so that wait is effectively never a wait. Above the checksum
+  /// budget the session skips hashes entirely, as before.
   Future<int> startQhtpSession({
     required QhtpManifest manifest,
     required Map<String, String> itemIdToAbsPathMap,
     required String authToken,
-    Future<Map<String, String>>? checksums,
+    Map<String, Future<String?>>? checksums,
   }) async {
     if (_server != null) {
       await stop();
@@ -130,12 +146,20 @@ class LocalHttpServer {
     _activeManifest = manifest;
     _itemIdToAbsPathMap = itemIdToAbsPathMap;
     _qhtpBytesSent = 0;
-    _checksumsInFlight = checksums;
+    _itemChecksums = checksums;
     if (checksums != null) {
-      unawaited(checksums.then(_mergeChecksums).catchError((_) {
-        // Hashing is best-effort: without it the receiver verifies byte
-        // counts, exactly as it does for sessions over the checksum budget.
-      }));
+      for (final entry in checksums.entries) {
+        // Hashing is best-effort: an item whose digest never arrives is
+        // verified by byte count, exactly like a session over the budget.
+        // The identity check keeps a previous session's late finisher from
+        // merging into this session's manifest — item ids are deterministic,
+        // so a stale digest would land on a same-indexed but different file.
+        unawaited(entry.value.then((digest) {
+          if (digest != null && identical(_itemChecksums, checksums)) {
+            _mergeChecksum(entry.key, digest);
+          }
+        }).catchError((_) => null));
+      }
     }
 
     final router = Router();
@@ -166,14 +190,10 @@ class LocalHttpServer {
 
     // 3. GET /v2/manifest (Auth required)
     router.get('/v2/manifest', (Request request) async {
-      // Hold the answer until background hashing has merged in; without the
-      // hashes the manifest is still correct, just weaker on verification.
-      final pending = _checksumsInFlight;
-      if (pending != null) {
-        try {
-          await pending;
-        } catch (_) {}
-      }
+      // Answers with whatever digests have merged in so far — usually none,
+      // hashing has barely started when the receiver asks. Holding this
+      // answer until hashing completed used to put the whole session's
+      // SHA-256 run between the QR scan and the first byte transferred.
       final active = _activeManifest ?? manifest;
       return Response.ok(
         jsonEncode(active.toJson()),
@@ -184,6 +204,7 @@ class LocalHttpServer {
     // 4. GET /v2/files/<id> (Auth required, supports HTTP Range)
     router.get('/v2/files/<id>', (Request request, String id) async {
       _startTimeoutTimer(); // Reset idle timer on authed request
+      _recordClientAddress(request);
 
       final absPath = _itemIdToAbsPathMap?[id];
       if (absPath == null) {
@@ -268,6 +289,44 @@ class LocalHttpServer {
       }
 
       return Response.ok(stream, headers: responseHeaders);
+    });
+
+    // 4b. GET /v2/files/<id>/digest (Auth required)
+    router.get('/v2/files/<id>/digest', (Request request, String id) async {
+      _startTimeoutTimer();
+
+      // A manifest that arrived with hashes inline (indexed synchronously)
+      // answers from itself; a background-hashed session waits on just this
+      // item's future. By the time a receiver has downloaded an item and
+      // asks for its digest, that future has long completed — hashing
+      // outruns the transfer — so the hold here exists for correctness, not
+      // because it is ever expected to bite.
+      final active = _activeManifest ?? manifest;
+      for (final item in active.items) {
+        if (item.id == id && item.sha256 != null && item.sha256!.isNotEmpty) {
+          return Response.ok(
+            jsonEncode({'sha256': item.sha256}),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+          );
+        }
+      }
+
+      final pending = _itemChecksums?[id];
+      if (pending == null) {
+        // No hashing for this session (over the checksum budget) — the
+        // receiver falls back to byte-count verification, as designed.
+        return Response(204);
+      }
+      final digest = await pending;
+      if (digest == null) {
+        // The file vanished mid-hashing; the receiver verifies by size and
+        // the download itself will already have failed with a 410.
+        return Response(204);
+      }
+      return Response.ok(
+        jsonEncode({'sha256': digest}),
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+      );
     });
 
     // 5. POST /v2/session/complete (Auth required)
@@ -394,9 +453,22 @@ class LocalHttpServer {
     });
   }
 
-  void _mergeChecksums(Map<String, String> hashes) {
+  /// Notes which address just opened a file-serving connection.
+  ///
+  /// `shelf_io` attaches the real socket's [HttpConnectionInfo] to every
+  /// request under this context key — the one fact in this whole session
+  /// that is not something the app told itself, but something the network
+  /// actually did.
+  void _recordClientAddress(Request request) {
+    final info = request.context['shelf.io.connection_info'];
+    if (info is HttpConnectionInfo) {
+      _lastClientAddress = info.remoteAddress;
+    }
+  }
+
+  void _mergeChecksum(String itemId, String digest) {
     final current = _activeManifest;
-    if (current == null || hashes.isEmpty) return;
+    if (current == null) return;
     _activeManifest = QhtpManifest(
       sessionId: current.sessionId,
       createdAt: current.createdAt,
@@ -404,37 +476,50 @@ class LocalHttpServer {
       totalBytes: current.totalBytes,
       items: [
         for (final item in current.items)
-          QhtpItem(
-            id: item.id,
-            path: item.path,
-            size: item.size,
-            mtime: item.mtime,
-            mime: item.mime,
-            sha256: hashes[item.id] ?? item.sha256,
-          ),
+          item.id == itemId
+              ? QhtpItem(
+                  id: item.id,
+                  path: item.path,
+                  size: item.size,
+                  mtime: item.mtime,
+                  mime: item.mime,
+                  sha256: digest,
+                )
+              : item,
       ],
     );
   }
 
-  Future<void> stop() async {
-    try {
-      await WakelockPlus.disable();
-    } catch (_) {}
+  /// Ends the session. Graceful by default: an in-flight response keeps
+  /// writing until it finishes, because for a small single-chunk file the
+  /// client's own byte count hits "complete" as soon as the last chunk is
+  /// handed to the response sink — often before that chunk has actually
+  /// been flushed out of the kernel socket buffer, and a force-close racing
+  /// that flush would truncate the response the receiver is still reading.
+  ///
+  /// [force]: for the one caller that means it — the user pressing Cancel on
+  /// a session that is actively sending bytes. There, "let it finish" is
+  /// backwards: nothing downstream wants those bytes, and every second the
+  /// socket stays open is a second the receiver's connection looks alive
+  /// while nothing is coming. Destroying it here lands a TCP reset while the
+  /// network underneath is still up — this is called before the hotspot or
+  /// peer link that carries it comes down — so the receiver's `await for`
+  /// over the response stream fails within about a round trip instead of
+  /// riding out its 30-second idle timeout.
+  Future<void> stop({bool force = false}) async {
+    // Not awaited, for the reason given in [start]: every new session begins
+    // by stopping the old one, and releasing a wakelock is not something a
+    // transfer should be able to queue behind.
+    unawaited(WakelockPlus.disable().catchError((_) {}));
     _timeoutTimer?.cancel();
     _authToken = null;
     _tls = null;
     _activeManifest = null;
     _itemIdToAbsPathMap = null;
-    _checksumsInFlight = null;
+    _itemChecksums = null;
+    _lastClientAddress = null;
     if (_server != null) {
-      // force:true (the old value) severs in-flight sockets immediately.
-      // For small single-chunk files, the client's own byte count hits
-      // "complete" as soon as the last chunk is handed to the response
-      // sink — often before that chunk has actually been flushed out of
-      // the kernel socket buffer. A force-close racing that flush truncates
-      // the response the client is still receiving. Graceful close (the
-      // dart:io default) lets in-flight responses finish writing first.
-      await _server!.close();
+      await _server!.close(force: force);
       _server = null;
     }
   }

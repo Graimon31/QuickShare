@@ -30,6 +30,17 @@ class TransferReport {
   /// Empty when it finished; the reason when it did not.
   final String failure;
 
+  /// This device's own address for the session, if known — what a QR or a
+  /// direct-link offer named, whether or not anything ended up using it.
+  final String? localAddress;
+
+  /// The address that actually carried the bytes, if one is known: the
+  /// far side's socket address on the sender, or the host this device
+  /// connected to on the receiver. This is the fact that answers "did this
+  /// really go over the LAN" or "was that actually the direct link" —
+  /// [route] is a label chosen from it, this is the evidence for the label.
+  final String? peerAddress;
+
   const TransferReport({
     required this.at,
     required this.role,
@@ -37,6 +48,8 @@ class TransferReport {
     required this.bytes,
     required this.took,
     this.failure = '',
+    this.localAddress,
+    this.peerAddress,
   });
 
   bool get succeeded => failure.isEmpty;
@@ -55,6 +68,8 @@ class TransferReport {
         'bytes': bytes,
         'ms': took.inMilliseconds,
         'failure': failure,
+        if (localAddress != null) 'localAddress': localAddress,
+        if (peerAddress != null) 'peerAddress': peerAddress,
       };
 
   static TransferReport fromJson(Map<String, dynamic> json) => TransferReport(
@@ -64,6 +79,8 @@ class TransferReport {
         bytes: json['bytes'] as int? ?? 0,
         took: Duration(milliseconds: json['ms'] as int? ?? 0),
         failure: json['failure'] as String? ?? '',
+        localAddress: json['localAddress'] as String?,
+        peerAddress: json['peerAddress'] as String?,
       );
 
   static String formatBytes(int bytes) {
@@ -92,6 +109,8 @@ class TransferReport {
       ..writeln('Size:  ${formatBytes(bytes)}')
       ..writeln('Took:  ${took.inSeconds}s')
       ..writeln('Speed: ${formatRate(bytesPerSecond)}');
+    if (localAddress != null) buffer.writeln('This device: $localAddress');
+    if (peerAddress != null) buffer.writeln('Peer:        $peerAddress');
     if (!succeeded) buffer.writeln('Failed: $failure');
     return buffer.toString();
   }
@@ -137,9 +156,22 @@ class TransferDiagnostics {
       final file = await _file();
       await file.writeAsString(
           jsonEncode([for (final r in kept) r.toJson()]));
+      // The one line in the whole journal that is supposed to say "here is
+      // what actually happened to the user's files" — everything else
+      // around it is plumbing (sessions starting, radios toggling). It has
+      // to say so plainly even when nothing failed, and it has to say why
+      // when something did; a silent success reads exactly like a session
+      // nobody is sure ever ran.
+      final addr = [
+        if (report.localAddress != null) 'this device ${report.localAddress}',
+        if (report.peerAddress != null) 'peer ${report.peerAddress}',
+      ].join(', ');
       AppLogger.info(
-          '${report.role} ${TransferReport.formatBytes(report.bytes)} over '
-          '${report.route} at ${TransferReport.formatRate(report.bytesPerSecond)}',
+          '${report.succeeded ? 'OK' : 'FAILED'}: ${report.role} '
+          '${TransferReport.formatBytes(report.bytes)} over ${report.route} '
+          'at ${TransferReport.formatRate(report.bytesPerSecond)}'
+          '${addr.isEmpty ? '' : ' ($addr)'}'
+          '${report.succeeded ? '' : ' — ${report.failure}'}',
           tag: 'DIAG');
     } catch (e) {
       // Diagnostics failing must never affect a transfer.

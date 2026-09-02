@@ -34,7 +34,11 @@ class _FakePeerLink extends PeerLinkService {
   const _FakePeerLink();
 
   @override
-  Future<void> host({required String serviceName, required int localPort}) async {}
+  Future<void> host({
+    required String serviceName,
+    required int localPort,
+    Duration timeout = const Duration(seconds: 5),
+  }) async {}
 
   @override
   Future<void> stop() async {}

@@ -214,6 +214,40 @@ class QhtpReceiverClient {
     );
   }
 
+  /// The item's SHA-256 from the sender's per-item digest endpoint, or null
+  /// when the session carries no digests (over the checksum budget, or a
+  /// sender build that predates the endpoint) or the answer never came.
+  ///
+  /// Null means the caller verifies by byte count — hashing is best-effort
+  /// everywhere else in this protocol, and a digest that fails to arrive
+  /// must degrade the same way rather than fail an otherwise sound transfer.
+  Future<String?> _fetchItemDigest({
+    required String host,
+    required int port,
+    required String token,
+    required String itemId,
+  }) async {
+    try {
+      final res = await dio
+          .get(
+            'https://$host:$port/v2/files/$itemId/digest',
+            options: Options(headers: {'Authorization': 'Bearer $token'}),
+            cancelToken: _cancelToken,
+          )
+          // The server holds this answer until the item's hash is ready.
+          // Hashing outruns the transfer by an order of magnitude, so the
+          // hold is theoretical; the bound exists for a sender whose disk
+          // has stalled mid-hash.
+          .timeout(const Duration(seconds: 60));
+      if (res.statusCode == 200 && res.data is Map) {
+        return (res.data as Map)['sha256'] as String?;
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Checks a finished `.qs.partial` against the manifest before it is
   /// published under its real name, and returns the digest to record.
   ///
@@ -223,6 +257,7 @@ class QhtpReceiverClient {
   Future<String?> _verifyPartial({
     required File partial,
     required QhtpItem item,
+    String? expectedSha256,
   }) async {
     final writtenBytes = await partial.length();
     if (item.size > 0 && writtenBytes != item.size) {
@@ -232,7 +267,7 @@ class QhtpReceiverClient {
           'manifest declares ${item.size}');
     }
 
-    final expected = item.sha256;
+    final expected = expectedSha256;
     final digest = await sha256.bind(partial.openRead()).first;
     final actual = 'sha256:$digest';
 
@@ -438,7 +473,7 @@ class QhtpReceiverClient {
 
         // Per-file retry up to 3 attempts
         bool itemSuccess = false;
-        String? itemError;
+        Object? itemError;
 
         for (int attempt = 1;
             attempt <= AppConstants.maxRetryAttempts;
@@ -574,9 +609,24 @@ class QhtpReceiverClient {
               speedBps: currentSpeedBps,
             ));
 
+            // The manifest carries the hash inline when the sender indexed
+            // with checksums; otherwise it arrives out of band — the
+            // sender's manifest no longer waits on hashing, so the digest
+            // comes from the per-item endpoint, where it has long been
+            // ready: hashing outruns the transfer by an order of magnitude.
+            var expectedSha256 = item.sha256;
+            if (expectedSha256 == null || expectedSha256.isEmpty) {
+              expectedSha256 = await _fetchItemDigest(
+                host: host,
+                port: port,
+                token: token,
+                itemId: item.id,
+              );
+            }
             final checksumStr = await _verifyPartial(
               partial: partialFile,
               item: item,
+              expectedSha256: expectedSha256,
             );
 
             // Durability parity with the WebRTC and BLE channels: fsync the
@@ -619,7 +669,7 @@ class QhtpReceiverClient {
             itemSuccess = true;
             break; // Success, break retry loop
           } catch (e) {
-            itemError = e.toString();
+            itemError = e;
             if (attempt < AppConstants.maxRetryAttempts) {
               await Future.delayed(Duration(seconds: attempt));
             }
@@ -640,7 +690,8 @@ class QhtpReceiverClient {
 
         if (!itemSuccess) {
           return Left(NetworkFailure(
-              'Failed to download ${item.path} after ${AppConstants.maxRetryAttempts} retries: $itemError'));
+              'Failed to download ${item.path} after ${AppConstants.maxRetryAttempts} retries: $itemError',
+              code: _connectionLossCode(itemError)));
         }
       }
 
@@ -707,7 +758,34 @@ class QhtpReceiverClient {
       final msg = isTimeout
           ? 'Cannot reach sender (${payload.ip}:${payload.port}). Make sure both your iPhone and Mac are connected to the SAME Wi-Fi network (and not using LTE).'
           : 'QHTP download failed: ${e.toString()}';
-      return Left(NetworkFailure(msg));
+      return Left(NetworkFailure(msg,
+          code: isTimeout ? FailureCode.senderUnreachable : null));
     }
+  }
+
+  /// Whether [error] is the shape a dead link takes on a plain HTTP pull —
+  /// worth naming for the user as "the sender is gone" rather than repeating
+  /// verbatim, whatever the exact wording underneath happens to be.
+  ///
+  /// This cannot tell a deliberate cancel from a crash or a radio going out
+  /// of range — a one-way GET carries no signal that would say which — so it
+  /// does not try to. All three end a connection the same way, and the name
+  /// is honest about all three.
+  String? _connectionLossCode(Object? error) {
+    if (error is DioException) {
+      switch (error.type) {
+        case DioExceptionType.connectionTimeout:
+        case DioExceptionType.sendTimeout:
+        case DioExceptionType.receiveTimeout:
+        case DioExceptionType.connectionError:
+          return FailureCode.senderUnreachable;
+        default:
+          return null;
+      }
+    }
+    if (error is SocketException || error is TimeoutException) {
+      return FailureCode.senderUnreachable;
+    }
+    return null;
   }
 }

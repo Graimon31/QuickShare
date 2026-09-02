@@ -4,6 +4,7 @@ import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
+import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/receiver/domain/usecases/download_file_usecase.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
@@ -94,9 +95,15 @@ class DownloadCompleted extends ReceiverEvent {
 
 class DownloadFailed extends ReceiverEvent {
   final String error;
-  const DownloadFailed(this.error);
+
+  /// See [FailureCode] — carried through from the [Failure] that caused
+  /// this, so [ReceiverError] can show a translated sentence instead of
+  /// [error] itself.
+  final String? code;
+
+  const DownloadFailed(this.error, {this.code});
   @override
-  List<Object> get props => [error];
+  List<Object> get props => [error, if (code != null) code!];
 }
 
 abstract class ReceiverState extends Equatable {
@@ -154,9 +161,14 @@ class DownloadComplete extends ReceiverState {
 class ReceiverError extends ReceiverState {
   final String message;
   final bool canRetry;
-  const ReceiverError(this.message, {this.canRetry = true});
+
+  /// See [FailureCode]. Null means the screen shows [message] itself, as it
+  /// always has; set, it names a sentence the screen translates instead.
+  final String? code;
+
+  const ReceiverError(this.message, {this.canRetry = true, this.code});
   @override
-  List<Object> get props => [message, canRetry];
+  List<Object?> get props => [message, canRetry, code];
 }
 
 class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
@@ -191,6 +203,12 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   final TransferDiagnostics _diagnostics = const TransferDiagnostics();
   DateTime? _startedAt;
   String _route = '';
+
+  /// `host:port` this device actually opened the QHTP connection to —
+  /// loopback when the direct link took it, the sender's LAN address from
+  /// the QR otherwise. [_route]'s label is read off this; this is the
+  /// address itself, for anyone who wants to check the label's homework.
+  String? _connectedTo;
 
   ReceiverBloc({
     required this.downloadFileUseCase,
@@ -275,6 +293,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         _startedAt = DateTime.now();
         final route = await _directRouteOrGiven(payload);
         _route = _directLinkOpen ? 'Direct Wi-Fi link' : 'Local network';
+        _connectedTo = '${route.ip}:${route.port}';
         if (transferAttempt != _transferAttempt) return;
 
         void report(QhtpProgress qp) {
@@ -339,7 +358,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         result.fold(
           (failure) {
             unawaited(_report(0, failure: failure.message));
-            add(DownloadFailed(failure.message));
+            add(DownloadFailed(failure.message, code: failure.code));
           },
           (result) {
             final items = TransferCache.itemsIn(session);
@@ -369,7 +388,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
 
       if (transferAttempt != _transferAttempt) return;
       result.fold(
-        (failure) => add(DownloadFailed(failure.message)),
+        (failure) => add(DownloadFailed(failure.message, code: failure.code)),
         (path) => add(DownloadCompleted(
           path,
           items: [
@@ -411,7 +430,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     });
 
     on<DownloadFailed>((event, emit) {
-      emit(ReceiverError(event.error));
+      emit(ReceiverError(event.error, code: event.code));
     });
 
     on<CancelDownload>((event, emit) {
@@ -442,7 +461,9 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       bytes: bytes,
       took: DateTime.now().difference(started),
       failure: failure,
+      peerAddress: _connectedTo,
     ));
+    _connectedTo = null;
   }
 
   /// Closes the direct link, if one was ever opened.
@@ -568,7 +589,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       if (e is TransferCancelledBySender) {
         AppLogger.info('Sender cancelled the transfer', tag: 'WEBRTC_RECEIVER');
         emit(const ReceiverError('The sender cancelled the transfer',
-            canRetry: false));
+            canRetry: false, code: FailureCode.cancelledBySender));
       } else {
         AppLogger.error('Serverless transfer failed',
             error: e, stackTrace: st, tag: 'WEBRTC_RECEIVER');
