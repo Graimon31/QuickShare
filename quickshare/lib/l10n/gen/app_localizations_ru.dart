@@ -418,6 +418,13 @@ class AppLocalizationsRu extends AppLocalizations {
   String get precondOpenSettings => 'Открыть настройки';
 
   @override
+  String get precondOpenAppSettings => 'Настройки приложения';
+
+  @override
+  String get precondWifiBodyApple =>
+      'Передача по локальной сети работает через Wi-Fi. iOS не даёт приложениям открывать раздел Wi-Fi, поэтому включите его сами: Настройки › Wi-Fi. Если Wi-Fi уже включён, возможно, приложению не выдан доступ к локальной сети — он находится на странице настроек приложения.';
+
+  @override
   String get precondWifiBlocked =>
       'Передача невозможна, пока не включён Wi-Fi.';
 

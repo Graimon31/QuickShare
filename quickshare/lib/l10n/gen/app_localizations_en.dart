@@ -414,6 +414,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get precondOpenSettings => 'Open Settings';
 
   @override
+  String get precondOpenAppSettings => 'Open app settings';
+
+  @override
+  String get precondWifiBodyApple =>
+      'Local network transfer needs Wi-Fi. iOS lets no app open the Wi-Fi pane, so switch it on yourself in Settings › Wi-Fi. If Wi-Fi is already on, the app may be missing Local Network access — that one is in its own settings page.';
+
+  @override
   String get precondWifiBlocked =>
       'Transfer is unavailable until Wi-Fi is turned on.';
 

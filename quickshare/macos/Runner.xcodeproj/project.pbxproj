@@ -30,6 +30,7 @@
 		F2B458F61321309DD4D7C325 /* QuickShareBluetooth.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AF8508073E0C1E83664546 /* QuickShareBluetooth.swift */; };
 		F2B458F61321309DD4D7C326 /* PeerLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AF8508073E0C1E83664547 /* PeerLink.swift */; };
 		D1AF8508073E0C1E83664560 /* SaveLocationBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1AF8508073E0C1E83664561 /* SaveLocationBridge.swift */; };
+		D1AF8508073E0C1E83664570 /* FolderPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1AF8508073E0C1E83664571 /* FolderPicker.swift */; };
 		350503C588972A367D22F846 /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C8EC892684DEB26D03B9F58D /* Pods_Runner.framework */; };
 		78A318202AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile; productRef = 78A3181F2AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage */; };
 		846E5B560CC6AB400301E9EC /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 28B9C7047AE0BB6FA3B9686F /* Pods_RunnerTests.framework */; };
@@ -83,6 +84,7 @@
 		C1AF8508073E0C1E83664546 /* QuickShareBluetooth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickShareBluetooth.swift; sourceTree = "<group>"; };
 		C1AF8508073E0C1E83664547 /* PeerLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeerLink.swift; sourceTree = "<group>"; };
 		D1AF8508073E0C1E83664561 /* SaveLocationBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SaveLocationBridge.swift; sourceTree = "<group>"; };
+		D1AF8508073E0C1E83664571 /* FolderPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderPicker.swift; sourceTree = "<group>"; };
 		33CEB47222A05771004F2AC0 /* Flutter-Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Flutter-Debug.xcconfig"; sourceTree = "<group>"; };
 		33CEB47422A05771004F2AC0 /* Flutter-Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = "Flutter-Release.xcconfig"; sourceTree = "<group>"; };
 		33CEB47722A0578A004F2AC0 /* Flutter-Generated.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = "Flutter-Generated.xcconfig"; path = "ephemeral/Flutter-Generated.xcconfig"; sourceTree = "<group>"; };
@@ -190,6 +192,7 @@
 				C1AF8508073E0C1E83664546 /* QuickShareBluetooth.swift */,
 				C1AF8508073E0C1E83664547 /* PeerLink.swift */,
 				D1AF8508073E0C1E83664561 /* SaveLocationBridge.swift */,
+				D1AF8508073E0C1E83664571 /* FolderPicker.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
 				33E51914231749380026EE4D /* Release.entitlements */,
 				33CC11242044D66E0003C045 /* Resources */,
@@ -461,6 +464,7 @@
 				F2B458F61321309DD4D7C325 /* QuickShareBluetooth.swift in Sources */,
 				F2B458F61321309DD4D7C326 /* PeerLink.swift in Sources */,
 				D1AF8508073E0C1E83664560 /* SaveLocationBridge.swift in Sources */,
+				D1AF8508073E0C1E83664570 /* FolderPicker.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

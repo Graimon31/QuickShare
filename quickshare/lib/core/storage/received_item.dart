@@ -39,6 +39,19 @@ class ReceivedItem {
 
   bool get isSaved => savedPath != null;
 
+  /// Where the item is right now: its permanent home once saved, the cache
+  /// until then.
+  ///
+  /// Saving moves rather than copies wherever the filesystem allows it, so
+  /// [cachePath] stops naming anything the moment a save succeeds — anything
+  /// that opens, lists or previews the item has to ask this instead.
+  ///
+  /// A gallery save is the exception: the photo library keeps its own copy
+  /// and hands back no path at all, so those still answer with the cache
+  /// path, which is where the file stays until the session is discarded.
+  String get currentPath =>
+      (savedPath == null || savedPath == 'gallery') ? cachePath : savedPath!;
+
   ReceivedItem copyWith({String? savedPath}) => ReceivedItem(
         cachePath: cachePath,
         name: name,

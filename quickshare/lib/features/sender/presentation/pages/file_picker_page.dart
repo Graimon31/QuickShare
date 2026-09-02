@@ -10,6 +10,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/core/media/media_library.dart';
+import 'package:quickshare/core/storage/folder_picker.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/pages/media_picker_page.dart';
 import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
@@ -121,14 +122,21 @@ class _FilePickerPageState extends State<FilePickerPage> {
     }
   }
 
+  /// Folders, however many of them.
+  ///
+  /// Every channel here carries a manifest of relative paths, so several
+  /// folders travel as easily as one — the selection was only ever limited
+  /// by what the picker could say. [FolderPicker] asks the platform's own
+  /// dialog for a multiple selection where one exists.
   Future<void> _pickFolder() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
-    final folderPath = await FilePicker.platform.getDirectoryPath();
-    if (folderPath != null && mounted) {
+    final folders = await const FolderPicker()
+        .pick(dialogTitle: AppLocalizations.of(context).pickerSelectFolder);
+    if (folders.isNotEmpty && mounted) {
       context
           .read<SenderBloc>()
-          .add(StartQhtpSend([folderPath], mode: _selectedMode));
+          .add(StartQhtpSend(folders, mode: _selectedMode));
     } else if (mounted) {
       setState(() => _selectionInFlight = false);
     }
@@ -155,6 +163,23 @@ class _FilePickerPageState extends State<FilePickerPage> {
       ),
       body: BlocConsumer<SenderBloc, SenderState>(
         listener: (context, state) {
+          // This screen is not rebuilt when the user comes back to it.
+          //
+          // `/send/qr` is a route *under* `/send`, so the QR code is pushed on
+          // top of this page rather than replacing it: the state object here
+          // survives the whole trip and is still holding whatever it held
+          // when the session started. Popping back therefore revealed a page
+          // that believed a selection was still in flight, and every button
+          // on it — both pickers and all three mode tiles — returned at its
+          // first line. The screen looked alive and answered nothing.
+          //
+          // Leaving the QR screen cancels the session, so the bloc says when
+          // that is over. Anything other than a session being set up means
+          // this page is usable again.
+          if (state is! ServerStarting && _selectionInFlight) {
+            _selectionInFlight = false;
+          }
+
           if (state is FileSelected) {
             // As soon as file is chosen, automatically start sending with chosen transport mode
             context.read<SenderBloc>().add(

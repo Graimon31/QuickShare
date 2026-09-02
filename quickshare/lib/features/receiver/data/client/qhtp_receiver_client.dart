@@ -182,10 +182,18 @@ class QhtpReceiverClient {
     }
   }
 
+  /// What to show for a finished session.
+  ///
+  /// [placedPaths] is what the session actually wrote, top level only, and
+  /// only matters when [targetBaseDir] is a folder that was already the
+  /// user's: names here come from the manifest, but a file whose name was
+  /// taken lands under a different one, so the caller's own record of where
+  /// each item ended up is the only accurate answer.
   QhtpReceiveResult deriveReceiveResult(
     QhtpManifest manifest,
-    String targetBaseDir,
-  ) {
+    String targetBaseDir, {
+    Iterable<String> placedPaths = const [],
+  }) {
     final topLevelNames = <String>{};
 
     for (final item in manifest.items) {
@@ -197,12 +205,15 @@ class QhtpReceiverClient {
       }
     }
 
+    final placed = placedPaths.toList(growable: false);
     final sortedTopLevelNames = topLevelNames.toList()..sort();
     if (sortedTopLevelNames.length == 1) {
       final rootName = sortedTopLevelNames.single;
       return QhtpReceiveResult(
-        preferredResultPath: p.join(targetBaseDir, rootName),
-        displayName: rootName,
+        preferredResultPath:
+            placed.length == 1 ? placed.single : p.join(targetBaseDir, rootName),
+        displayName: placed.length == 1 ? p.basename(placed.single) : rootName,
+        placedPaths: placed,
       );
     }
 
@@ -211,7 +222,28 @@ class QhtpReceiverClient {
       displayName: sortedTopLevelNames.isEmpty
           ? 'Received files'
           : '${sortedTopLevelNames.length} items',
+      placedPaths: placed,
     );
+  }
+
+  /// The top-level entries [finalPaths] created under [baseDir], in the order
+  /// they first appear.
+  ///
+  /// A folder of four hundred photos is one entry here, not four hundred:
+  /// what the sender chose to send is what the completion screen has a
+  /// decision to offer about.
+  static List<String> topLevelEntries(
+      Iterable<String> finalPaths, String baseDir) {
+    final seen = <String>{};
+    final entries = <String>[];
+    for (final path in finalPaths) {
+      final relative = p.relative(path, from: baseDir);
+      final first = p.split(relative).first;
+      if (first.isEmpty || first == '.' || first == '..') continue;
+      final absolute = p.join(baseDir, first);
+      if (seen.add(absolute)) entries.add(absolute);
+    }
+    return entries;
   }
 
   /// The item's SHA-256 from the sender's per-item digest endpoint, or null
@@ -745,7 +777,21 @@ class QhtpReceiverClient {
         speedBps: 0,
       ));
 
-      return Right(deriveReceiveResult(manifest, resolvedTargetBaseDir));
+      // Read off what each item was actually written as, not off the
+      // manifest: a name already taken in the destination lands under
+      // another one, and a destination that is the user's own folder is
+      // full of files this session did not put there.
+      return Right(deriveReceiveResult(
+        manifest,
+        resolvedTargetBaseDir,
+        placedPaths: topLevelEntries(
+          [
+            for (final item in manifest.items)
+              if (localState[item.id]?.finalPath case final path?) path,
+          ],
+          resolvedTargetBaseDir,
+        ),
+      ));
     } catch (e) {
       if (e is DioException && CancelToken.isCancel(e)) {
         return const Left(FileFailure('Transfer cancelled'));

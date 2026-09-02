@@ -49,7 +49,7 @@ class ReceivedItemsList extends StatelessWidget {
           padding: const EdgeInsets.only(right: 14),
           itemCount: items.length,
           itemBuilder: (context, i) => _EntryRow(
-            path: items[i].cachePath,
+            path: items[i].currentPath,
             name: items[i].name,
             isDirectory: items[i].isDirectory,
             sizeLabel: TransferCache.formatBytes(items[i].size),

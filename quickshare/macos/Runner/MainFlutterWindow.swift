@@ -22,6 +22,7 @@ class MainFlutterWindow: NSWindow {
     QuickShareBluetoothPlugin.register(with: flutterViewController.registrar(forPlugin: "QuickShareBluetoothPlugin"))
     PeerLinkPlugin.register(with: flutterViewController.registrar(forPlugin: "PeerLinkPlugin"))
     SaveLocationPlugin.register(with: flutterViewController.registrar(forPlugin: "SaveLocationPlugin"))
+    FolderPickerPlugin.register(with: flutterViewController.registrar(forPlugin: "FolderPickerPlugin"))
 
     super.awakeFromNib()
   }

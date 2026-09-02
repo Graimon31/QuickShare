@@ -788,6 +788,18 @@ abstract class AppLocalizations {
   /// **'Open Settings'**
   String get precondOpenSettings;
 
+  /// No description provided for @precondOpenAppSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Open app settings'**
+  String get precondOpenAppSettings;
+
+  /// No description provided for @precondWifiBodyApple.
+  ///
+  /// In en, this message translates to:
+  /// **'Local network transfer needs Wi-Fi. iOS lets no app open the Wi-Fi pane, so switch it on yourself in Settings › Wi-Fi. If Wi-Fi is already on, the app may be missing Local Network access — that one is in its own settings page.'**
+  String get precondWifiBodyApple;
+
   /// No description provided for @precondWifiBlocked.
   ///
   /// In en, this message translates to:

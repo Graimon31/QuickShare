@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:universal_ble/universal_ble.dart';
@@ -35,10 +37,23 @@ class TransportPreconditions {
     if (await _networkInfo.hasWifiTransportNetwork()) return true;
     if (!context.mounted) return false;
     final l10n = AppLocalizations.of(context);
+
+    // iOS has no way for an app to open the Wi-Fi pane — the URL scheme that
+    // once did is private and gets apps rejected — so "Open Settings" here
+    // lands on the app's own permissions page instead. Offering it under a
+    // label that promises Wi-Fi settings is how someone ends up staring at a
+    // list of camera and photo toggles wondering where the Wi-Fi switch
+    // went. The button stays, because the app's page is genuinely where
+    // Local Network access lives and a denied one looks exactly like no
+    // Wi-Fi from in here — but it says what it opens, and the text says
+    // where the Wi-Fi switch actually is.
+    final appleWording = Platform.isIOS;
     final openSettings = await _askEnable(
       context,
       title: l10n.precondWifiTitle,
-      body: l10n.precondWifiBody,
+      body: appleWording ? l10n.precondWifiBodyApple : l10n.precondWifiBody,
+      confirmLabel:
+          appleWording ? l10n.precondOpenAppSettings : l10n.precondOpenSettings,
     );
     if (!context.mounted) return false;
     if (openSettings) {
@@ -88,6 +103,7 @@ class TransportPreconditions {
     BuildContext context, {
     required String title,
     required String body,
+    String? confirmLabel,
   }) async {
     final l10n = AppLocalizations.of(context);
     final answer = await showDialog<bool>(
@@ -103,7 +119,7 @@ class TransportPreconditions {
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: Text(l10n.precondOpenSettings),
+            child: Text(confirmLabel ?? l10n.precondOpenSettings),
           ),
         ],
       ),

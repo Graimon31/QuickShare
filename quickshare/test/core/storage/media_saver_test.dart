@@ -58,12 +58,62 @@ void main() {
       expect(p.dirname(saved.savedPath!), equals(downloads.path));
     });
 
-    test('leaves the cache copy in place', () async {
-      // The caller decides when a session is done; deleting here would make a
-      // partially-failed batch unrecoverable.
+    test('moves rather than copies when it can', () async {
+      // Saving used to copy every byte a second time, and a gigabyte
+      // received over Wi-Fi then spent most of a minute being written again
+      // while the screen said "saving". Cache and destination are normally
+      // the same filesystem, where a rename costs nothing whatever the size.
+      //
+      // The cache copy was deliberately kept before, so a batch that failed
+      // halfway could still be recovered. A move does not weaken that: every
+      // item is either at its destination or still in the cache, which is
+      // what the next test checks.
+      final item = cached('report.pdf', 'application/pdf', body: 'hello');
+      final saved = await saverWith().saveToDownloads(item);
+
+      expect(File(saved.savedPath!).readAsStringSync(), equals('hello'));
+      expect(File(item.cachePath).existsSync(), isFalse,
+          reason: 'the bytes were moved, not duplicated');
+    });
+
+    test('a save that fails leaves the cache copy untouched', () async {
+      // The recoverability the cache is there for: an item that could not be
+      // written anywhere must still exist to be offered again.
       final item = cached('report.pdf', 'application/pdf');
-      await saverWith().saveToDownloads(item);
+
+      // A directory nothing may be written into: the rename fails, the copy
+      // that follows it fails too, and neither is allowed to have consumed
+      // the source on the way.
+      final locked = Directory(p.join(workspace.path, 'locked'))..createSync();
+      await Process.run('chmod', ['500', locked.path]);
+      addTearDown(() => Process.run('chmod', ['700', locked.path]));
+
+      final saver = MediaSaver(downloadsHook: () async => locked);
+
+      await expectLater(
+          saver.saveToDownloads(item), throwsA(isA<SaveFailed>()));
       expect(File(item.cachePath).existsSync(), isTrue);
+    });
+
+    test('a folder is moved whole, structure intact', () async {
+      final tree = Directory(p.join(cacheDir.path, 'trip'))..createSync();
+      File(p.join(tree.path, 'a.txt')).writeAsStringSync('one');
+      Directory(p.join(tree.path, 'sub')).createSync();
+      File(p.join(tree.path, 'sub', 'b.txt')).writeAsStringSync('two');
+
+      final saved = await saverWith().saveToDownloads(ReceivedItem(
+        cachePath: tree.path,
+        name: 'trip',
+        size: 0,
+        mimeType: 'inode/directory',
+        isDirectory: true,
+      ));
+
+      expect(File(p.join(saved.savedPath!, 'a.txt')).readAsStringSync(),
+          equals('one'));
+      expect(File(p.join(saved.savedPath!, 'sub', 'b.txt')).readAsStringSync(),
+          equals('two'));
+      expect(Directory(tree.path).existsSync(), isFalse);
     });
 
     test('never overwrites a file already there', () async {

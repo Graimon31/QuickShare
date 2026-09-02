@@ -97,9 +97,34 @@ class MediaSaver {
     return item.copyWith(savedPath: destination);
   }
 
-  /// Copies one item to [destination], folder and all if that is what it is.
+  /// Moves one item to [destination], folder and all if that is what it is.
+  ///
+  /// A rename first, and a copy only if that fails. Both land the same file
+  /// in the same place, but a rename is a change of name in a directory
+  /// entry — instant, whatever the size — while a copy reads and writes
+  /// every byte a second time. The transfer cache and the destination are
+  /// usually the same volume, so the fast path is the ordinary one: a
+  /// gigabyte that took a minute to copy out of the cache now takes no
+  /// measurable time at all.
+  ///
+  /// The copy fallback is not an error path so much as the other half of the
+  /// rule: a rename cannot cross a filesystem, and a phone saving into a
+  /// user-picked folder, or a desktop pointed at an external disk, crosses
+  /// one every time. Any failure falls through to it — if the reason was not
+  /// the boundary but something real, the copy raises it just the same.
   Future<void> _place(ReceivedItem item, String destination) async {
     try {
+      try {
+        if (item.isDirectory) {
+          await Directory(item.cachePath).rename(destination);
+        } else {
+          await File(item.cachePath).rename(destination);
+        }
+        return;
+      } on FileSystemException {
+        // Not the same filesystem, most likely. Copy instead.
+      }
+
       if (item.isDirectory) {
         await _copyTree(Directory(item.cachePath), Directory(destination));
       } else {

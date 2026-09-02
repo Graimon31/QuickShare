@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:network_info_plus/network_info_plus.dart';
 
+import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 class NetworkInfoService {
@@ -152,10 +153,67 @@ class NetworkInfoService {
   /// address passes there.
   Future<bool> hasWifiTransportNetwork() async {
     if (Platform.isIOS || Platform.isAndroid) {
+      // Three ways of asking, because one plugin call answering "no" is not
+      // the same fact as there being no Wi-Fi.
+      //
+      // Hanging the whole decision on it is what put a "turn Wi-Fi on"
+      // dialog in front of people whose Wi-Fi was plainly on: the call can
+      // time out, and on iOS it can also answer about the wrong interface
+      // once the app's own peer-to-peer link has brought `awdl0` up beside
+      // `en0`. Any one of the three saying yes is enough — none of them can
+      // say yes when there is genuinely no Wi-Fi.
       final wifiIp = await _wifiIpFromPlugin();
-      return wifiIp != null && _isValidPrivateIp(wifiIp);
+      if (wifiIp != null && _isValidPrivateIp(wifiIp)) return true;
+      if (await _hasPrivateAddressOnWifiInterface()) return true;
+      return _systemSaysWifiIsUsable();
     }
     return isConnectedToWifi();
+  }
+
+  /// A real LAN address on an interface that is the Wi-Fi one.
+  ///
+  /// By name, deliberately: `getLocalIpAddress`'s generic sweep cannot be
+  /// used here because iOS hands the cellular interface carrier-NAT
+  /// addresses out of 10.0.0.0/8, which look exactly like a home LAN. The
+  /// name does not — Wi-Fi is `en*` on iOS and `wlan*` on Android, while
+  /// cellular is `pdp_ip*` and `rmnet*` — so this tells the two apart where
+  /// the address alone cannot. Tunnels, AWDL and the rest stay excluded by
+  /// [_ignoredInterfaces].
+  Future<bool> _hasPrivateAddressOnWifiInterface() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      for (final interface in interfaces) {
+        final name = interface.name.toLowerCase();
+        if (_ignoredInterfaces.any((ignored) => name.contains(ignored))) {
+          continue;
+        }
+        if (!name.startsWith('en') && !name.startsWith('wlan')) continue;
+        for (final address in interface.addresses) {
+          if (_isValidPrivateIp(address.address)) return true;
+        }
+      }
+    } catch (_) {
+      // An interface list this platform will not give up says nothing either
+      // way; the last check decides.
+    }
+    return false;
+  }
+
+  /// Apple's own answer to "is there a usable Wi-Fi path right now".
+  ///
+  /// `NWPathMonitor` needs no address and no permission, and it is the same
+  /// signal the system uses itself. Only Apple platforms answer; everywhere
+  /// else this is simply not available and the checks above stand alone.
+  Future<bool> _systemSaysWifiIsUsable() async {
+    if (!PeerLinkService.isSupported) return false;
+    try {
+      return await const PeerLinkService().wifiReady;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// Any active network connection at all, cellular included — the bar the

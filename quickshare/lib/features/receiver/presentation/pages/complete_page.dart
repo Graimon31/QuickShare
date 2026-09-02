@@ -255,7 +255,14 @@ class _CompletePageState extends State<CompletePage> {
               ],
             )
           else
-            ReceivedItemsList(items: widget.items),
+            // The outcomes' items once the pass has run, not the ones the
+            // screen was handed: saving moves a file, so only the outcome
+            // knows where each item is now.
+            ReceivedItemsList(
+              items: _outcomes.isEmpty
+                  ? widget.items
+                  : [for (final outcome in _outcomes) outcome.item],
+            ),
           for (final failure in _failures)
             Padding(
               padding: const EdgeInsets.only(top: 8),

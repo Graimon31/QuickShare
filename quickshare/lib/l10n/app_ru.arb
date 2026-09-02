@@ -131,6 +131,8 @@
   "precondBluetoothTitle": "Включите Bluetooth",
   "precondBluetoothBody": "Передача по Bluetooth работает только с включённым Bluetooth-модулем.",
   "precondOpenSettings": "Открыть настройки",
+  "precondOpenAppSettings": "Настройки приложения",
+  "precondWifiBodyApple": "Передача по локальной сети работает через Wi-Fi. iOS не даёт приложениям открывать раздел Wi-Fi, поэтому включите его сами: Настройки › Wi-Fi. Если Wi-Fi уже включён, возможно, приложению не выдан доступ к локальной сети — он находится на странице настроек приложения.",
   "precondWifiBlocked": "Передача невозможна, пока не включён Wi-Fi.",
   "precondBluetoothBlocked": "Передача невозможна, пока не включён Bluetooth.",
   "precondInternetBlocked": "Нет активного сетевого подключения. Передача через интернет недоступна.",

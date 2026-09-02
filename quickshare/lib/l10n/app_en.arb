@@ -173,6 +173,8 @@
   "precondBluetoothTitle": "Turn on Bluetooth",
   "precondBluetoothBody": "Bluetooth transfer needs the Bluetooth module to be on.",
   "precondOpenSettings": "Open Settings",
+  "precondOpenAppSettings": "Open app settings",
+  "precondWifiBodyApple": "Local network transfer needs Wi-Fi. iOS lets no app open the Wi-Fi pane, so switch it on yourself in Settings › Wi-Fi. If Wi-Fi is already on, the app may be missing Local Network access — that one is in its own settings page.",
   "precondWifiBlocked": "Transfer is unavailable until Wi-Fi is turned on.",
   "precondBluetoothBlocked": "Transfer is unavailable until Bluetooth is turned on.",
   "precondInternetBlocked": "No active network connection. Internet transfer is unavailable.",

@@ -80,5 +80,49 @@ void main() {
       expect(result.displayName, equals('2 items'));
       expect(result.preferredResultPath, equals(tempBaseDir.path));
     });
+
+    // Writing straight into the user's own Downloads folder is what saves a
+    // gigabyte from being copied a second time after the transfer — but it
+    // means the destination is full of files this session did not put there,
+    // so the completion screen cannot simply list the directory.
+    test('collapses what was written into its top-level entries', () {
+      final entries = QhtpReceiverClient.topLevelEntries(
+        [
+          p.join(tempBaseDir.path, 'Vacation', 'photo.jpg'),
+          p.join(tempBaseDir.path, 'Vacation', 'videos', 'clip.mp4'),
+          p.join(tempBaseDir.path, 'notes.txt'),
+        ],
+        tempBaseDir.path,
+      );
+
+      expect(
+          entries,
+          equals([
+            p.join(tempBaseDir.path, 'Vacation'),
+            p.join(tempBaseDir.path, 'notes.txt'),
+          ]),
+          reason: 'a folder is one entry however many files are inside it');
+    });
+
+    test('reports the name a file actually landed under, not the sent one', () {
+      // `report.pdf` was taken, so the transfer wrote `report (1).pdf`. The
+      // manifest still says `report.pdf`; only the transfer's own record of
+      // where each item went is true.
+      final result = client.deriveReceiveResult(
+        const QhtpManifest(
+          sessionId: 'session',
+          createdAt: 0,
+          itemCount: 1,
+          totalBytes: 1,
+          items: [QhtpItem(id: '1', path: 'report.pdf', size: 1)],
+        ),
+        tempBaseDir.path,
+        placedPaths: [p.join(tempBaseDir.path, 'report (1).pdf')],
+      );
+
+      expect(result.displayName, equals('report (1).pdf'));
+      expect(result.preferredResultPath,
+          equals(p.join(tempBaseDir.path, 'report (1).pdf')));
+    });
   });
 }

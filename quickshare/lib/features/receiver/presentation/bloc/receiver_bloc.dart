@@ -278,15 +278,23 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         // starts a transfer has no foreground to lose.
         _interruption.attach();
         _interruption.reset();
-        // Wi-Fi lands in the transfer cache like every other transport, in a
-        // directory of its own so its entries can be told from another
-        // session's afterwards. It used to write straight into Documents on
-        // iOS and Downloads elsewhere, which meant a photo received over the
-        // local network never reached the photo library and a document was
-        // never asked about — the placement rule simply did not run for this
-        // path.
-        final session = await const TransferCache().sessionDirectory();
-        if (transferAttempt != _transferAttempt) return;
+        // Where the bytes land is [ReceiveDestination]'s decision, the same
+        // one the serverless path already asks it to make.
+        //
+        // On a phone that is still the transfer cache, in a directory of its
+        // own: writing straight into Documents there meant a photo received
+        // over the local network never reached the photo library and a
+        // document was never asked about — the placement rule simply did not
+        // run. On desktop there is a real folder to write into, and staging
+        // in the cache first bought nothing: every byte was then copied a
+        // second time into Downloads while the screen said "saving", which
+        // for a gigabyte over an external disk is most of a minute of
+        // waiting for work that did not have to happen at all.
+        final dest = await ReceiveDestination.resolve();
+        if (transferAttempt != _transferAttempt) {
+          await dest.release();
+          return;
+        }
 
         // Prefer a direct Wi-Fi link to the sender when one can be had. The
         // QHTP session is the same either way — only the address changes.
@@ -320,7 +328,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
 
         var result = await repository.receiveQhtpSession(
           route,
-          session.path,
+          dest.path,
           onProgress: report,
         );
 
@@ -330,22 +338,29 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         // the only real question is whether the user still wants this — and
         // that is answered by whether they come back.
         while (result.isLeft && _interruption.wasInterrupted) {
-          if (transferAttempt != _transferAttempt) return;
+          if (transferAttempt != _transferAttempt) {
+            await dest.release();
+            return;
+          }
           emit(Connecting());
           if (await _interruption.awaitVerdict() == ResumeVerdict.giveUp) {
             add(const DownloadFailed(
                 'The transfer stopped while the app was in the background. '
                 'Start it again to finish.'));
             await _closeDirectLink();
+            await dest.release();
             return;
           }
-          if (transferAttempt != _transferAttempt) return;
+          if (transferAttempt != _transferAttempt) {
+            await dest.release();
+            return;
+          }
           AppLogger.info('Resuming the transfer where it stopped',
               tag: 'TRANSFER');
           _interruption.reset();
           result = await repository.receiveQhtpSession(
             await _directRouteOrGiven(payload),
-            session.path,
+            dest.path,
             onProgress: report,
           );
         }
@@ -353,6 +368,9 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         // The link has done its job either way; holding the radio open past
         // the transfer is nobody's benefit.
         await _closeDirectLink();
+        // The security scope a custom save folder opened stays open for the
+        // whole transfer and closes here — the files are written by now.
+        await dest.release();
 
         if (transferAttempt != _transferAttempt) return;
         result.fold(
@@ -361,13 +379,23 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
             add(DownloadFailed(failure.message, code: failure.code));
           },
           (result) {
-            final items = TransferCache.itemsIn(session);
+            // Two different questions, depending on where the bytes went.
+            //
+            // Staged in the cache, the session owns the whole directory and
+            // listing it is exact. Written straight into the user's own
+            // folder, it does not: that folder holds everything else they
+            // have ever downloaded, so the only honest list is the one the
+            // transfer kept of what it wrote.
+            final items = dest.placed
+                ? _placedItems(result.placedPaths)
+                : TransferCache.itemsIn(Directory(dest.path));
             unawaited(
                 _report(items.fold<int>(0, (sum, item) => sum + item.size)));
             add(DownloadCompleted(
               result.preferredResultPath,
               fileName: result.displayName,
               items: items,
+              placed: dest.placed,
             ));
           },
         );
