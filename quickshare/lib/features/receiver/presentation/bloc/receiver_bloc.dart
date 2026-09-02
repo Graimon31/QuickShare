@@ -1,5 +1,12 @@
 import 'dart:async';
-import 'dart:io' show Directory, File, FileSystemEntity, FileSystemException;
+import 'dart:io'
+    show
+        Directory,
+        File,
+        FileSystemEntity,
+        FileSystemException,
+        HttpClient,
+        SecurityContext;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:mime/mime.dart';
@@ -18,6 +25,7 @@ import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_tra
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
+import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/core/transfer/interruption_guard.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/storage/receive_destination.dart';
@@ -516,8 +524,64 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   /// The returned payload points at localhost, where the native side is
   /// forwarding to the sender's QHTP port. Everything downstream — the
   /// client, the manifest, resume, checksums — is unchanged and unaware.
+  /// Whether the address in the QR answers, right now, on this network.
+  ///
+  /// `/v2/health` is unauthenticated and exists for exactly this. Two seconds
+  /// is generous for a LAN round trip and short enough that a device with no
+  /// route to the sender is not left waiting before the direct link is tried.
+  /// Anything at all going wrong counts as "no": the fallback is a working
+  /// transfer over the other path, so there is nothing to gain by being
+  /// clever about which failure this was.
+  Future<bool> _senderAnswersDirectly(QRPayload payload) async {
+    if (payload.ip.isEmpty || payload.port <= 0) return false;
+    if (payload.tlsFingerprint.isEmpty) return false;
+
+    HttpClient? client;
+    try {
+      client = HttpClient(context: SecurityContext(withTrustedRoots: false))
+        ..connectionTimeout = const Duration(seconds: 2)
+        ..badCertificateCallback = (certificate, host, port) =>
+            SessionTlsIdentity.matches(certificate, payload.tlsFingerprint);
+
+      final request = await client
+          .getUrl(Uri.parse(
+              'https://${payload.ip}:${payload.port}/v2/health'))
+          .timeout(const Duration(seconds: 2));
+      final response =
+          await request.close().timeout(const Duration(seconds: 2));
+      await response.drain<void>();
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    } finally {
+      client?.close(force: true);
+    }
+  }
+
   Future<QRPayload> _directRouteOrGiven(QRPayload payload) async {
     if (!PeerLinkService.isSupported) return payload;
+
+    // The network first, the direct link only if there is no network.
+    //
+    // This used to take the direct link whenever it came up, which on two
+    // devices sitting on the same good router is the slower of the two paths
+    // by a wide margin: AWDL is a time-sliced side channel, and every byte
+    // additionally crosses a userspace bridge and a loopback socket at both
+    // ends. Measured on a gigabit network it delivered 11–19 MB/s where the
+    // router itself does several times that.
+    //
+    // What the direct link is for is the pairing nothing else covers — an
+    // iPhone and a Mac with no shared network — and that case is exactly the
+    // one where this probe fails. `/v2/health` needs no auth and exists to
+    // be asked this question.
+    if (await _senderAnswersDirectly(payload)) {
+      AppLogger.info(
+          'The sender is reachable on the network; leaving the direct link '
+          'alone',
+          tag: 'PEERLINK');
+      return payload;
+    }
+
     try {
       final port = await _peerLink.join(
         serviceName: PeerLinkService.serviceNameFor(payload.token),

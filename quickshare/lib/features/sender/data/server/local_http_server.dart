@@ -35,6 +35,24 @@ class LocalHttpServer {
   InternetAddress? _lastClientAddress;
   InternetAddress? get lastClientAddress => _lastClientAddress;
 
+  /// When the last progress value went out, for [_progressIsDue].
+  DateTime _lastProgressAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// Whether a progress update has waited long enough to be worth sending.
+  ///
+  /// A chunk is 64 KB, so reporting on each one meant hundreds of events a
+  /// second, every one of them a bloc event and a rebuilt screen on a device
+  /// that is also trying to read a file and drive a socket. Ten a second is
+  /// past what a progress bar can show.
+  bool _progressIsDue() {
+    final now = DateTime.now();
+    if (now.difference(_lastProgressAt) < const Duration(milliseconds: 100)) {
+      return false;
+    }
+    _lastProgressAt = now;
+    return true;
+  }
+
   final _progressController = StreamController<double>.broadcast();
   Stream<double> get transferProgress => _progressController.stream;
 
@@ -257,7 +275,7 @@ class LocalHttpServer {
           handleData: (data, sink) {
             sink.add(data);
             _qhtpBytesSent += data.length;
-            if (sessionTotalBytes > 0) {
+            if (sessionTotalBytes > 0 && _progressIsDue()) {
               final progress = _qhtpBytesSent / sessionTotalBytes;
               // Byte counting only guesses at completion — retried Range
               // requests count their bytes twice — so it must never reach

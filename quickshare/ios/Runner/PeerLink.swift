@@ -546,9 +546,17 @@ private final class Bridge {
   }
 
   private func pump(from source: NWConnection, to sink: NWConnection) {
-    // 64 KB at a time: large enough that the per-read overhead disappears
-    // against the transfer, small enough not to sit on memory per connection.
-    source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+    // 256 KB at a time.
+    //
+    // This is a stop-and-wait relay by design — the next read only starts
+    // once the write has been handed off, which is what keeps a slow side
+    // from making the fast side queue a whole file in memory. The cost of
+    // that safety is a full round trip of callbacks per chunk, so the chunk
+    // size is the window: at 64 KB the relay itself capped a link measured
+    // at 11-19 MB/s, well under what the radio underneath it can carry.
+    // Four times the window, four times the ceiling, and a quarter of a
+    // megabyte per connection is still nothing to hold.
+    source.receive(minimumIncompleteLength: 1, maximumLength: 262144) { [weak self] data, _, isComplete, error in
       guard let self, !self.closed else { return }
 
       if error != nil {

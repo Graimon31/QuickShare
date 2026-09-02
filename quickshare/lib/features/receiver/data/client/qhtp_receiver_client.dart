@@ -68,6 +68,22 @@ class QhtpReceiverClient {
   })  : dio = dioClient ?? Dio(),
         stateStore = store ?? SessionStateStore();
 
+  /// How often a transfer in flight is allowed to report itself.
+  ///
+  /// Ten times a second is more than a progress bar can show and far less
+  /// than a chunk-by-chunk report costs: every report crosses into the bloc,
+  /// emits a state and rebuilds the screen, and at 64 KB a chunk that was
+  /// happening hundreds of times a second on the device least able to afford
+  /// it.
+  static const Duration _progressInterval = Duration(milliseconds: 100);
+
+  /// How much is written before the disk is made to catch up.
+  ///
+  /// Bounds what an [IOSink] can hold in memory when the network outruns the
+  /// storage, and is what lets the receiver push back on the sender rather
+  /// than buffering a whole session it cannot write.
+  static const int _flushEvery = 4 * 1024 * 1024;
+
   void cancel() {
     _cancelToken?.cancel('Transfer cancelled by user');
   }
@@ -445,6 +461,8 @@ class QhtpReceiverClient {
       }
 
       DateTime lastSpeedUpdate = DateTime.now();
+      DateTime lastProgressReport =
+          DateTime.now().subtract(_progressInterval);
       int lastBytesReceived = sessionReceivedBytes;
       int currentSpeedBps = 0;
 
@@ -591,10 +609,24 @@ class QhtpReceiverClient {
                 const Duration(seconds: 30),
               );
 
+              var unflushedBytes = 0;
               await for (final Uint8List chunk in stream) {
                 fileSink.add(chunk);
                 itemReceivedBytes += chunk.length;
                 sessionReceivedBytes += chunk.length;
+                unflushedBytes += chunk.length;
+
+                // An IOSink queues everything handed to it and writes when it
+                // gets round to it, so a network faster than the disk grows a
+                // buffer in memory with nothing to stop it — gigabytes of it
+                // on a session this size. Flushing every few megabytes is
+                // what makes the disk push back on the socket instead: the
+                // read loop waits here, the TCP window closes, and the sender
+                // slows to the speed the receiver can actually write.
+                if (unflushedBytes >= _flushEvery) {
+                  await fileSink.flush();
+                  unflushedBytes = 0;
+                }
 
                 final now = DateTime.now();
                 final deltaSec =
@@ -606,18 +638,32 @@ class QhtpReceiverClient {
                   lastBytesReceived = sessionReceivedBytes;
                 }
 
-                onProgress?.call(QhtpProgress(
-                  phase: 'transferring',
-                  itemIndex: itemIndex,
-                  itemCount: manifest.itemCount,
-                  itemId: item.id,
-                  itemPath: item.path,
-                  itemReceived: itemReceivedBytes,
-                  itemSize: item.size,
-                  sessionReceived: sessionReceivedBytes,
-                  sessionTotal: manifest.totalBytes,
-                  speedBps: currentSpeedBps,
-                ));
+                // Not once per chunk.
+                //
+                // A chunk is 64 KB, so at any real speed this fired hundreds
+                // of times a second, and each one became a bloc event, a new
+                // state and a rebuilt screen on the receiving device. On a
+                // phone that is enough to saturate the isolate that also has
+                // to run this very loop: the reads fall behind, the sender
+                // stalls waiting on a window that never opens, and the taps
+                // that would cancel it are queued behind a thousand progress
+                // updates. A bar that moves ten times a second looks exactly
+                // as smooth and costs a thousandth as much.
+                if (now.difference(lastProgressReport) >= _progressInterval) {
+                  lastProgressReport = now;
+                  onProgress?.call(QhtpProgress(
+                    phase: 'transferring',
+                    itemIndex: itemIndex,
+                    itemCount: manifest.itemCount,
+                    itemId: item.id,
+                    itemPath: item.path,
+                    itemReceived: itemReceivedBytes,
+                    itemSize: item.size,
+                    sessionReceived: sessionReceivedBytes,
+                    sessionTotal: manifest.totalBytes,
+                    speedBps: currentSpeedBps,
+                  ));
+                }
               }
             }
 

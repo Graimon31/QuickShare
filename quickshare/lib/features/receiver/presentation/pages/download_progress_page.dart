@@ -88,6 +88,39 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
     );
   }
 
+  /// Asks, then stops the transfer and leaves.
+  ///
+  /// The only way out of this screen used to be the system back gesture,
+  /// which [PopScope] then intercepted — and on iOS, reached by `go` rather
+  /// than a push, the bar had no back button either. A transfer that stalled
+  /// left the receiving device on a spinner with nothing to press: no cancel,
+  /// no way back, only force-quitting the app. Cancelling aborts the request
+  /// itself, not just the screen: the token the HTTP client holds is
+  /// cancelled, so a stalled socket is dropped rather than left to time out.
+  Future<void> _confirmAndLeave() async {
+    final l10n = AppLocalizations.of(context);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(l10n.downloadCancelTitle),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l10n.commonNo),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l10n.commonYes),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    WakelockPlus.disable();
+    context.read<ReceiverBloc>().add(CancelDownload());
+    context.go('/');
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
@@ -95,31 +128,20 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
-        final confirm = await showDialog<bool>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: Text(l10n.downloadCancelTitle),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: Text(l10n.commonNo),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: Text(l10n.commonYes),
-              ),
-            ],
-          ),
-        );
-        if (confirm == true && context.mounted) {
-          WakelockPlus.disable();
-          context.read<ReceiverBloc>().add(CancelDownload());
-          context.go('/');
-        }
+        await _confirmAndLeave();
       },
       child: Scaffold(
         backgroundColor: AppColors.voidBg,
-        appBar: AppBar(title: Text(l10n.downloadTitle)),
+        appBar: AppBar(
+          title: Text(l10n.downloadTitle),
+          // Always present, whatever the transfer is doing. A receiver with
+          // no way to stop is the worst place to be when a link goes quiet.
+          leading: IconButton(
+            icon: const Icon(Icons.close_rounded),
+            tooltip: l10n.commonCancel,
+            onPressed: _confirmAndLeave,
+          ),
+        ),
         body: BlocConsumer<ReceiverBloc, ReceiverState>(
           listener: (context, state) {
             if (state is Connecting ||
