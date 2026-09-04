@@ -40,17 +40,19 @@ jobs:
       - name: Name the failures
         if: failure()
         run: |
+          # As annotations, not just the step summary: annotations are what
+          # the run page and the API show without an account, and the names
+          # of the failures are the whole point of looking.
+          sed -n '/Failing tests:/,$p' /tmp/test-output.txt \
+            | head -40 \
+            | while IFS= read -r line; do
+                [ -n "$line" ] && echo "::error::$line"
+              done
           {
             echo '### Failing tests'
             echo '```'
             sed -n '/Failing tests:/,$p' /tmp/test-output.txt | head -40
             echo '```'
-            echo '<details><summary>Last 200 lines</summary>'
-            echo
-            echo '```'
-            tail -200 /tmp/test-output.txt
-            echo '```'
-            echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
 
   build_macos:
