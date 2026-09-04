@@ -35,7 +35,11 @@ jobs:
       - name: Run unit and integration tests
         run: |
           set -o pipefail
-          flutter test --coverage 2>&1 | tee /tmp/test-output.txt
+          # An explicit reporter: `flutter test` picks the "github" one by
+          # itself on Actions, which wraps everything in ::group:: commands
+          # the runner swallows — which is why the only annotation a red run
+          # produced was the total, and why grepping the log found nothing.
+          flutter test --coverage --reporter=expanded 2>&1 | tee /tmp/test-output.txt
 
       - name: Name the failures
         if: failure()
