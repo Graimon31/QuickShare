@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/core/utils/byte_format.dart';
 
 /// What happened on one transfer, in terms a person can read out loud.
 ///
@@ -83,21 +84,11 @@ class TransferReport {
         peerAddress: json['peerAddress'] as String?,
       );
 
-  static String formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    var value = bytes / 1024;
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    return '${value.toStringAsFixed(value >= 10 ? 0 : 1)} ${units[unit]}';
-  }
+  static String formatBytes(int bytes) => ByteFormat.size(bytes);
 
   static String formatRate(double? bytesPerSecond) {
     if (bytesPerSecond == null) return '—';
-    return '${formatBytes(bytesPerSecond.round())}/s';
+    return ByteFormat.rate(bytesPerSecond);
   }
 
   /// One block of text to hand to somebody who is helping.

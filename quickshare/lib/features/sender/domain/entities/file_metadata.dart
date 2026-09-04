@@ -1,4 +1,5 @@
 import 'package:equatable/equatable.dart';
+import 'package:quickshare/core/utils/byte_format.dart';
 
 class FileMetadata extends Equatable {
   final String name;
@@ -26,14 +27,7 @@ class FileMetadata extends Equatable {
   /// directly.
   String get relPath => relativePath ?? name;
 
-  String get sizeFormatted {
-    if (size < 1024) return '$size B';
-    if (size < 1024 * 1024) return '${(size / 1024).toStringAsFixed(1)} KB';
-    if (size < 1024 * 1024 * 1024) {
-      return '${(size / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(size / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
-  }
+  String get sizeFormatted => ByteFormat.size(size);
 
   @override
   List<Object?> get props => [name, path, size, mimeType, relativePath];

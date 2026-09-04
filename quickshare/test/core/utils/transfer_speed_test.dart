@@ -136,8 +136,8 @@ void main() {
 
     test('picks a unit that keeps the number readable', () {
       expect(TransferSpeed.format(512), equals('512 B/s'));
-      expect(TransferSpeed.format(1536), equals('1.5 KB/s'));
-      expect(TransferSpeed.format(2.5 * 1024 * 1024), equals('2.5 MB/s'));
+      expect(TransferSpeed.format(1500), equals('1.5 KB/s'));
+      expect(TransferSpeed.format(2.5 * 1000 * 1000), equals('2.5 MB/s'));
     });
   });
 }

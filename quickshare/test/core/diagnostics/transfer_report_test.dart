@@ -24,7 +24,7 @@ void main() {
   TransferReport report({
     String role = 'sent',
     String route = 'Direct Wi-Fi link',
-    int bytes = 64 * 1024 * 1024,
+    int bytes = 64 * 1000 * 1000,
     int seconds = 8,
     String failure = '',
   }) =>

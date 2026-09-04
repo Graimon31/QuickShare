@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
+import 'package:quickshare/core/utils/byte_format.dart';
 
 /// Shown when the internet path exists but is not worth using, or does not
 /// exist at all.
@@ -34,17 +35,7 @@ class NetworkFallbackPage extends StatelessWidget {
 
   bool get _isSizeLimited => sessionBytes != null && limitBytes != null;
 
-  static String _humanBytes(int bytes) {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    var value = bytes.toDouble();
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    return '${value.toStringAsFixed(value >= 10 || unit == 0 ? 0 : 1)} '
-        '${units[unit]}';
-  }
+  static String _humanBytes(int bytes) => ByteFormat.size(bytes);
 
   String _headline(AppLocalizations l10n) =>
       _isSizeLimited ? l10n.fallbackTooLargeTitle : l10n.fallbackNoRouteTitle;

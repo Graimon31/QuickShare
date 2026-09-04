@@ -16,6 +16,7 @@ import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/copy_value_row.dart';
 import 'package:quickshare/shared/widgets/session_expired_panel.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
+import 'package:quickshare/core/utils/byte_format.dart';
 
 class QRDisplayPage extends StatefulWidget {
   const QRDisplayPage({super.key});
@@ -339,15 +340,5 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     );
   }
 
-  String _formatBytes(int bytes) {
-    if (bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    var v = bytes.toDouble();
-    var i = 0;
-    while (v >= 1024 && i < units.length - 1) {
-      v /= 1024;
-      i++;
-    }
-    return '${v.toStringAsFixed(i == 0 ? 0 : 1)} ${units[i]}';
-  }
+  String _formatBytes(int bytes) => ByteFormat.size(bytes);
 }

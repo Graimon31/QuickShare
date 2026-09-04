@@ -13,6 +13,7 @@ import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
+import 'package:quickshare/core/utils/byte_format.dart';
 
 /// Bluetooth receive can use a QR session token to select the intended Mac
 /// automatically, while retaining manual discovery for direct use.
@@ -221,17 +222,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     }
   }
 
-  String _fmt(int bytes) {
-    if (bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    var v = bytes.toDouble();
-    var i = 0;
-    while (v >= 1024 && i < units.length - 1) {
-      v /= 1024;
-      i++;
-    }
-    return '${v.toStringAsFixed(i == 0 ? 0 : 1)} ${units[i]}';
-  }
+  String _fmt(int bytes) => ByteFormat.size(bytes);
 
   @override
   void dispose() {

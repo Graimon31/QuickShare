@@ -1,3 +1,5 @@
+import 'package:quickshare/core/utils/byte_format.dart';
+
 /// Turns a stream of "bytes received so far" readings into a speed a person
 /// can read.
 ///
@@ -12,6 +14,7 @@
 /// elapsed, so the divisor is never vanishingly small; and the result is put
 /// through an exponential moving average, so a burst or a brief pause moves
 /// the number without whipsawing it.
+
 class TransferSpeed {
   /// Shortest interval that may be used as a measurement. Long enough that a
   /// scheduler hiccup cannot dominate the division.
@@ -78,10 +81,6 @@ class TransferSpeed {
   /// Human-readable form, matching what the progress screen shows.
   static String format(double? bytesPerSecond) {
     if (bytesPerSecond == null) return '—';
-    if (bytesPerSecond < 1024) return '${bytesPerSecond.round()} B/s';
-    if (bytesPerSecond < 1024 * 1024) {
-      return '${(bytesPerSecond / 1024).toStringAsFixed(1)} KB/s';
-    }
-    return '${(bytesPerSecond / (1024 * 1024)).toStringAsFixed(1)} MB/s';
+    return ByteFormat.rate(bytesPerSecond);
   }
 }

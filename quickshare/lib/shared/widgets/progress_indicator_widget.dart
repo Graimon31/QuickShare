@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/theme/app_motion.dart';
+import 'package:quickshare/core/utils/byte_format.dart';
 
 class CustomProgressIndicator extends StatelessWidget {
   final double progress; // 0.0 to 1.0
@@ -20,15 +21,7 @@ class CustomProgressIndicator extends StatelessWidget {
     this.speedColor,
   });
 
-  String get _speedText {
-    if (speedBytesPerSec < 1024) {
-      return '${speedBytesPerSec.toStringAsFixed(1)} B/s';
-    } else if (speedBytesPerSec < 1024 * 1024) {
-      return '${(speedBytesPerSec / 1024).toStringAsFixed(1)} KB/s';
-    } else {
-      return '${(speedBytesPerSec / (1024 * 1024)).toStringAsFixed(1)} MB/s';
-    }
-  }
+  String get _speedText => ByteFormat.rate(speedBytesPerSec);
 
   @override
   Widget build(BuildContext context) {

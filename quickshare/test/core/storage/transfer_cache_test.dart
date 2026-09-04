@@ -186,10 +186,13 @@ void main() {
     });
 
     test('switches units and drops the decimal once it stops helping', () {
-      expect(TransferCache.formatBytes(1536), equals('1.5 KB'));
-      expect(TransferCache.formatBytes(5 * 1024 * 1024), equals('5.0 MB'));
-      expect(TransferCache.formatBytes(42 * 1024 * 1024), equals('42 MB'));
-      expect(TransferCache.formatBytes(3 * 1024 * 1024 * 1024), equals('3.0 GB'));
+      // Decimal, because Finder is: the same selection reading 600 MB there
+      // and 572.2 here is how a person concludes files went missing.
+      expect(TransferCache.formatBytes(1500), equals('1.5 KB'));
+      expect(TransferCache.formatBytes(5 * 1000 * 1000), equals('5.0 MB'));
+      expect(TransferCache.formatBytes(42 * 1000 * 1000), equals('42 MB'));
+      expect(
+          TransferCache.formatBytes(3 * 1000 * 1000 * 1000), equals('3.0 GB'));
     });
   });
 }

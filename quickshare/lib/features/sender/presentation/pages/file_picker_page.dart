@@ -11,6 +11,7 @@ import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/core/media/media_library.dart';
 import 'package:quickshare/core/storage/folder_picker.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/core/utils/byte_format.dart';
 import 'package:quickshare/features/sender/presentation/pages/media_picker_page.dart';
 import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
 import 'package:quickshare/features/sender/presentation/widgets/wifi_speed_prompt.dart';
@@ -408,7 +409,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
             phaseLabel: l10n.pickerIndexing,
             detail: state.indexedItems > 0
                 ? l10n.pickerIndexingFound(
-                    state.indexedItems, _formatBytes(state.indexedBytes))
+                    state.indexedItems, ByteFormat.size(state.indexedBytes))
                 : l10n.pickerStartingSession,
             icon: Icons.cloud_upload_outlined,
           ),
@@ -435,18 +436,6 @@ class _FilePickerPageState extends State<FilePickerPage> {
   void _cancelIndexing() {
     _selectionInFlight = false;
     context.read<SenderBloc>().add(CancelSending());
-  }
-
-  static String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    var value = bytes / 1024;
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    return '${value.toStringAsFixed(value >= 10 ? 0 : 1)} ${units[unit]}';
   }
 
   Widget _buildPickerCard({

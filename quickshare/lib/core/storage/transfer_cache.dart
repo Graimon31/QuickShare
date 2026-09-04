@@ -5,6 +5,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'package:quickshare/core/storage/received_item.dart';
+import 'package:quickshare/core/utils/byte_format.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// Where an incoming transfer lands before the user decides to keep it.
@@ -211,15 +212,5 @@ class TransferCache {
   }
 
   /// Human-readable size for the settings screen.
-  static String formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    var value = bytes / 1024;
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit++;
-    }
-    return '${value.toStringAsFixed(value >= 10 ? 0 : 1)} ${units[unit]}';
-  }
+  static String formatBytes(int bytes) => ByteFormat.size(bytes);
 }
