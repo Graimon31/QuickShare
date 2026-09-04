@@ -63,10 +63,28 @@ class FileIndexer {
     required List<String> paths,
     bool skipHidden = true,
     bool includeChecksums = true,
+    void Function(int items, int bytes)? onProgress,
   }) async {
     final sw = Stopwatch()..start();
     final List<_RawIndexedItem> rawItems = [];
     int totalBytes = 0;
+
+    // Walking a tree is one directory read after another, and a folder on a
+    // phone's file provider, on a network share or on a disk that has to spin
+    // up answers each of them slowly. Nothing was reported until the whole
+    // walk finished, so a selection that took a minute and a selection that
+    // was never going to finish looked identical: one motionless "indexing"
+    // screen. Saying how far it has got is what separates them.
+    var lastReport = DateTime.fromMillisecondsSinceEpoch(0);
+    void report({bool force = false}) {
+      if (onProgress == null) return;
+      final now = DateTime.now();
+      if (!force && now.difference(lastReport) < const Duration(milliseconds: 200)) {
+        return;
+      }
+      lastReport = now;
+      onProgress(rawItems.length, totalBytes);
+    }
 
     for (final rawPath in paths) {
       // One stat per selected entry, and an asynchronous one.
@@ -100,10 +118,14 @@ class FileIndexer {
           mtime: stat.modified.millisecondsSinceEpoch,
           mime: lookupMimeType(rawPath) ?? 'application/octet-stream',
         ));
+        report();
       } else if (stat.type == FileSystemEntityType.directory) {
         final dir = Directory(rawPath);
 
         final rootName = p.basename(rawPath);
+        // Named before the walk, not after: when a folder is the thing that
+        // never answers, this line is the only record of which one it was.
+        AppLogger.info('Walking $rawPath', tag: 'INDEX');
         await _walkDirectory(
           dir: dir,
           rootAbsPath: dir.path,
@@ -115,9 +137,11 @@ class FileIndexer {
             totalBytes += addedSize;
           },
           currentTotalBytes: () => totalBytes,
+          onProgress: report,
         );
       }
     }
+    report(force: true);
 
     if (rawItems.isEmpty) {
       throw FileIndexerException('No valid files found in selection');
@@ -232,6 +256,13 @@ class FileIndexer {
     return {for (final c in completers.entries) c.key: c.value.future};
   }
 
+  /// `sha256:<hex>` over one file, hashed in a worker isolate.
+  ///
+  /// For the callers that need a single digest and nothing else — the digest
+  /// endpoint answering for an item that was served from a Range request and
+  /// so never hashed on its way out.
+  static Future<String?> hashFile(String path) => _hashInIsolate(path);
+
   /// Hashes one file in a worker isolate.
   ///
   /// Lives in its own static scope on purpose: the `Isolate.run` closure may
@@ -277,6 +308,7 @@ class FileIndexer {
     required bool skipHidden,
     required void Function(int size) totalBytesRef,
     required int Function() currentTotalBytes,
+    void Function()? onProgress,
   }) async {
     if (depth > AppConstants.qhtpMaxPathDepth) {
       throw FileIndexerException(
@@ -305,6 +337,7 @@ class FileIndexer {
           skipHidden: skipHidden,
           totalBytesRef: totalBytesRef,
           currentTotalBytes: currentTotalBytes,
+          onProgress: onProgress,
         );
       } else if (entity is File) {
         if (_shouldSkipFile(baseName, skipHidden)) continue;
@@ -327,6 +360,7 @@ class FileIndexer {
           mtime: stat.modified.millisecondsSinceEpoch,
           mime: lookupMimeType(entity.path) ?? 'application/octet-stream',
         ));
+        onProgress?.call();
       }
     }
   }

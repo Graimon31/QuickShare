@@ -39,6 +39,13 @@
   "pickerPhotosVideos": "Photos & Videos",
   "pickerSelectFile": "Select File",
   "pickerSelectFolder": "Select Folder",
+  "pickerSendMedia": "Send Photos & Videos",
+  "pickerSendFiles": "Send Files",
+  "pickerSendFilesHint": "Files and folders — pick as many as you like",
+  "pickerIndexingFound": "Found {count} · {size}",
+  "@pickerIndexingFound": {
+    "placeholders": { "count": { "type": "int" }, "size": { "type": "String" } }
+  },
 
   "wifiPromptTitle": "Turn on Wi-Fi to send faster?",
   "wifiPromptBody": "Bluetooth on its own is slow — a large video can take hours.\n\nWith Wi-Fi switched on, the two devices connect directly and the same files take seconds. You do not need to join a network: the radio just has to be on.",

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
@@ -11,6 +13,7 @@ import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/core/storage/durable_file.dart';
+import 'package:quickshare/core/utils/streaming_digest.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
@@ -77,12 +80,24 @@ class QhtpReceiverClient {
   /// it.
   static const Duration _progressInterval = Duration(milliseconds: 100);
 
-  /// How much is written before the disk is made to catch up.
+  /// How much is gathered before it is handed to the disk as one write.
   ///
-  /// Bounds what an [IOSink] can hold in memory when the network outruns the
-  /// storage, and is what lets the receiver push back on the sender rather
-  /// than buffering a whole session it cannot write.
-  static const int _flushEvery = 4 * 1024 * 1024;
+  /// Big enough that the write is worth making — the chunks arriving off the
+  /// socket are 64 KB or less — and small enough that at most two of them are
+  /// ever held in memory, which is what keeps a fast network from buffering a
+  /// whole session the storage cannot take.
+  static const int _writeBlock = 4 * 1024 * 1024;
+
+  /// How heavily the reported speed is smoothed.
+  ///
+  /// The raw figure is bytes over the last half-second, and it swings wildly
+  /// for reasons that have nothing to do with the link: a flush that catches
+  /// the disk busy, a file boundary, the OS scheduling something else. The
+  /// number on screen jumped between a third and triple the real rate and was
+  /// useless for judging whether anything was wrong. Weighting each new
+  /// sample at a quarter keeps it responsive to a genuine change over a
+  /// couple of seconds while ignoring the noise.
+  static const double _speedSmoothing = 0.25;
 
   void cancel() {
     _cancelToken?.cancel('Transfer cancelled by user');
@@ -302,10 +317,24 @@ class QhtpReceiverClient {
   /// Deletes the partial on any mismatch, so the retry starts from zero rather
   /// than resuming onto bytes already known to be wrong. Throws to signal the
   /// caller's retry loop.
+  ///
+  /// [streamedSha256] is the digest computed over the bytes as they were
+  /// written, which is the ordinary case and costs nothing: the alternative
+  /// is reading the whole file back off the disk a second time, immediately
+  /// after writing it, before the next file may start. On a session of any
+  /// size that halves the throughput the user sees — the transfer stops dead
+  /// for the length of a full re-read, once per file — and it buys nothing,
+  /// because the same bytes are being hashed either way.
+  ///
+  /// It is null only when this attempt did not write the whole file: a
+  /// resumed download appends to a partial from an earlier run, whose bytes
+  /// were never in this process's hands. Then, and only then, the file is
+  /// read back.
   Future<String?> _verifyPartial({
     required File partial,
     required QhtpItem item,
     String? expectedSha256,
+    String? streamedSha256,
   }) async {
     final writtenBytes = await partial.length();
     if (item.size > 0 && writtenBytes != item.size) {
@@ -316,8 +345,8 @@ class QhtpReceiverClient {
     }
 
     final expected = expectedSha256;
-    final digest = await sha256.bind(partial.openRead()).first;
-    final actual = 'sha256:$digest';
+    final actual = streamedSha256 ??
+        'sha256:${await sha256.bind(partial.openRead()).first}';
 
     if (expected != null && expected.isNotEmpty && actual != expected) {
       await partial.delete();
@@ -532,7 +561,11 @@ class QhtpReceiverClient {
             return const Left(FileFailure('Transfer cancelled by user'));
           }
 
-          IOSink? fileSink;
+          RandomAccessFile? sink;
+          // Hoisted so a failed attempt can still shut the worker down: an
+          // isolate left running per retry is a leak that outlives the
+          // transfer.
+          StreamingDigest? digestWorker;
           try {
             final partialFile = File(partialPath);
             int existingBytes = 0;
@@ -549,11 +582,25 @@ class QhtpReceiverClient {
               existingBytes = 0;
             }
 
-            fileSink = partialFile.openWrite(
+            // A raw handle rather than an `IOSink`.
+            //
+            // A sink queues everything handed to it and writes when it gets
+            // round to it, so a network faster than the disk grows a buffer
+            // in memory with nothing to stop it — gigabytes of it on a
+            // session this size. Flushing it periodically bounds that, but a
+            // sink refuses `add` while a flush is running, so the only shape
+            // available was: stop reading, drain to empty, read again. That
+            // is stop-and-wait — the disk idle while bytes arrive, the socket
+            // idle while the disk catches up — and it is a large part of why
+            // the rate sawtoothed instead of settling at what the link could
+            // carry. Writing through a handle lets one write be in flight
+            // while the next block is still being read.
+            sink = await partialFile.open(
               mode: existingBytes > 0 ? FileMode.append : FileMode.write,
             );
 
             int itemReceivedBytes = existingBytes;
+            String? streamedSha256;
 
             if (existingBytes < item.size) {
               final downloadOptions = Options(
@@ -609,31 +656,62 @@ class QhtpReceiverClient {
                 const Duration(seconds: 30),
               );
 
-              var unflushedBytes = 0;
+              // One write in flight, one buffer filling behind it: the disk
+              // and the socket both stay busy, and what is held in memory is
+              // bounded at two blocks however fast either of them is.
+              final pending = BytesBuilder(copy: false);
+              Future<void>? writeInFlight;
+
+              Future<void> handOff() async {
+                if (pending.isEmpty) return;
+                final block = pending.takeBytes();
+                await writeInFlight;
+                writeInFlight = sink!.writeFrom(block);
+              }
+
+              // Hashed as the bytes go past, rather than by reading the
+              // finished file back off the disk — see [_verifyPartial]. On a
+              // worker isolate once the file is big enough to be worth one:
+              // this loop is already driving TLS and the disk, and Dart's
+              // SHA-256 wants a core to itself, so doing it here costs about
+              // a third of the throughput.
+              final hashedWholeFile = existingBytes == 0;
+              final inlineSink =
+                  hashedWholeFile && item.size < StreamingDigest.worthAnIsolate
+                      ? AccumulatorSink<Digest>()
+                      : null;
+              final inline = inlineSink == null
+                  ? null
+                  : sha256.startChunkedConversion(inlineSink);
+              final worker = digestWorker =
+                  hashedWholeFile && item.size >= StreamingDigest.worthAnIsolate
+                      ? await StreamingDigest.start()
+                      : null;
+
               await for (final Uint8List chunk in stream) {
-                fileSink.add(chunk);
+                pending.add(chunk);
+                inline?.add(chunk);
+                if (worker != null) await worker.add(chunk);
                 itemReceivedBytes += chunk.length;
                 sessionReceivedBytes += chunk.length;
-                unflushedBytes += chunk.length;
 
-                // An IOSink queues everything handed to it and writes when it
-                // gets round to it, so a network faster than the disk grows a
-                // buffer in memory with nothing to stop it — gigabytes of it
-                // on a session this size. Flushing every few megabytes is
-                // what makes the disk push back on the socket instead: the
-                // read loop waits here, the TCP window closes, and the sender
-                // slows to the speed the receiver can actually write.
-                if (unflushedBytes >= _flushEvery) {
-                  await fileSink.flush();
-                  unflushedBytes = 0;
-                }
+                // Waiting here — and only here — is what makes the disk push
+                // back on the socket: the read loop stops until the previous
+                // write is done, the TCP window closes, and the sender slows
+                // to the speed the receiver can actually write.
+                if (pending.length >= _writeBlock) await handOff();
 
                 final now = DateTime.now();
                 final deltaSec =
                     now.difference(lastSpeedUpdate).inMilliseconds / 1000.0;
                 if (deltaSec >= 0.5) {
                   final deltaBytes = sessionReceivedBytes - lastBytesReceived;
-                  currentSpeedBps = (deltaBytes / deltaSec).round();
+                  final sample = deltaBytes / deltaSec;
+                  currentSpeedBps = currentSpeedBps == 0
+                      ? sample.round()
+                      : (currentSpeedBps * (1 - _speedSmoothing) +
+                              sample * _speedSmoothing)
+                          .round();
                   lastSpeedUpdate = now;
                   lastBytesReceived = sessionReceivedBytes;
                 }
@@ -665,11 +743,21 @@ class QhtpReceiverClient {
                   ));
                 }
               }
+
+              await handOff();
+              await writeInFlight;
+              if (inline != null && inlineSink != null) {
+                inline.close();
+                streamedSha256 = 'sha256:${inlineSink.events.single}';
+              } else if (worker != null) {
+                streamedSha256 = await worker.finish();
+              }
+              digestWorker = null;
             }
 
-            await fileSink.flush();
-            await fileSink.close();
-            fileSink = null;
+            await sink.flush();
+            await sink.close();
+            sink = null;
 
             // 5. Verify, then rename. In that order: the old code renamed
             // first and hashed afterwards without comparing to anything, so a
@@ -705,6 +793,7 @@ class QhtpReceiverClient {
               partial: partialFile,
               item: item,
               expectedSha256: expectedSha256,
+              streamedSha256: streamedSha256,
             );
 
             // Durability parity with the WebRTC and BLE channels: fsync the
@@ -755,14 +844,17 @@ class QhtpReceiverClient {
             // The sink used to be left open on every failed attempt, leaking a
             // handle per retry and — worse — letting buffered bytes land in the
             // file after the next attempt had already measured its length.
-            if (fileSink != null) {
+            if (sink != null) {
               try {
-                await fileSink.flush();
+                await sink.flush();
               } catch (_) {}
               try {
-                await fileSink.close();
+                await sink.close();
               } catch (_) {}
             }
+            try {
+              await digestWorker?.abort();
+            } catch (_) {}
           }
         }
 

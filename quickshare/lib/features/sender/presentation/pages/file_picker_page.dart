@@ -1,6 +1,5 @@
 import 'dart:ui';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -47,29 +46,35 @@ class _FilePickerPageState extends State<FilePickerPage> {
     }
   }
 
-  /// Files, any number of them — including photos and videos.
+  /// Everything sendable, in one trip: files and folders, mixed, however
+  /// many.
   ///
-  /// Multi-select rather than one at a time: every wire protocol here
-  /// carries a manifest, so nothing has to be bundled into a single object
-  /// first — which is equally why [_pickFolder] can hand over a whole tree.
+  /// There used to be two buttons here, and the split was never real. iOS
+  /// opens the same browser for both, and `NSOpenPanel` has always been able
+  /// to return a mixed selection — only `file_picker`'s API forced the user
+  /// to decide, before the dialog opened, whether what they were about to
+  /// point at was a file or a folder. Getting that wrong meant backing out
+  /// and starting again, and on iOS the folders-only mode drew no checkboxes
+  /// at all, so several folders could not be said even in principle.
   ///
-  /// Media used to be rejected here and pushed towards [_pickMedia], because
-  /// `image_picker` hands back a transcoded copy on iOS and re-encoding
-  /// somebody's photo is exactly what this app must not do. But that reasoning
-  /// never applied to this route: the document picker returns the file itself,
-  /// untouched, so a `.jpg` chosen here is already the original. The rejection
-  /// only stopped a perfectly good send. [_pickMedia] stays for reaching the
-  /// photo library, which the document picker cannot browse.
-  Future<void> _pickFile() async {
+  /// Multi-select rather than one at a time, because every wire protocol
+  /// here carries a manifest: nothing has to be bundled into a single object
+  /// first, which is equally why a whole tree costs no more to express than
+  /// one file.
+  ///
+  /// Media is not rejected here. `image_picker` hands back a transcoded copy
+  /// on iOS, and re-encoding somebody's photo is exactly what this app must
+  /// not do — but that never applied to this route: the document picker
+  /// returns the file itself, so a `.jpg` chosen here is already the
+  /// original. [_pickMedia] stays for reaching the photo library, which the
+  /// document browser cannot see into.
+  Future<void> _pickItems() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
-    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
-    final paths = result?.files
-        .map((f) => f.path)
-        .whereType<String>()
-        .toList(growable: false);
+    final paths = await const FolderPicker()
+        .pickItems(dialogTitle: AppLocalizations.of(context).pickerSendFiles);
 
-    if (paths == null || paths.isEmpty) {
+    if (paths.isEmpty) {
       if (mounted) setState(() => _selectionInFlight = false);
       return;
     }
@@ -122,12 +127,13 @@ class _FilePickerPageState extends State<FilePickerPage> {
     }
   }
 
-  /// Folders, however many of them.
+  /// Folders, on the platforms that cannot browse for both at once.
   ///
-  /// Every channel here carries a manifest of relative paths, so several
-  /// folders travel as easily as one — the selection was only ever limited
-  /// by what the picker could say. [FolderPicker] asks the platform's own
-  /// dialog for a multiple selection where one exists.
+  /// Windows and Linux only. `IFileOpenDialog` picks files *or* folders per
+  /// invocation and GTK's chooser is the same, so there is no single act of
+  /// browsing there to fold this into — and dropping the button would drop
+  /// folder sending on those platforms entirely. macOS and iOS reach folders
+  /// through [_pickItems] like everything else.
   Future<void> _pickFolder() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
@@ -213,15 +219,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
           }
         },
         builder: (context, state) {
-          if (state is ServerStarting) {
-            return Center(
-              child: TransferPhaseLoader(
-                phaseLabel: AppLocalizations.of(context).pickerIndexing,
-                detail: AppLocalizations.of(context).pickerStartingSession,
-                icon: Icons.cloud_upload_outlined,
-              ),
-            );
-          }
+          if (state is ServerStarting) return _indexingView(state);
 
           return ScrollConfiguration(
             behavior:
@@ -311,10 +309,15 @@ class _FilePickerPageState extends State<FilePickerPage> {
 
                       const SizedBox(height: 14),
 
+                      // One entry point per place things actually live: the
+                      // photo library, which no document browser can see
+                      // into, and the file system, which holds files and
+                      // folders alike. The old third button asked the user
+                      // to classify their own selection before the dialog
+                      // even opened; see [_pickItems].
                       if (defaultTargetPlatform == TargetPlatform.iOS) ...[
                         _buildPickerCard(
-                          title:
-                              AppLocalizations.of(context).pickerPhotosVideos,
+                          title: AppLocalizations.of(context).pickerSendMedia,
                           icon: Icons.photo_library_rounded,
                           gradient: const LinearGradient(
                             colors: [AppColors.primary, AppColors.primaryDeep],
@@ -324,40 +327,57 @@ class _FilePickerPageState extends State<FilePickerPage> {
                         const SizedBox(height: 16),
                       ],
 
-                      // Select File / Select Folder (each action immediately starts transfer).
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _buildPickerCard(
-                              title:
-                                  AppLocalizations.of(context).pickerSelectFile,
-                              icon: Icons.insert_drive_file_rounded,
-                              gradient: const LinearGradient(
-                                colors: [
-                                  AppColors.secondary,
-                                  AppColors.secondaryDark
-                                ],
-                              ),
-                              onTap: _pickFile,
-                            ),
+                      if (FolderPicker.supportsUnifiedPick)
+                        _buildPickerCard(
+                          title: AppLocalizations.of(context).pickerSendFiles,
+                          subtitle: AppLocalizations.of(context)
+                              .pickerSendFilesHint,
+                          icon: Icons.folder_copy_rounded,
+                          gradient: const LinearGradient(
+                            colors: [
+                              AppColors.secondary,
+                              AppColors.secondaryDark
+                            ],
                           ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: _buildPickerCard(
-                              title: AppLocalizations.of(context)
-                                  .pickerSelectFolder,
-                              icon: Icons.folder_open_rounded,
-                              gradient: const LinearGradient(
-                                colors: [
-                                  AppColors.primary,
-                                  AppColors.primaryDeep
-                                ],
+                          onTap: _pickItems,
+                        ).animate().fadeIn(duration: 350.ms)
+                      else
+                        // Windows and Linux: their common dialogs pick files
+                        // or folders per invocation, never both, so the split
+                        // survives where the platform still imposes it.
+                        Row(
+                          children: [
+                            Expanded(
+                              child: _buildPickerCard(
+                                title: AppLocalizations.of(context)
+                                    .pickerSelectFile,
+                                icon: Icons.insert_drive_file_rounded,
+                                gradient: const LinearGradient(
+                                  colors: [
+                                    AppColors.secondary,
+                                    AppColors.secondaryDark
+                                  ],
+                                ),
+                                onTap: _pickItems,
                               ),
-                              onTap: _pickFolder,
                             ),
-                          ),
-                        ],
-                      ).animate().fadeIn(duration: 350.ms),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: _buildPickerCard(
+                                title: AppLocalizations.of(context)
+                                    .pickerSelectFolder,
+                                icon: Icons.folder_open_rounded,
+                                gradient: const LinearGradient(
+                                  colors: [
+                                    AppColors.primary,
+                                    AppColors.primaryDeep
+                                  ],
+                                ),
+                                onTap: _pickFolder,
+                              ),
+                            ),
+                          ],
+                        ).animate().fadeIn(duration: 350.ms),
                     ],
                   ),
                 ),
@@ -369,11 +389,72 @@ class _FilePickerPageState extends State<FilePickerPage> {
     );
   }
 
+  /// The "indexing" screen, with a count and a way out.
+  ///
+  /// Both halves were missing, and together they made a slow selection
+  /// indistinguishable from a broken app. Walking a folder on a phone's file
+  /// provider is one directory read after another and can genuinely take
+  /// minutes, but nothing on screen moved while it happened — and there was
+  /// no back button, no cancel, and every control underneath was disabled
+  /// behind the in-flight guard. Whatever went wrong, the only way out was
+  /// to kill the app.
+  Widget _indexingView(ServerStarting state) {
+    final l10n = AppLocalizations.of(context);
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          TransferPhaseLoader(
+            phaseLabel: l10n.pickerIndexing,
+            detail: state.indexedItems > 0
+                ? l10n.pickerIndexingFound(
+                    state.indexedItems, _formatBytes(state.indexedBytes))
+                : l10n.pickerStartingSession,
+            icon: Icons.cloud_upload_outlined,
+          ),
+          const SizedBox(height: 24),
+          TextButton.icon(
+            onPressed: _cancelIndexing,
+            icon: const Icon(Icons.close_rounded, color: Colors.white70),
+            label: Text(
+              l10n.commonCancel,
+              style: GoogleFonts.inter(color: Colors.white70),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Abandons a session that is still being set up.
+  ///
+  /// [CancelSending] does the teardown and, just as importantly, invalidates
+  /// the setup still in flight — without that the walk would finish some time
+  /// later and push the user to a QR screen for the session they had just
+  /// left.
+  void _cancelIndexing() {
+    _selectionInFlight = false;
+    context.read<SenderBloc>().add(CancelSending());
+  }
+
+  static String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    var value = bytes / 1024;
+    var unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit++;
+    }
+    return '${value.toStringAsFixed(value >= 10 ? 0 : 1)} ${units[unit]}';
+  }
+
   Widget _buildPickerCard({
     required String title,
     required IconData icon,
     required LinearGradient gradient,
     required VoidCallback onTap,
+    String? subtitle,
   }) {
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
@@ -407,12 +488,27 @@ class _FilePickerPageState extends State<FilePickerPage> {
                 const SizedBox(height: 12),
                 Text(
                   title,
+                  textAlign: TextAlign.center,
                   style: GoogleFonts.inter(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                     color: Colors.white,
                   ),
                 ),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 4),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      subtitle,
+                      textAlign: TextAlign.center,
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        color: Colors.white.withValues(alpha: 0.65),
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

@@ -132,7 +132,8 @@ void main() {
           localIp: '192.168.1.100',
           startedAt: DateTime.now(),
         );
-        when(() => mockRepository.startQhtpTransfer(any()))
+        when(() => mockRepository.startQhtpTransfer(any(),
+                onIndexProgress: any(named: 'onIndexProgress')))
             .thenAnswer((_) async => Right(dummySession));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('quickshare://join?room=123456'));
@@ -200,7 +201,8 @@ void main() {
       'a completed Wi-Fi send records its real byte count and both addresses '
       '— not zero bytes and a guessed route',
       build: () {
-        when(() => mockRepository.startQhtpTransfer(any()))
+        when(() => mockRepository.startQhtpTransfer(any(),
+                onIndexProgress: any(named: 'onIndexProgress')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('qr-payload'));
@@ -209,7 +211,7 @@ void main() {
         return SenderBloc(repository: mockRepository, diagnostics: diagnostics);
       },
       act: (bloc) async {
-        bloc.add(StartQhtpSend(const ['/tmp/whatever'], mode: TransportType.wifi));
+        bloc.add(const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
         await Future<void>.delayed(const Duration(milliseconds: 20));
         progress.add(0.4);
         await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -233,7 +235,8 @@ void main() {
     blocTest<SenderBloc, SenderState>(
       'a Wi-Fi send actually carried by the direct link is labelled that way',
       build: () {
-        when(() => mockRepository.startQhtpTransfer(any()))
+        when(() => mockRepository.startQhtpTransfer(any(),
+                onIndexProgress: any(named: 'onIndexProgress')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('qr-payload'));
@@ -247,7 +250,7 @@ void main() {
         return SenderBloc(repository: mockRepository, diagnostics: diagnostics);
       },
       act: (bloc) async {
-        bloc.add(StartQhtpSend(const ['/tmp/whatever'], mode: TransportType.wifi));
+        bloc.add(const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
         await Future<void>.delayed(const Duration(milliseconds: 20));
         progress.add(1.0);
         await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -265,7 +268,8 @@ void main() {
       // of the screen simply going back to the start as if nothing had run.
       'cancelling mid-transfer still leaves a record, not silence',
       build: () {
-        when(() => mockRepository.startQhtpTransfer(any()))
+        when(() => mockRepository.startQhtpTransfer(any(),
+                onIndexProgress: any(named: 'onIndexProgress')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('qr-payload'));
@@ -274,7 +278,7 @@ void main() {
         return SenderBloc(repository: mockRepository, diagnostics: diagnostics);
       },
       act: (bloc) async {
-        bloc.add(StartQhtpSend(const ['/tmp/whatever'], mode: TransportType.wifi));
+        bloc.add(const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
         await Future<void>.delayed(const Duration(milliseconds: 20));
         // A receiver has to have actually started pulling bytes for this to
         // count as a transfer worth recording — an untouched QR the user

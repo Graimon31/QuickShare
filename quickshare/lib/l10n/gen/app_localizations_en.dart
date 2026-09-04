@@ -114,6 +114,21 @@ class AppLocalizationsEn extends AppLocalizations {
   String get pickerSelectFolder => 'Select Folder';
 
   @override
+  String get pickerSendMedia => 'Send Photos & Videos';
+
+  @override
+  String get pickerSendFiles => 'Send Files';
+
+  @override
+  String get pickerSendFilesHint =>
+      'Files and folders — pick as many as you like';
+
+  @override
+  String pickerIndexingFound(int count, String size) {
+    return 'Found $count · $size';
+  }
+
+  @override
   String get wifiPromptTitle => 'Turn on Wi-Fi to send faster?';
 
   @override

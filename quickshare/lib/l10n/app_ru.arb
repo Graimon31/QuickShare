@@ -39,6 +39,13 @@
   "pickerPhotosVideos": "Фото и видео",
   "pickerSelectFile": "Выбрать файл",
   "pickerSelectFolder": "Выбрать папку",
+  "pickerSendMedia": "Отправить фото и видео",
+  "pickerSendFiles": "Отправить файлы",
+  "pickerSendFilesHint": "Файлы и папки — можно выбрать сразу несколько",
+  "pickerIndexingFound": "Найдено: {count} · {size}",
+  "@pickerIndexingFound": {
+    "placeholders": { "count": { "type": "int" }, "size": { "type": "String" } }
+  },
 
   "wifiPromptTitle": "Включить Wi-Fi для более быстрой отправки?",
   "wifiPromptBody": "Один Bluetooth работает медленно — большое видео может идти часами.\n\nС включённым Wi-Fi устройства соединяются напрямую, и те же файлы уходят за секунды. Подключаться к сети не нужно, достаточно включить сам модуль.",

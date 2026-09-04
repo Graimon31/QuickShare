@@ -115,7 +115,21 @@ class FileSelected extends SenderState {
   List<Object?> get props => [file];
 }
 
-class ServerStarting extends SenderState {}
+/// Setting a session up: walking the selection, then starting the server.
+///
+/// Carries how far the walk has got, because it is the only part of this that
+/// can take minutes. A screen that shows a count climbing is a screen nobody
+/// mistakes for a frozen one — which is exactly what a motionless "indexing"
+/// label was doing over a folder on a slow file provider.
+class ServerStarting extends SenderState {
+  final int indexedItems;
+  final int indexedBytes;
+
+  const ServerStarting({this.indexedItems = 0, this.indexedBytes = 0});
+
+  @override
+  List<Object?> get props => [indexedItems, indexedBytes];
+}
 
 class QRReady extends SenderState {
   final String qrData;
@@ -292,6 +306,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// can show both ends of the connection, not just a route label.
   String? _sessionLocalAddress;
   List<String>? _currentPaths;
+
+  /// Which session attempt is the live one.
+  ///
+  /// Setting a session up is a long await — indexing a selection, then
+  /// starting the server — and until now nothing could interrupt it. Cancel
+  /// arrived as its own event, ran to completion, and then the indexing that
+  /// was still in flight came back and emitted [QRReady] over the top of it:
+  /// the user was taken to a QR screen for a session they had just abandoned,
+  /// serving a folder from an already-closed picker. Every step of setup
+  /// checks this counter before it emits, and a bumped counter means the
+  /// answer is no longer wanted.
+  int _sessionGeneration = 0;
 
   AnswerChannel? _answerChannel;
   StreamSubscription<Uint8List>? _answerSubscription;
@@ -481,7 +507,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _startSendingInternal(
       FileMetadata file, TransportType mode, Emitter<SenderState> emit) async {
-    emit(ServerStarting());
+    emit(const ServerStarting());
 
     if (mode == TransportType.internet) {
       try {
@@ -613,6 +639,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onStartQhtpSend(
       StartQhtpSend event, Emitter<SenderState> emit) async {
+    final generation = ++_sessionGeneration;
+    bool abandoned() => generation != _sessionGeneration;
     _currentPaths = event.paths;
     // A fresh session: forget the last one's timing, route and description.
     _sendStartedAt = null;
@@ -641,17 +669,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       // full deflate pass before the first byte could leave, and a .zip at
       // the other end whatever the recipient actually wanted. Walking the
       // selection costs directory reads and no payload pass at all.
-      emit(ServerStarting());
+      emit(const ServerStarting());
       final List<FileMetadata> files;
       try {
         files = await expandSelection(event.paths);
       } catch (e) {
         // Empty folders, unreadable ones, selections past the size and depth
         // ceilings — all of which used to surface as "failed to archive".
-        emit(SenderError('Could not read the selection: $e'));
+        if (!abandoned()) emit(SenderError('Could not read the selection: $e'));
         return;
       }
 
+      if (abandoned()) return;
       _sessionFiles = files;
       // The first item is what a single-file session is entirely made of, and
       // what the transports lead with. Leaving the previous send's list in
@@ -671,16 +700,40 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       return;
     }
 
-    emit(ServerStarting());
+    emit(const ServerStarting());
     _subscribeToWifiProgress();
-    final result = await repository.startQhtpTransfer(event.paths);
+    final result = await repository.startQhtpTransfer(
+      event.paths,
+      onIndexProgress: (items, bytes) {
+        // Safe to emit from here: the walk runs inside this handler's await,
+        // so the emitter is still open. The generation check keeps a
+        // cancelled session from redrawing the screen it just left.
+        if (abandoned() || isClosed) return;
+        emit(ServerStarting(indexedItems: items, indexedBytes: bytes));
+      },
+    );
     await result.fold(
-      (failure) async => emit(SenderError(failure.message)),
+      (failure) async {
+        if (!abandoned()) emit(SenderError(failure.message));
+      },
       (session) async {
+        // Cancelled while the selection was being indexed. The server is
+        // already listening by now, so leaving quietly would leave it
+        // listening for good — a session nobody can reach and nothing will
+        // ever close.
+        if (abandoned()) {
+          await repository.stopServer(force: true);
+          return;
+        }
         _currentFile = session.fileMetadata;
         _sessionLocalAddress = '${session.localIp}:${session.serverPort}';
         await _offerOverDirectWiFi(session);
         final qrResult = await repository.generateQRPayload(session);
+        if (abandoned()) {
+          await repository.stopServer(force: true);
+          await peerLink.stop();
+          return;
+        }
         qrResult.fold(
           (failure) => emit(SenderError(failure.message)),
           (qrData) {
@@ -868,6 +921,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // cancelled send used to leave no trace at all in the history, which
     // read as "nothing happened here" to someone looking for why a transfer
     // never finished.
+    // Anything still setting a session up is now setting up a session
+    // nobody wants; see [_sessionGeneration].
+    _sessionGeneration++;
     await _reportSend(failure: 'Cancelled');
     // The HTTP server goes down first, forced, and before either network
     // path that carries it: a receiver mid-download is inside a socket read

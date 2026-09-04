@@ -1,9 +1,9 @@
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:open_file/open_file.dart';
 
+import 'package:quickshare/core/storage/folder_picker.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/save_coordinator.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
@@ -111,18 +111,62 @@ class _CompletePageState extends State<CompletePage> {
 
   int get _savedCount => _outcomes.where((o) => o.item.isSaved).length;
 
-  Future<void> _saveePending() async {
+  /// Puts the items the app was not allowed to place automatically wherever
+  /// the user says.
+  ///
+  /// Two different acts, because the platforms differ in who is allowed to do
+  /// the writing:
+  ///
+  ///  * iOS hands the files to the system, which copies them itself. A folder
+  ///    chosen through the *open* picker is outside this app's sandbox — the
+  ///    path comes back and every write to it is refused — so the copy could
+  ///    never have worked from here, and every save ended in "не удалось
+  ///    сохранить". Asking iOS to export is also what puts "Сохранить" on the
+  ///    confirm button; the open picker said "Открыть" because opening was
+  ///    genuinely what it had been asked for.
+  ///  * Everywhere else the app may write into a folder the user picks, so it
+  ///    picks one and moves the files across.
+  Future<void> _savePending() async {
     final pending = _pending;
     if (pending.isEmpty) return;
 
-    final directory = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: AppLocalizations.of(context).completeWhereTo,
+    final l10n = AppLocalizations.of(context);
+
+    if (FolderPicker.exportsThroughSystem) {
+      final saved = await const FolderPicker().exportItems(
+        [for (final o in pending) o.item.currentPath],
+        dialogTitle: l10n.completeWhereTo,
+      );
+      if (saved.isEmpty || !mounted) return;
+
+      // The system reports where each copy landed, in the order it was
+      // handed them. A shorter list means it saved some and not others, so
+      // only the ones it confirmed are marked saved.
+      final byCachePath = <String, String>{
+        for (var i = 0; i < saved.length && i < pending.length; i++)
+          pending[i].item.cachePath: saved[i],
+      };
+      setState(() {
+        _outcomes = [
+          for (final o in _outcomes)
+            byCachePath.containsKey(o.item.cachePath)
+                ? SaveOutcome(
+                    item: o.item
+                        .copyWith(savedPath: byCachePath[o.item.cachePath]))
+                : o,
+        ];
+      });
+      return;
+    }
+
+    final directory = await const FolderPicker().pick(
+      dialogTitle: l10n.completeWhereTo,
     );
-    if (directory == null || !mounted) return;
+    if (directory.isEmpty || !mounted) return;
 
     setState(() => _working = true);
     final saved = await _coordinator.saveChosen(
-        pending.map((o) => o.item).toList(), directory);
+        pending.map((o) => o.item).toList(), directory.first);
     if (!mounted) return;
 
     // Replace the pending entries with their outcomes, leave the rest alone.
@@ -287,7 +331,7 @@ class _CompletePageState extends State<CompletePage> {
           pending.length == 1
               ? AppLocalizations.of(context).completeSaveOne
               : AppLocalizations.of(context).completeSaveMany(pending.length),
-          _saveePending,
+          _savePending,
         )
       else
         _primaryButton(

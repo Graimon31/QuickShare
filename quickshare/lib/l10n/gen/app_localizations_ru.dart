@@ -113,6 +113,21 @@ class AppLocalizationsRu extends AppLocalizations {
   String get pickerSelectFolder => 'Выбрать папку';
 
   @override
+  String get pickerSendMedia => 'Отправить фото и видео';
+
+  @override
+  String get pickerSendFiles => 'Отправить файлы';
+
+  @override
+  String get pickerSendFilesHint =>
+      'Файлы и папки — можно выбрать сразу несколько';
+
+  @override
+  String pickerIndexingFound(int count, String size) {
+    return 'Найдено: $count · $size';
+  }
+
+  @override
   String get wifiPromptTitle => 'Включить Wi-Fi для более быстрой отправки?';
 
   @override

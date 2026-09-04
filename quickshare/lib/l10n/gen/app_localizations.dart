@@ -302,6 +302,30 @@ abstract class AppLocalizations {
   /// **'Select Folder'**
   String get pickerSelectFolder;
 
+  /// No description provided for @pickerSendMedia.
+  ///
+  /// In en, this message translates to:
+  /// **'Send Photos & Videos'**
+  String get pickerSendMedia;
+
+  /// No description provided for @pickerSendFiles.
+  ///
+  /// In en, this message translates to:
+  /// **'Send Files'**
+  String get pickerSendFiles;
+
+  /// No description provided for @pickerSendFilesHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Files and folders — pick as many as you like'**
+  String get pickerSendFilesHint;
+
+  /// No description provided for @pickerIndexingFound.
+  ///
+  /// In en, this message translates to:
+  /// **'Found {count} · {size}'**
+  String pickerIndexingFound(int count, String size);
+
   /// No description provided for @wifiPromptTitle.
   ///
   /// In en, this message translates to:

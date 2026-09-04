@@ -25,7 +25,7 @@ void main() {
   const folderChannel = MethodChannel('quickshare/folder_picker');
 
   setUpAll(() {
-    registerFallbackValue(StartQhtpSend(const ['/tmp/anything']));
+    registerFallbackValue(const StartQhtpSend(['/tmp/anything']));
   });
 
   setUp(() {
@@ -33,7 +33,9 @@ void main() {
     // test is whether the tap reaches the handler at all.
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(folderChannel, (call) async {
-      if (call.method == 'pickFolders') return <String>['/tmp/trip'];
+      if (call.method == 'pickItems' || call.method == 'pickFolders') {
+        return <String>['/tmp/trip'];
+      }
       return null;
     });
   });
@@ -66,16 +68,16 @@ void main() {
     return bloc;
   }
 
-  testWidgets('the folder button works again after a session is cancelled',
+  testWidgets('the selection button works again after a session is cancelled',
       (tester) async {
     final bloc = await pumpPage(
       tester,
       // A session starts, then ends the way leaving the QR screen ends it.
-      Stream<SenderState>.fromIterable([ServerStarting(), SenderInitial()]),
+      Stream<SenderState>.fromIterable([const ServerStarting(), SenderInitial()]),
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Select Folder'));
+    await tester.tap(find.text('Send Files'));
     await tester.pumpAndSettle();
 
     verify(() => bloc.add(any(that: isA<StartQhtpSend>()))).called(1);
@@ -85,14 +87,45 @@ void main() {
       (tester) async {
     final bloc = await pumpPage(
       tester,
-      Stream<SenderState>.fromIterable([ServerStarting()]),
+      Stream<SenderState>.fromIterable([const ServerStarting()]),
     );
     await tester.pump(const Duration(milliseconds: 50));
 
     // Nothing to tap: while a session is starting the screen is the phase
     // loader, which is the one case the guard exists for.
-    expect(find.text('Select Folder'), findsNothing);
+    expect(find.text('Send Files'), findsNothing);
     expect(find.text('Indexing selection…'), findsOneWidget);
     verifyNever(() => bloc.add(any(that: isA<StartQhtpSend>())));
+  });
+
+  // Indexing is the one step here that can take minutes — a folder on a
+  // phone's file provider is one slow directory read after another — and it
+  // used to be unescapable: no back button, no cancel, and every control
+  // underneath disabled behind the in-flight guard. Whatever the cause, the
+  // only way out was to kill the app.
+  testWidgets('a session being set up can be abandoned from the screen',
+      (tester) async {
+    final bloc = await pumpPage(
+      tester,
+      Stream<SenderState>.fromIterable([const ServerStarting()]),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pump();
+
+    verify(() => bloc.add(any(that: isA<CancelSending>()))).called(1);
+  });
+
+  testWidgets('the indexing screen says how far it has got', (tester) async {
+    await pumpPage(
+      tester,
+      Stream<SenderState>.fromIterable([
+        const ServerStarting(indexedItems: 812, indexedBytes: 3 * 1024 * 1024),
+      ]),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.textContaining('812'), findsOneWidget);
   });
 }

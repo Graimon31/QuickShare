@@ -49,3 +49,6 @@ analyzer:
   exclude:
     - "**/*.g.dart"
     - "**/*.freezed.dart"
+    # Benchmarks report numbers on stdout and hold sockets open on purpose;
+    # they are run by hand, never by CI. See benchmark/README.md.
+    - "benchmark/**"

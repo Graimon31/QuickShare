@@ -8,7 +8,6 @@ import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/foundation.dart';
 
-import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
@@ -142,6 +141,7 @@ class SenderRepositoryImpl implements SenderRepository {
   Future<Either<Failure, TransferSession>> startQhtpTransfer(
     List<String> paths, {
     String? authToken,
+    void Function(int items, int bytes)? onIndexProgress,
   }) async {
     try {
       _statusController.add(TransferStatus.serving);
@@ -171,25 +171,30 @@ class SenderRepositoryImpl implements SenderRepository {
         sessionId: sessionId,
         paths: paths,
         includeChecksums: false,
+        onProgress: onIndexProgress,
       );
 
-      // Hashing waits for nobody: the QR goes up on sizes alone, and the
-      // manifest answers immediately — the receiver picks up each digest
-      // from the per-item digest endpoint when it is about to verify that
-      // item, long after hashing has finished it. Above the checksum budget
-      // the session skips hashes entirely, as before.
-      Map<String, Future<String?>>? checksums;
-      if (indexResult.manifest.totalBytes <=
-          AppConstants.qhtpChecksumMaxSessionBytes) {
-        checksums =
-            FileIndexer.computeChecksums(indexResult.itemIdToAbsPathMap);
-      }
-
+      // Nothing is hashed up front any more.
+      //
+      // The QR still goes up on sizes alone, and the manifest still answers
+      // immediately — that part was right. What was wrong was starting four
+      // worker isolates to read the entire selection off the disk at the
+      // exact moment the transfer begins reading the same files off the same
+      // disk. On an internal SSD it was merely wasteful; on an external drive
+      // or a phone the two halved each other, and a session that should have
+      // saturated the link ran at the speed of a disk serving two full passes
+      // over everything.
+      //
+      // The digest now falls out of sending the file: the server hashes each
+      // response as it streams it, so by the time the receiver asks — having
+      // just finished downloading that item — the answer is already there,
+      // for one pass over the bytes instead of two. Only a resumed download,
+      // served from a Range request, is hashed separately, and only when it
+      // is asked for.
       final port = await localServer.startQhtpSession(
         manifest: indexResult.manifest,
         itemIdToAbsPathMap: indexResult.itemIdToAbsPathMap,
         authToken: token,
-        checksums: checksums,
       );
       AppLogger.info(
           'Session start: serving on :$port, ${sw.elapsedMilliseconds}ms since '

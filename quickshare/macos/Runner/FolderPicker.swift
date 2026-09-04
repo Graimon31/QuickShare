@@ -30,7 +30,17 @@ public class FolderPickerPlugin: NSObject {
     switch call.method {
     case "pickFolders":
       let title = (call.arguments as? [String: Any])?["title"] as? String
-      pickFolders(title: title, result: result)
+      openPanel(title: title, files: false, result: result)
+    case "pickItems":
+      let title = (call.arguments as? [String: Any])?["title"] as? String
+      openPanel(title: title, files: true, result: result)
+    case "exportItems":
+      // macOS can write wherever the user pointed, under the
+      // user-selected-read-write entitlement, so "save these" is the same
+      // open panel plus a copy Dart performs itself. Only iOS needs the
+      // system to do the copying.
+      let title = (call.arguments as? [String: Any])?["title"] as? String
+      openPanel(title: title, files: false, result: result)
     case "releaseFolders":
       // Nothing to release: see the note on the class.
       result(nil)
@@ -39,13 +49,22 @@ public class FolderPickerPlugin: NSObject {
     }
   }
 
-  private func pickFolders(title: String?, result: @escaping FlutterResult) {
+  /// One panel for both buttons that used to exist.
+  ///
+  /// `canChooseFiles` and `canChooseDirectories` are not exclusive — an
+  /// `NSOpenPanel` has always been able to return a mixed selection of files
+  /// and folders in one trip. `file_picker` exposes them as two separate
+  /// calls, which is the only reason this app asked the user to decide up
+  /// front whether they were sending files or a folder.
+  private func openPanel(title: String?, files: Bool, result: @escaping FlutterResult) {
     DispatchQueue.main.async {
       let panel = NSOpenPanel()
-      panel.canChooseFiles = false
+      panel.canChooseFiles = files
       panel.canChooseDirectories = true
       panel.allowsMultipleSelection = true
-      panel.canCreateDirectories = false
+      // Saving into a folder that does not exist yet is an ordinary
+      // thing to want, and the panel is the only place to make one.
+      panel.canCreateDirectories = true
       panel.resolvesAliases = true
       if let title = title {
         panel.message = title

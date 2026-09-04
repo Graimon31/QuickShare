@@ -21,9 +21,13 @@ abstract class SenderRepository {
   /// already told the far side what to present. The Bluetooth fast path is
   /// one: the receiver has only the Bluetooth session token, so a session
   /// minting its own would reject the very device it was started for.
+  /// [onIndexProgress] is called while the selection is being walked, with
+  /// how many items and bytes have been seen so far. It exists so the screen
+  /// can show that a slow folder is being read rather than a stuck one.
   Future<Either<Failure, TransferSession>> startQhtpTransfer(
     List<String> paths, {
     String? authToken,
+    void Function(int items, int bytes)? onIndexProgress,
   });
 
   /// Generates the QR payload string for the given transfer session.
