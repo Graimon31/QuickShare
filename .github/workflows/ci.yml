@@ -40,18 +40,21 @@ jobs:
       - name: Name the failures
         if: failure()
         run: |
-          # As annotations, not just the step summary: annotations are what
-          # the run page and the API show without an account, and the names
-          # of the failures are the whole point of looking.
-          sed -n '/Failing tests:/,$p' /tmp/test-output.txt \
-            | head -40 \
+          # Annotations, because those are what the run page and the API show
+          # without an account — and the names of the failures are the whole
+          # point of looking at a red run.
+          #
+          # Matched on the reporter's own "[E]" marker rather than the
+          # "Failing tests:" block: that block is printed only to a terminal,
+          # and CI is not one, so grepping for it found nothing at all.
+          grep -F '[E]' /tmp/test-output.txt | head -40 \
             | while IFS= read -r line; do
-                [ -n "$line" ] && echo "::error::$line"
+                echo "::error::$line"
               done
           {
             echo '### Failing tests'
             echo '```'
-            sed -n '/Failing tests:/,$p' /tmp/test-output.txt | head -40
+            grep -F '[E]' /tmp/test-output.txt | head -40
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
