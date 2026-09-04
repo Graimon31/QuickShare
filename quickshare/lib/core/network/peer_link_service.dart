@@ -47,6 +47,15 @@ class PeerLinkService {
   static bool get isSupported =>
       !kIsWeb && (Platform.isIOS || Platform.isMacOS);
 
+  /// The same question, asked of an instance.
+  ///
+  /// Callers holding a service should go through this rather than the static:
+  /// a stand-in can then answer for a platform the host is not, which is the
+  /// only way the behaviour on iOS and macOS can be tested from a Linux CI
+  /// runner. Every test of the direct link used to be silently skipped there
+  /// — passing on a developer's Mac, failing the moment CI actually ran them.
+  bool get supported => isSupported;
+
   /// The name this session advertises under, derived from its own token.
   ///
   /// Nothing new goes in the QR code: both ends already hold the session

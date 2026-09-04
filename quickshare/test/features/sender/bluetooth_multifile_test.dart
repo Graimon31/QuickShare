@@ -33,6 +33,11 @@ class _MockSenderRepository extends Mock implements SenderRepository {}
 class _FakePeerLink extends PeerLinkService {
   const _FakePeerLink();
 
+  // The fast path exists on iOS and macOS; CI runs on Linux, where the real
+  // answer is false and these tests asserted an empty branch.
+  @override
+  bool get supported => true;
+
   @override
   Future<void> host({
     required String serviceName,

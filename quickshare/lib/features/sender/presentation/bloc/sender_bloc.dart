@@ -763,7 +763,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// and all — so which one wins changes only how long it takes, never what
   /// the recipient ends up holding.
   Future<void> _offerBluetoothFastPath(String sessionToken) async {
-    if (!PeerLinkService.isSupported) return;
+    if (!peerLink.supported) return;
     final paths = _currentPaths;
     if (paths == null || paths.isEmpty) return;
 
@@ -826,7 +826,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// works over whatever network there is, and saying so in the log is the
   /// right amount of noise for something nobody asked for.
   Future<void> _offerOverDirectWiFi(TransferSession session) async {
-    if (!PeerLinkService.isSupported) return;
+    if (!peerLink.supported) return;
     try {
       await peerLink.host(
         serviceName: PeerLinkService.serviceNameFor(session.authToken),

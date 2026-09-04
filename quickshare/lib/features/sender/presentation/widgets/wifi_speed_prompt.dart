@@ -26,7 +26,7 @@ class WifiSpeedPrompt {
   /// Silent when Wi-Fi is already usable, or when this platform has no direct
   /// link to offer: a question nobody can act on is just an obstacle.
   Future<void> ask(BuildContext context) async {
-    if (!PeerLinkService.isSupported) return;
+    if (!link.supported) return;
     if (await link.wifiReady) return;
 
     // Where the radio can be switched on without disturbing anything, do it

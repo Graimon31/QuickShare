@@ -13,13 +13,21 @@ import 'package:quickshare/l10n/gen/app_localizations.dart';
 class _FakeLink extends PeerLinkService {
   final bool ready;
   final bool canEnable;
+  final bool platformHasLink;
   final List<String> calls;
 
   const _FakeLink({
     required this.ready,
     required this.canEnable,
     required this.calls,
+    this.platformHasLink = true,
   });
+
+  // The behaviour under test only exists on iOS and macOS, and CI runs on
+  // Linux — where the real answer is false and every one of these tests
+  // silently asserted nothing at all.
+  @override
+  bool get supported => platformHasLink;
 
   @override
   Future<bool> get wifiReady async => ready;
@@ -42,11 +50,17 @@ void main() {
     WidgetTester tester, {
     required bool ready,
     required bool canEnable,
+    bool platformHasLink = true,
     String? tapLabel,
   }) async {
     final calls = <String>[];
     final prompt = WifiSpeedPrompt(
-      link: _FakeLink(ready: ready, canEnable: canEnable, calls: calls),
+      link: _FakeLink(
+        ready: ready,
+        canEnable: canEnable,
+        calls: calls,
+        platformHasLink: platformHasLink,
+      ),
     );
 
     await tester.pumpWidget(MaterialApp(
@@ -104,5 +118,16 @@ void main() {
     final calls = await run(tester,
         ready: false, canEnable: false, tapLabel: 'Open settings');
     expect(calls, equals(['enable', 'settings']));
+  });
+
+  testWidgets('says nothing on a platform with no direct link to offer',
+      (tester) async {
+    // Windows, Linux, Android: switching the radio on buys nothing here,
+    // because there is no direct link to carry the files. Asking anyway would
+    // be an obstacle in front of a transfer that is about to work.
+    final calls = await run(tester,
+        ready: false, canEnable: true, platformHasLink: false);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(calls, isEmpty, reason: 'nothing here can be acted on');
   });
 }
