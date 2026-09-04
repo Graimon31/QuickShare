@@ -94,7 +94,13 @@ void main() {
 
   /// The arguments the native bridge was actually handed.
   Future<Map> advertised(List<String> paths) async {
-    final bloc = SenderBloc(repository: repository);
+    // The stand-in link, not the real one: the fast path offered alongside
+    // Bluetooth exists on iOS and macOS, and a Linux runner would take the
+    // early return and leave these tests asserting an empty branch.
+    final bloc = SenderBloc(
+      repository: repository,
+      peerLinkService: const _FakePeerLink(),
+    );
     addTearDown(bloc.close);
 
     final advertising = bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
@@ -169,6 +175,14 @@ void main() {
 
     final only = write('holiday.mov');
     await advertisedPath([only.path]);
+
+    // Advertising and offering the fast path are two things happening at
+    // once, and which finishes first is not fixed — asserting straight after
+    // the advertisement passed on one machine and raced on another.
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (captured.isEmpty && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
 
     final advertisedToken =
         (nativeCalls.firstWhere((c) => c.method == 'startAdvertising').arguments
