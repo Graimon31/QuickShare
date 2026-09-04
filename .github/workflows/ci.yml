@@ -29,15 +29,13 @@ jobs:
       - name: Analyze code
         run: flutter analyze --fatal-infos
 
-      # Two reporters, on purpose. The GitHub one turns each failure into an
-      # annotation, which is visible on the run page without signing in — the
-      # raw logs are not, so a red run used to say "6 failed" and nothing
-      # about which six. The summary block is the same names again, kept
-      # where a person looking at the run will see them first.
+      # The raw logs need a GitHub account, so a red run used to say "6
+      # failed" and nothing about which six — useless to anyone the builds are
+      # published for. The step summary is public, so the names go there.
       - name: Run unit and integration tests
         run: |
           set -o pipefail
-          flutter test --coverage --reporter=github 2>&1 | tee /tmp/test-output.txt
+          flutter test --coverage 2>&1 | tee /tmp/test-output.txt
 
       - name: Name the failures
         if: failure()
@@ -45,8 +43,14 @@ jobs:
           {
             echo '### Failing tests'
             echo '```'
-            grep -E '^::error|Failing tests:' -A 40 /tmp/test-output.txt | head -60 || true
+            sed -n '/Failing tests:/,$p' /tmp/test-output.txt | head -40
             echo '```'
+            echo '<details><summary>Last 200 lines</summary>'
+            echo
+            echo '```'
+            tail -200 /tmp/test-output.txt
+            echo '```'
+            echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
 
   build_macos:
