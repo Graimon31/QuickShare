@@ -17,6 +17,7 @@ import 'package:quickshare/features/receiver/domain/entities/qhtp_receive_result
 import 'package:quickshare/features/receiver/domain/entities/qhtp_session_preview.dart';
 import 'package:quickshare/features/receiver/data/client/http_file_downloader.dart';
 import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
+import 'package:quickshare/features/receiver/data/client/isolated_qhtp_receiver.dart';
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 
 class ReceiverRepositoryImpl implements ReceiverRepository {
@@ -25,12 +26,23 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
   final QhtpReceiverClient qhtpClient;
   final Dio dio;
 
+  /// Runs the session in a worker isolate, so decrypting and writing do not
+  /// share a thread with drawing the screen. Skipped when a caller supplied
+  /// its own [qhtpClient] — a test with a stubbed transport means to watch
+  /// that transport, not a copy of it in another isolate that cannot see the
+  /// stub.
+  final IsolatedQhtpReceiver? _worker;
+
   ReceiverRepositoryImpl({
     required this.downloader,
     required this.decoder,
     QhtpReceiverClient? qhtpClient,
     Dio? dioClient,
+    bool inProcess = false,
   })  : qhtpClient = qhtpClient ?? QhtpReceiverClient(),
+        _worker = (qhtpClient != null || inProcess)
+            ? null
+            : IsolatedQhtpReceiver(),
         dio = dioClient ?? Dio();
 
   String sanitizeFileName(String fileName) {
@@ -221,6 +233,14 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
     if (!validatePrivateIp(payload.ip)) {
       return const Left(NetworkFailure('Invalid IP'));
     }
+    final worker = _worker;
+    if (worker != null) {
+      return worker.downloadSession(
+        payload: payload,
+        targetBaseDir: targetDir,
+        onProgress: onProgress,
+      );
+    }
     return qhtpClient.downloadSession(
       payload: payload,
       targetBaseDir: targetDir,
@@ -292,6 +312,7 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
   @override
   void cancelDownload() {
     downloader.cancel();
+    _worker?.cancel();
     qhtpClient.cancel();
   }
 }

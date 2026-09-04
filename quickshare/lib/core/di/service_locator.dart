@@ -79,10 +79,13 @@ class ServiceLocator {
     );
 
     sl.registerLazySingleton<ReceiverRepository>(
+      // No `qhtpClient` here on purpose: without one the repository runs the
+      // session in a worker isolate, which is the point — decrypting and
+      // writing stop sharing a thread with the screen. Passing a client is
+      // how a test says "watch this transport", and the app is not a test.
       () => ReceiverRepositoryImpl(
         downloader: sl<HttpFileDownloader>(),
         decoder: sl<QRPayloadDecoder>(),
-        qhtpClient: sl<QhtpReceiverClient>(),
       ),
     );
 

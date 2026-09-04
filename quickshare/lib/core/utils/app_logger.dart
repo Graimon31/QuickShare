@@ -20,6 +20,24 @@ class AppLogger {
 
   static Stream<String> get logStream => _logStreamController.stream;
 
+  /// Where this isolate's log lines go instead of the journal.
+  ///
+  /// A background isolate has no journal to write to: the file handle is
+  /// resolved through a plugin, and plugins answer only on the main isolate.
+  /// Without somewhere to send them, everything the transfer logs from its
+  /// worker — the route it took, the speed it managed, why it failed —
+  /// simply vanished, which is the half of the journal that gets looked at.
+  /// The worker sets this to a send port back to the main isolate, which
+  /// hands each line to [adopt].
+  static void Function(String line)? mirror;
+
+  /// Files a line that was written in another isolate.
+  ///
+  /// Already formatted by the isolate that produced it, so it is taken as-is
+  /// rather than stamped a second time with the moment it happened to
+  /// arrive.
+  static void adopt(String logLine) => _record(logLine);
+
   static Future<void> init() async {
     try {
       final dir = await getApplicationDocumentsDirectory();
@@ -56,6 +74,17 @@ class AppLogger {
     final levelStr = level.name.toUpperCase().padRight(5);
     final logLine = '[$timestamp] [$levelStr] [$tag] $message';
 
+    final send = mirror;
+    if (send != null) {
+      // Not printed here as well: the main isolate prints it when it lands,
+      // and two copies of every line is not a better journal.
+      send(logLine);
+      return;
+    }
+    _record(logLine);
+  }
+
+  static void _record(String logLine) {
     debugPrint(logLine);
 
     _inMemoryLogs.add(logLine);

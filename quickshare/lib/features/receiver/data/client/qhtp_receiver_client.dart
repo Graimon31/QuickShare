@@ -64,12 +64,24 @@ class QhtpReceiverClient {
   /// Overridable only so tests need not spend a minute proving it.
   final Duration responseHeaderTimeout;
 
+  /// Where to write when the requested directory turns out to be unwritable.
+  ///
+  /// Injectable because the default asks a plugin, and plugins do not answer
+  /// in a background isolate — which is where this download now runs. The
+  /// caller resolves the path on the main isolate and hands it over.
+  final Future<String> Function() fallbackDirectory;
+
   QhtpReceiverClient({
     Dio? dioClient,
     SessionStateStore? store,
     this.responseHeaderTimeout = const Duration(seconds: 20),
+    Future<String> Function()? fallbackDirectory,
   })  : dio = dioClient ?? Dio(),
-        stateStore = store ?? SessionStateStore();
+        stateStore = store ?? SessionStateStore(),
+        fallbackDirectory = fallbackDirectory ?? _documentsDirectory;
+
+  static Future<String> _documentsDirectory() async =>
+      (await getApplicationDocumentsDirectory()).path;
 
   /// How often a transfer in flight is allowed to report itself.
   ///
@@ -193,7 +205,7 @@ class QhtpReceiverClient {
   ///
   /// The guard is kept, as a check rather than an assumption: a path outside
   /// the sandbox fails here instead of part-way through a transfer.
-  static Future<String> _resolveTargetDir(String requested) async {
+  Future<String> _resolveTargetDir(String requested) async {
     try {
       final dir = Directory(requested);
       if (!await dir.exists()) await dir.create(recursive: true);
@@ -206,7 +218,7 @@ class QhtpReceiverClient {
 
       return dir.path;
     } on FileSystemException catch (e) {
-      final fallback = (await getApplicationDocumentsDirectory()).path;
+      final fallback = await fallbackDirectory();
       debugPrint('QHTP: $requested is not writable ($e); '
           'falling back to $fallback');
       return fallback;

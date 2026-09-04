@@ -6,7 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
-import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
+import 'package:quickshare/features/receiver/data/client/isolated_qhtp_receiver.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_transport.dart';
@@ -100,7 +100,9 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     });
 
     final session = await const TransferCache().sessionDirectory();
-    final result = await QhtpReceiverClient().downloadSession(
+    // The worker, like every other receive path: this one runs on a phone by
+    // definition, which is where sharing a thread with the screen hurts most.
+    final result = await IsolatedQhtpReceiver().downloadSession(
       // The session id is only ever a local key for resume state; the server
       // is reached with the address and token alone. The Bluetooth session
       // token is the natural choice — it is stable across a retry, which is
