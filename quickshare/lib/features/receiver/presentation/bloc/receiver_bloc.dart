@@ -1,12 +1,6 @@
 import 'dart:async';
 import 'dart:io'
-    show
-        Directory,
-        File,
-        FileSystemEntity,
-        FileSystemException,
-        HttpClient,
-        SecurityContext;
+    show Directory, File, FileSystemEntity, FileSystemException;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:mime/mime.dart';
@@ -24,8 +18,6 @@ import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_tra
         WebRtcReceiverTransport;
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
-import 'package:quickshare/core/network/peer_link_service.dart';
-import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/core/transfer/interruption_guard.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/storage/receive_destination.dart';
@@ -199,10 +191,6 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   double _progressFloor = 0;
   int _transferAttempt = 0;
 
-  /// The direct Wi-Fi link to the sender, when this pairing supports one.
-  final PeerLinkService _peerLink = const PeerLinkService();
-  bool _directLinkOpen = false;
-
   /// Holds the transfer's place while the user is looking at something else.
   final TransferInterruptionGuard _interruption;
 
@@ -304,12 +292,9 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           return;
         }
 
-        // Prefer a direct Wi-Fi link to the sender when one can be had. The
-        // QHTP session is the same either way — only the address changes.
         _startedAt = DateTime.now();
-        final route = await _directRouteOrGiven(payload);
-        _route = _directLinkOpen ? 'Direct Wi-Fi link' : 'Local network';
-        _connectedTo = '${route.ip}:${route.port}';
+        _route = 'Local network';
+        _connectedTo = '${payload.ip}:${payload.port}';
         if (transferAttempt != _transferAttempt) return;
 
         void report(QhtpProgress qp) {
@@ -335,7 +320,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         }
 
         var result = await repository.receiveQhtpSession(
-          route,
+          payload,
           dest.path,
           onProgress: report,
         );
@@ -355,7 +340,6 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
             add(const DownloadFailed(
                 'The transfer stopped while the app was in the background. '
                 'Start it again to finish.'));
-            await _closeDirectLink();
             await dest.release();
             return;
           }
@@ -367,15 +351,12 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
               tag: 'TRANSFER');
           _interruption.reset();
           result = await repository.receiveQhtpSession(
-            await _directRouteOrGiven(payload),
+            payload,
             dest.path,
             onProgress: report,
           );
         }
 
-        // The link has done its job either way; holding the radio open past
-        // the transfer is nobody's benefit.
-        await _closeDirectLink();
         // The security scope a custom save folder opened stays open for the
         // whole transfer and closes here — the files are written by now.
         await dest.release();
@@ -471,7 +452,6 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
 
     on<CancelDownload>((event, emit) {
       _transferAttempt++;
-      unawaited(_closeDirectLink());
       repository.cancelDownload();
       _currentPayload = null;
       emit(ReceiverInitial());
@@ -481,7 +461,6 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   @override
   Future<void> close() async {
     _interruption.detach();
-    await _closeDirectLink();
     return super.close();
   }
 
@@ -500,108 +479,6 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       peerAddress: _connectedTo,
     ));
     _connectedTo = null;
-  }
-
-  /// Closes the direct link, if one was ever opened.
-  ///
-  /// Guarded on having opened one rather than called unconditionally: cancel
-  /// runs on every abandoned scan, and reaching for a platform channel to
-  /// tear down something that was never built is both pointless and, in a
-  /// plain unit test with no binding, an outright failure.
-  Future<void> _closeDirectLink() async {
-    if (!_directLinkOpen) return;
-    _directLinkOpen = false;
-    await _peerLink.stop();
-  }
-
-  /// Swaps the sender's LAN address for a direct Wi-Fi link, if one comes up.
-  ///
-  /// Nothing in the QR code says whether the sender is offering this: both
-  /// ends derive the same name from the session token they already share, so
-  /// an older sender simply is not there to be found and the LAN address is
-  /// used as before.
-  ///
-  /// The returned payload points at localhost, where the native side is
-  /// forwarding to the sender's QHTP port. Everything downstream — the
-  /// client, the manifest, resume, checksums — is unchanged and unaware.
-  /// Whether the address in the QR answers, right now, on this network.
-  ///
-  /// `/v2/health` is unauthenticated and exists for exactly this. Two seconds
-  /// is generous for a LAN round trip and short enough that a device with no
-  /// route to the sender is not left waiting before the direct link is tried.
-  /// Anything at all going wrong counts as "no": the fallback is a working
-  /// transfer over the other path, so there is nothing to gain by being
-  /// clever about which failure this was.
-  Future<bool> _senderAnswersDirectly(QRPayload payload) async {
-    if (payload.ip.isEmpty || payload.port <= 0) return false;
-    if (payload.tlsFingerprint.isEmpty) return false;
-
-    HttpClient? client;
-    try {
-      client = HttpClient(context: SecurityContext(withTrustedRoots: false))
-        ..connectionTimeout = const Duration(seconds: 2)
-        ..badCertificateCallback = (certificate, host, port) =>
-            SessionTlsIdentity.matches(certificate, payload.tlsFingerprint);
-
-      final request = await client
-          .getUrl(Uri.parse(
-              'https://${payload.ip}:${payload.port}/v2/health'))
-          .timeout(const Duration(seconds: 2));
-      final response =
-          await request.close().timeout(const Duration(seconds: 2));
-      await response.drain<void>();
-      return response.statusCode == 200;
-    } catch (_) {
-      return false;
-    } finally {
-      client?.close(force: true);
-    }
-  }
-
-  Future<QRPayload> _directRouteOrGiven(QRPayload payload) async {
-    if (!PeerLinkService.isSupported) return payload;
-
-    // The network first, the direct link only if there is no network.
-    //
-    // This used to take the direct link whenever it came up, which on two
-    // devices sitting on the same good router is the slower of the two paths
-    // by a wide margin: AWDL is a time-sliced side channel, and every byte
-    // additionally crosses a userspace bridge and a loopback socket at both
-    // ends. Measured on a gigabit network it delivered 11–19 MB/s where the
-    // router itself does several times that.
-    //
-    // What the direct link is for is the pairing nothing else covers — an
-    // iPhone and a Mac with no shared network — and that case is exactly the
-    // one where this probe fails. `/v2/health` needs no auth and exists to
-    // be asked this question.
-    if (await _senderAnswersDirectly(payload)) {
-      AppLogger.info(
-          'The sender is reachable on the network; leaving the direct link '
-          'alone',
-          tag: 'PEERLINK');
-      return payload;
-    }
-
-    try {
-      final port = await _peerLink.join(
-        serviceName: PeerLinkService.serviceNameFor(payload.token),
-        timeout: const Duration(seconds: 6),
-      );
-      _directLinkOpen = true;
-      AppLogger.info('Taking the direct Wi-Fi link to the sender',
-          tag: 'PEERLINK');
-      // Only the address changes — the same session, the same token, and the
-      // same certificate fingerprint to pin (the tunnel forwards to the very
-      // server the QR describes).
-      return payload.copyWith(ip: '127.0.0.1', port: port);
-    } on PeerLinkException catch (e) {
-      // Expected whenever the sender is on another platform, is an older
-      // build, or the two are already on one network: the LAN address in the
-      // QR is then the right answer anyway.
-      AppLogger.info('No direct Wi-Fi link, using the address in the QR: $e',
-          tag: 'PEERLINK');
-      return payload;
-    }
   }
 
   /// Serverless path: the QR carries a compact offer and a seed. We answer it,

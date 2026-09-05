@@ -12,9 +12,36 @@ import 'package:quickshare/features/sender/domain/transports/transfer_transport.
 
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
 
+import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 
 class MockSenderRepository extends Mock implements SenderRepository {}
+
+/// Stands in for the native side and remembers whether it was asked to host.
+///
+/// `supported` is forced true so the question is asked on every host, not
+/// just an Apple one — otherwise the assertion below passes on Linux CI for
+/// the wrong reason.
+class _RecordingPeerLink extends PeerLinkService {
+  _RecordingPeerLink();
+
+  final List<String> hosted = [];
+
+  @override
+  bool get supported => true;
+
+  @override
+  Future<void> host({
+    required String serviceName,
+    required int localPort,
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    hosted.add(serviceName);
+  }
+
+  @override
+  Future<void> stop() async {}
+}
 
 void main() {
   late MockSenderRepository mockRepository;
@@ -163,11 +190,13 @@ void main() {
     // list on the settings screen reads exactly this file back.
     late Directory diagDir;
     late TransferDiagnostics diagnostics;
+    late _RecordingPeerLink peerLink;
     late StreamController<double> progress;
 
     setUp(() {
       diagDir = Directory.systemTemp.createTempSync('quickshare_diag_test_');
       diagnostics = TransferDiagnostics(overrideDir: () => diagDir);
+      peerLink = _RecordingPeerLink();
       progress = StreamController<double>.broadcast();
       when(() => mockRepository.transferProgress)
           .thenAnswer((_) => progress.stream);
@@ -233,7 +262,43 @@ void main() {
     );
 
     blocTest<SenderBloc, SenderState>(
-      'a Wi-Fi send actually carried by the direct link is labelled that way',
+      // A Wi-Fi send goes over the router or it does not go. The direct link
+      // used to be offered here too, silently, so a session on a network that
+      // isolates its clients still completed — over a route the transport the
+      // user picked does not describe. It belongs to the Bluetooth fast path,
+      // where it is the whole point, and nowhere else.
+      'a Wi-Fi send raises no direct link of its own',
+      build: () {
+        when(() => mockRepository.startQhtpTransfer(any(),
+                onIndexProgress: any(named: 'onIndexProgress')))
+            .thenAnswer((_) async => Right(wifiSession()));
+        when(() => mockRepository.generateQRPayload(any()))
+            .thenAnswer((_) async => const Right('qr-payload'));
+        return SenderBloc(
+          repository: mockRepository,
+          diagnostics: diagnostics,
+          peerLinkService: peerLink,
+        );
+      },
+      act: (bloc) async {
+        bloc.add(
+            const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      },
+      verify: (_) async {
+        expect(peerLink.hosted, isEmpty,
+            reason: 'the QR names the LAN address and that is the only route '
+                'a Wi-Fi session offers');
+      },
+    );
+
+    blocTest<SenderBloc, SenderState>(
+      // The Wi-Fi flow no longer raises a link of its own, so this pairing of
+      // inputs is synthetic: in the app a loopback client can only be the
+      // fast path offered beside a Bluetooth transfer. What is under test is
+      // the labelling itself — that it reads the address the far side
+      // actually connected from, and never assumes the plain network.
+      'a loopback client is labelled the direct link, whatever raised it',
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 onIndexProgress: any(named: 'onIndexProgress')))

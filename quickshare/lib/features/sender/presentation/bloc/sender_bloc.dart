@@ -727,11 +727,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         }
         _currentFile = session.fileMetadata;
         _sessionLocalAddress = '${session.localIp}:${session.serverPort}';
-        await _offerOverDirectWiFi(session);
         final qrResult = await repository.generateQRPayload(session);
         if (abandoned()) {
           await repository.stopServer(force: true);
-          await peerLink.stop();
           return;
         }
         qrResult.fold(
@@ -811,29 +809,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       );
     } catch (e) {
       AppLogger.info('No fast path alongside Bluetooth: $e', tag: 'PEERLINK');
-    }
-  }
-
-  /// Also serves this session over a direct Wi-Fi link, where one is possible.
-  ///
-  /// Purely additive: the QHTP server is already listening and the QR already
-  /// names the LAN address, so a receiver that cannot use the direct link is
-  /// unaffected. What it buys is the pairing nothing else covers — an iPhone
-  /// and a Mac with no network between them, which until now had only
-  /// Bluetooth at 13 KB/s.
-  ///
-  /// Best effort by design. If the link will not come up, the transfer still
-  /// works over whatever network there is, and saying so in the log is the
-  /// right amount of noise for something nobody asked for.
-  Future<void> _offerOverDirectWiFi(TransferSession session) async {
-    if (!peerLink.supported) return;
-    try {
-      await peerLink.host(
-        serviceName: PeerLinkService.serviceNameFor(session.authToken),
-        localPort: session.serverPort,
-      );
-    } on PeerLinkException catch (e) {
-      AppLogger.info('No direct Wi-Fi link this time: $e', tag: 'PEERLINK');
     }
   }
 
@@ -1013,10 +988,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
     // Ground truth, not intent: whether `peerLink.host()` returned without
     // throwing says the direct link came up, not which address the far side
-    // actually opened a socket to. The two used to be treated as the same
-    // thing, which is how a session the receiver took over plain Wi-Fi still
-    // came out labelled "Direct Wi-Fi link" — the offer had succeeded, the
-    // receiver just never took it.
+    // actually opened a socket to, and only the second one is a route.
+    //
+    // A loopback client can now only be the fast path offered beside a
+    // Bluetooth transfer — the Wi-Fi flow raises no link of its own and
+    // always serves the LAN address the QR names.
     final clientAddress = repository.lastQhtpClientAddress;
     final ice = _activeWebRtcTransport?.lastIcePath;
     final route = switch (ice) {
