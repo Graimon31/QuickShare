@@ -138,6 +138,7 @@ void HotspotPlugin::RegisterWithRegistrar(
       [plugin_pointer = plugin.get()](const auto& call, auto result) {
         plugin_pointer->HandleMethodCall(call, std::move(result));
       });
+  plugin->channel_ = std::move(channel);
 
   registrar->AddPlugin(std::move(plugin));
 }

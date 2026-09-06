@@ -59,6 +59,12 @@ class HotspotPlugin : public flutter::Plugin {
   void CurrentSsid(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
+  // Owned, not borrowed: the channel is created in RegisterWithRegistrar and
+  // would otherwise be destroyed at the end of it, taking the method-call
+  // handler with it and leaving a channel Dart can call into and nothing
+  // answering.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
+
   // Opaque so this header does not drag WinRT into every translation unit
   // that includes it.
   struct Advertisement;
