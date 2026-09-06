@@ -16,6 +16,9 @@
 	<!-- Writing received files to ~/Downloads. -->
 	<key>com.apple.security.files.downloads.read-write</key>
 	<true/>
+	<!-- CoreWLAN: macOS 14+ gates the nearby-network list behind location. -->
+	<key>com.apple.security.personal-information.location</key>
+	<true/>
 	<!-- CoreBluetooth: advertise/scan for the LAN-free transfer mode. -->
 	<key>com.apple.security.device.bluetooth</key>
 	<true/>

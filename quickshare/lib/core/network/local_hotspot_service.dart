@@ -88,7 +88,24 @@ class LocalHotspotService {
   bool get canHost => Platform.isAndroid;
 
   /// True when this platform can join one from inside the app.
-  bool get canJoinProgrammatically => Platform.isAndroid || Platform.isIOS;
+  ///
+  /// macOS belongs here as much as iOS does — `CWInterface.associate` is
+  /// public API and has been for years — and leaving it out is what made a Mac
+  /// look like it could not take part in a transfer where the other device
+  /// raises the network. It cannot *host* one, which is a different question
+  /// and the one [canHost] answers.
+  bool get canJoinProgrammatically =>
+      Platform.isAndroid || Platform.isIOS || Platform.isMacOS;
+
+  /// True when this platform can list the networks around it.
+  ///
+  /// This is how two desktops find each other with no camera between them: a
+  /// host's network is in the air before anyone joins it, so the other side can
+  /// show the `DirectDrop-…` networks as devices. iOS has no API for the list
+  /// at all — an iPhone always has a camera, so it scans a QR instead.
+  bool get canScanForNetworks =>
+      Platform.isMacOS || Platform.isAndroid || Platform.isWindows ||
+      Platform.isLinux;
 
   /// Raises a local-only hotspot and returns its credentials.
   ///
@@ -131,7 +148,9 @@ class LocalHotspotService {
   ///
   /// On iOS this raises the system "Join network?" prompt and needs the
   /// `com.apple.developer.networking.HotspotConfiguration` entitlement; without
-  /// it the call fails at runtime rather than at build time.
+  /// it the call fails at runtime rather than at build time. On macOS it goes
+  /// through CoreWLAN and needs no prompt, but does leave the Mac off whatever
+  /// network it was on — [stopHosting] puts it back.
   Future<void> join(HotspotCredentials credentials) async {
     try {
       await _methodChannel.invokeMethod<void>('joinHotspot', {
@@ -141,6 +160,83 @@ class LocalHotspotService {
       AppLogger.info('Joined ${credentials.ssid}', tag: 'HOTSPOT');
     } on PlatformException catch (e) {
       throw HotspotException(e.message ?? 'could not join ${credentials.ssid}');
+    }
+  }
+
+  /// The networks in range whose name starts with [prefix].
+  ///
+  /// Empty rather than throwing when the platform cannot scan: a caller that
+  /// has to draw a list wants an empty list, and "this platform has no API for
+  /// it" is not a failure the user did anything to cause. A refusal by the
+  /// system — Location Services on macOS 14 and later — does throw, because
+  /// that one the user can act on.
+  Future<List<String>> scanForNetworks({String? prefix}) async {
+    if (!canScanForNetworks) return const [];
+    try {
+      final found = await _methodChannel.invokeMethod<List<Object?>>(
+        'scanForNetworks',
+        {if (prefix != null) 'prefix': prefix},
+      );
+      return [
+        for (final entry in found ?? const []) if (entry is String) entry,
+      ];
+    } on MissingPluginException {
+      // A platform whose bridge is not built yet.
+      return const [];
+    } on PlatformException catch (e) {
+      throw HotspotException(e.message ?? 'could not scan for networks');
+    }
+  }
+
+  /// Whether the system will let this app look at nearby networks.
+  ///
+  /// 'granted', 'denied', 'restricted', 'notDetermined', or 'unavailable' on
+  /// platforms that do not gate it. Only macOS 14 and later actually withholds
+  /// this, and it does so silently — an unauthorised scan returns an empty
+  /// list rather than an error — so a caller that draws "no devices found"
+  /// has to ask this before believing it.
+  Future<String> locationAuthorization() async {
+    if (!Platform.isMacOS) return 'unavailable';
+    try {
+      return await _methodChannel.invokeMethod<String>('locationAuthorization') ??
+          'unknown';
+    } on MissingPluginException {
+      return 'unavailable';
+    } on PlatformException {
+      return 'unknown';
+    }
+  }
+
+  /// Asks for the access [locationAuthorization] reports on.
+  ///
+  /// Returns the state afterwards, which is 'notDetermined' while the system
+  /// prompt is still on screen — the answer arrives later, so a caller should
+  /// re-read rather than treat this as final.
+  Future<String> requestLocationAccess() async {
+    if (!Platform.isMacOS) return 'unavailable';
+    try {
+      return await _methodChannel.invokeMethod<String>('requestLocationAccess') ??
+          'unknown';
+    } on MissingPluginException {
+      return 'unavailable';
+    } on PlatformException {
+      return 'unknown';
+    }
+  }
+
+  /// The network this device is on, or null when it is on none.
+  ///
+  /// Recorded before joining a transfer network so the device can be put back
+  /// afterwards: joining means leaving whatever had the internet on it, and
+  /// leaving somebody stranded there with no explanation is worse than the
+  /// transfer was good.
+  Future<String?> currentSsid() async {
+    try {
+      return await _methodChannel.invokeMethod<String>('currentSsid');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
     }
   }
 

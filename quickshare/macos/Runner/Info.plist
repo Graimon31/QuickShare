@@ -30,6 +30,13 @@
 	<string>NSApplication</string>
 	<key>FLTEnableMergedPlatformUIThread</key>
 	<false/>
+	<!-- macOS 14+ counts the list of nearby Wi-Fi networks as location data.
+	     Without this the scan returns an empty array with no error, which reads
+	     as "no devices nearby" on a machine surrounded by them. -->
+	<key>NSLocationUsageDescription</key>
+	<string>DirectDrop lists nearby Wi-Fi networks to find devices you can send files to. Your location is never collected or sent anywhere.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>DirectDrop lists nearby Wi-Fi networks to find devices you can send files to. Your location is never collected or sent anywhere.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_directdrop._tcp</string>

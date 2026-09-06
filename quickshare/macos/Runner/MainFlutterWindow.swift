@@ -23,6 +23,7 @@ class MainFlutterWindow: NSWindow {
     PeerLinkPlugin.register(with: flutterViewController.registrar(forPlugin: "PeerLinkPlugin"))
     SaveLocationPlugin.register(with: flutterViewController.registrar(forPlugin: "SaveLocationPlugin"))
     FolderPickerPlugin.register(with: flutterViewController.registrar(forPlugin: "FolderPickerPlugin"))
+    HotspotBridge.register(with: flutterViewController.registrar(forPlugin: "HotspotBridge"))
 
     super.awakeFromNib()
   }
