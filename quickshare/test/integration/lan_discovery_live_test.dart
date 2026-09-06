@@ -14,7 +14,6 @@
 // Skips itself where multicast is unavailable (a CI container, a locked-down
 // network) rather than failing: there is nothing to assert about a socket that
 // cannot open.
-import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
