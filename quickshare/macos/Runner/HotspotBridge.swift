@@ -68,6 +68,11 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
     private let authorizationSettled = DispatchSemaphore(value: 0)
     private var hasSettled = false
 
+    /// Signalled when the status becomes something other than notDetermined —
+    /// that is, when a person has actually answered the prompt.
+    private let authorizationAnswered = DispatchSemaphore(value: 0)
+    private var hasAnswered = false
+
     public static func register(with registrar: FlutterPluginRegistrar) {
         let instance = HotspotBridge()
         instance.location.delegate = instance
@@ -90,7 +95,11 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
             result(authorizationName())
         case "requestLocationAccess":
             location.requestWhenInUseAuthorization()
-            result(authorizationName())
+            queue.async { [weak self] in
+                guard let self = self else { return }
+                _ = self.authorizationAnswered.wait(timeout: .now() + 60)
+                DispatchQueue.main.async { result(self.authorizationName()) }
+            }
         case "startHotspot":
             result(FlutterError(
                 code: "UNSUPPORTED",
@@ -179,6 +188,19 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
                 return
             }
 
+            // Ask before concluding anything. A grant is only ever created by
+            // the app requesting it: until then the system holds the app at
+            // notDetermined, and toggling the switch in System Settings does
+            // nothing, because there is no entry for it to apply to. Reading
+            // the status without ever asking is how three trips to Settings
+            // achieved nothing.
+            if self.settledAuthorization() == .notDetermined {
+                DispatchQueue.main.async { self.location.requestWhenInUseAuthorization() }
+                // The prompt is answered by a person, so this waits on the
+                // delegate rather than on a fixed delay.
+                _ = self.authorizationAnswered.wait(timeout: .now() + 60)
+            }
+
             if !self.locationGranted {
                 DispatchQueue.main.async {
                     result(FlutterError(
@@ -244,6 +266,10 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
         if !hasSettled {
             hasSettled = true
             authorizationSettled.signal()
+        }
+        if authorization != .notDetermined, !hasAnswered {
+            hasAnswered = true
+            authorizationAnswered.signal()
         }
     }
 
