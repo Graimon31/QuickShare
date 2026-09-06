@@ -3,6 +3,12 @@
 #include <windows.h>
 #include <wlanapi.h>
 
+// unknwn.h has to come before any C++/WinRT header: winrt/base.h keys its
+// COM interop off whether IUnknown is already declared, and including it
+// afterwards is the classic way to get a wall of errors out of the projection
+// rather than out of your own code.
+#include <unknwn.h>
+
 #include <winrt/Windows.Devices.WiFiDirect.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Security.Credentials.h>
