@@ -8,7 +8,15 @@ import 'package:quickshare/core/utils/app_logger.dart';
 class NetworkInfoService {
   final NetworkInfo _networkInfo = NetworkInfo();
 
-  static const List<String> _ignoredInterfaces = [
+  /// Interfaces that are never the local network, whatever address they
+  /// carry: tunnels, VPN clients, virtual bridges, and Apple's own
+  /// peer-to-peer radios.
+  ///
+  /// Public because picking "the interface the LAN is on" is not a question
+  /// only this class asks — multicast discovery has to bind to the same one,
+  /// and on a machine with an always-on VPN the default route is the tunnel,
+  /// so anything that trusts the routing table sends into it instead.
+  static const List<String> ignoredInterfaces = [
     'utun',
     'tun',
     'tap',
@@ -91,7 +99,7 @@ class NetworkInfoService {
 
       for (final interface in interfaces) {
         final lowerName = interface.name.toLowerCase();
-        if (_ignoredInterfaces.any((ignored) => lowerName.contains(ignored))) {
+        if (ignoredInterfaces.any((ignored) => lowerName.contains(ignored))) {
           continue;
         }
 
@@ -109,6 +117,38 @@ class NetworkInfoService {
     } catch (_) {}
 
     return null;
+  }
+
+  /// The interface the local network is on, or null when there is none.
+  ///
+  /// Needed by multicast: a socket bound to the wildcard sends through
+  /// whatever the routing table prefers, and with an always-on VPN that is the
+  /// tunnel. Discovery packets then leave the machine into a tunnel where no
+  /// neighbour will ever see them — which looks exactly like a network that
+  /// blocks multicast, and cost an afternoon to tell apart.
+  Future<NetworkInterface?> primaryLanInterface() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLoopback: false,
+      );
+      NetworkInterface? fallback;
+      for (final interface in interfaces) {
+        final name = interface.name.toLowerCase();
+        if (ignoredInterfaces.any((ignored) => name.contains(ignored))) {
+          continue;
+        }
+        if (!interface.addresses.any((a) => _isValidPrivateIp(a.address))) {
+          continue;
+        }
+        // en0 / wlan0 first, exactly as getLocalIpAddress prefers them.
+        if (name == 'en0' || name == 'wlan0') return interface;
+        fallback ??= interface;
+      }
+      return fallback;
+    } catch (_) {
+      return null;
+    }
   }
 
   bool _isValidPrivateIp(String ip) {
@@ -178,7 +218,7 @@ class NetworkInfoService {
   /// name does not — Wi-Fi is `en*` on iOS and `wlan*` on Android, while
   /// cellular is `pdp_ip*` and `rmnet*` — so this tells the two apart where
   /// the address alone cannot. Tunnels, AWDL and the rest stay excluded by
-  /// [_ignoredInterfaces].
+  /// [ignoredInterfaces].
   Future<bool> _hasPrivateAddressOnWifiInterface() async {
     try {
       final interfaces = await NetworkInterface.list(
@@ -187,7 +227,7 @@ class NetworkInfoService {
       );
       for (final interface in interfaces) {
         final name = interface.name.toLowerCase();
-        if (_ignoredInterfaces.any((ignored) => name.contains(ignored))) {
+        if (ignoredInterfaces.any((ignored) => name.contains(ignored))) {
           continue;
         }
         if (!name.startsWith('en') && !name.startsWith('wlan')) continue;
@@ -226,7 +266,7 @@ class NetworkInfoService {
       );
       for (final interface in interfaces) {
         final lowerName = interface.name.toLowerCase();
-        if (_ignoredInterfaces.any((ignored) => lowerName.contains(ignored))) {
+        if (ignoredInterfaces.any((ignored) => lowerName.contains(ignored))) {
           continue;
         }
         for (final addr in interface.addresses) {
