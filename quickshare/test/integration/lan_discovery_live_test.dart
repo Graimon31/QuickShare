@@ -15,6 +15,8 @@
 // network) rather than failing: there is nothing to assert about a socket that
 // cannot open.
 
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:quickshare/core/network/lan_discovery.dart';
@@ -23,9 +25,17 @@ void main() {
   late LanDiscoveryService alice;
   late LanDiscoveryService bob;
 
+  // Its own group, for the same reason the handshake test has one: files run
+  // in parallel, and a shared group makes one file's devices show up in
+  // another's list.
+  LanDiscoveryService isolated() => LanDiscoveryService(
+        group: InternetAddress('224.0.0.173'),
+        port: 53339,
+      );
+
   setUp(() {
-    alice = LanDiscoveryService();
-    bob = LanDiscoveryService();
+    alice = isolated();
+    bob = isolated();
   });
 
   tearDown(() async {

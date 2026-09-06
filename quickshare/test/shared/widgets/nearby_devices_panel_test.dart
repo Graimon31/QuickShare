@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:quickshare/core/network/device_presence.dart';
 import 'package:quickshare/core/network/lan_discovery.dart';
+import 'package:quickshare/core/transfer/invitation_listener.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
 
@@ -25,7 +26,8 @@ class _StubPresence extends DevicePresence {
   List<DiscoveredPeer> get current => _peers;
 
   @override
-  Future<bool> start({String? name}) async => announces;
+  Future<bool> start({String? name, InvitationPrompt? onInvitation}) async =>
+      announces;
 
   @override
   Future<void> dispose() async {

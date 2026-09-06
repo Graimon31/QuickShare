@@ -35,6 +35,15 @@ class DiscoveredPeer {
   /// for an idle peer, which has no server and therefore no certificate yet.
   final String tlsFingerprint;
 
+  /// Where to send this peer an invitation, or 0 when it is not accepting
+  /// them.
+  ///
+  /// Separate from [port], which is where its own files are served from: a
+  /// device can be ready to receive without offering anything, and usually is.
+  /// Zero also covers a peer on a build from before invitations existed, which
+  /// simply never mentions the field.
+  final int invitePort;
+
   /// When this peer was last heard from, for [isStale].
   final DateTime lastSeen;
 
@@ -46,11 +55,15 @@ class DiscoveredPeer {
     required this.port,
     required this.lastSeen,
     this.tlsFingerprint = '',
+    this.invitePort = 0,
   });
 
   /// Whether this peer is offering a session right now, as opposed to merely
   /// being present.
   bool get isServing => port > 0;
+
+  /// Whether this peer can be asked to accept a transfer.
+  bool get acceptsInvitations => invitePort > 0;
 
   bool isStale(DateTime now, Duration after) =>
       now.difference(lastSeen) > after;
@@ -62,6 +75,7 @@ class DiscoveredPeer {
         address: address,
         port: port,
         tlsFingerprint: tlsFingerprint,
+        invitePort: invitePort,
         lastSeen: lastSeen ?? this.lastSeen,
       );
 
@@ -85,12 +99,16 @@ class DiscoveryAnnouncement {
   final int port;
   final String tlsFingerprint;
 
+  /// Where this device listens for invitations, or 0 when it is not.
+  final int invitePort;
+
   const DiscoveryAnnouncement({
     required this.id,
     required this.name,
     required this.platform,
     this.port = 0,
     this.tlsFingerprint = '',
+    this.invitePort = 0,
   });
 
   /// A request for everyone present to announce themselves immediately.
@@ -108,6 +126,7 @@ class DiscoveryAnnouncement {
         'os': platform,
         if (port > 0) 'p': port,
         if (tlsFingerprint.isNotEmpty) 'tf': tlsFingerprint,
+        if (invitePort > 0) 'ip': invitePort,
       };
 
   List<int> encode() => utf8.encode(jsonEncode(toJson()));
@@ -139,12 +158,17 @@ class DiscoveryAnnouncement {
       if (platform is! String || platform.isEmpty) return null;
 
       final port = decoded['p'];
+      final invitePort = decoded['ip'];
       return DiscoveryAnnouncement(
         id: id,
         name: name,
         platform: platform,
         port: port is int && port > 0 && port < 65536 ? port : 0,
         tlsFingerprint: decoded['tf'] as String? ?? '',
+        invitePort:
+            invitePort is int && invitePort > 0 && invitePort < 65536
+                ? invitePort
+                : 0,
       );
     } catch (_) {
       return null;
@@ -200,6 +224,7 @@ class PeerRegistry {
       address: from,
       port: announcement.port,
       tlsFingerprint: announcement.tlsFingerprint,
+      invitePort: announcement.invitePort,
       lastSeen: now,
     );
     _peers[announcement.id] = peer;
@@ -208,7 +233,8 @@ class PeerRegistry {
     return existing.name != peer.name ||
         existing.address != peer.address ||
         existing.port != peer.port ||
-        existing.tlsFingerprint != peer.tlsFingerprint;
+        existing.tlsFingerprint != peer.tlsFingerprint ||
+        existing.invitePort != peer.invitePort;
   }
 
   /// Drops peers nobody has heard from. Returns true if anything went.

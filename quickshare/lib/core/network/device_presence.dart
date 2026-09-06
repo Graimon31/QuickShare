@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:quickshare/core/network/lan_discovery.dart';
+import 'package:quickshare/core/transfer/invitation_listener.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// This device, as the others on the network see it.
@@ -17,6 +18,11 @@ import 'package:quickshare/core/utils/app_logger.dart';
 /// belong in something otherwise testable with no I/O at all.
 class DevicePresence {
   final LanDiscoveryService _discovery;
+
+  /// Raised only when the caller supplies a prompt: a device that has no way
+  /// to ask its user must not advertise that it accepts transfers, or senders
+  /// will pick it and wait out the timeout for an answer nobody was asked for.
+  InvitationListener? _invitations;
 
   /// New every launch, deliberately.
   ///
@@ -80,15 +86,34 @@ class DevicePresence {
 
   /// Starts announcing this device and listening for others.
   ///
+  /// Pass [onInvitation] to also accept transfers: it is called when another
+  /// device asks, and whatever it returns is the answer. Without it this
+  /// device is listed but cannot be sent to, which is the right shape for a
+  /// screen that is only browsing.
+  ///
   /// Returns false when the network will not carry it — guest Wi-Fi and
   /// captive portals block multicast — which is a fact the screen has to know,
   /// because an empty list then means "we cannot look here", not "nobody is
   /// nearby".
-  Future<bool> start({String? name}) async {
+  Future<bool> start({String? name, InvitationPrompt? onInvitation}) async {
+    var invitePort = 0;
+    if (onInvitation != null) {
+      final listener = InvitationListener(onInvitation: onInvitation);
+      try {
+        invitePort = await listener.start();
+        _invitations = listener;
+      } catch (e) {
+        // Being unable to accept invitations is not a reason to be invisible:
+        // this device can still see others and send to them.
+        AppLogger.warning('Not accepting invitations: $e', tag: 'INVITE');
+      }
+    }
+
     _announcement = DiscoveryAnnouncement(
       id: _sessionId,
       name: name ?? describeThisDevice(),
       platform: Platform.operatingSystem,
+      invitePort: invitePort,
     );
     final started = await _discovery.start(_announcement!);
     if (!started) {
@@ -110,6 +135,7 @@ class DevicePresence {
       platform: current.platform,
       port: port,
       tlsFingerprint: tlsFingerprint,
+      invitePort: current.invitePort,
     );
     _discovery.update(_announcement!);
   }
@@ -122,16 +148,21 @@ class DevicePresence {
       id: current.id,
       name: current.name,
       platform: current.platform,
+      invitePort: current.invitePort,
     );
     _discovery.update(_announcement!);
   }
 
   Future<void> stop() async {
+    await _invitations?.stop();
+    _invitations = null;
     await _discovery.stop();
     _announcement = null;
   }
 
   Future<void> dispose() async {
+    await _invitations?.stop();
+    _invitations = null;
     await _discovery.dispose();
     _announcement = null;
   }
