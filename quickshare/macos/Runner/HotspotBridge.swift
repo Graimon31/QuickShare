@@ -32,7 +32,7 @@ import FlutterMacOS
 ///
 /// So authorisation is asked for explicitly, and its state is reported to Dart
 /// so the UI can tell "nobody is here" from "macOS is not letting us look".
-public class HotspotBridge: NSObject {
+public class HotspotBridge: NSObject, CLLocationManagerDelegate {
     private static let channelName = "quickshare/hotspot"
 
     /// Both calls into CoreWLAN block until the radio answers, which is
@@ -51,8 +51,26 @@ public class HotspotBridge: NSObject {
     /// takes its pending authorisation callback with it.
     private let location = CLLocationManager()
 
+    /// The authorisation state, kept from the delegate rather than read on
+    /// demand.
+    ///
+    /// `CLLocationManager.authorizationStatus` answers `notDetermined` for a
+    /// manager that has only just been created, even when the system has a
+    /// grant on file — the real value arrives on the delegate a moment later.
+    /// Reading it inline therefore reports "never asked" on a machine where
+    /// the user has already said yes, which is exactly the confusion this
+    /// bridge exists to avoid. locationd's own record said `Authorized = 1`
+    /// while the app insisted otherwise.
+    private var authorization: CLAuthorizationStatus = .notDetermined
+
+    /// Signalled once the delegate has spoken, so the first call in does not
+    /// have to answer from the placeholder above.
+    private let authorizationSettled = DispatchSemaphore(value: 0)
+    private var hasSettled = false
+
     public static func register(with registrar: FlutterPluginRegistrar) {
         let instance = HotspotBridge()
+        instance.location.delegate = instance
         let channel = FlutterMethodChannel(name: channelName,
                                            binaryMessenger: registrar.messenger)
         channel.setMethodCallHandler { call, result in
@@ -221,13 +239,35 @@ public class HotspotBridge: NSObject {
         }
     }
 
+    public func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        authorization = manager.authorizationStatus
+        if !hasSettled {
+            hasSettled = true
+            authorizationSettled.signal()
+        }
+    }
+
+    /// The authorisation state, waiting briefly for the delegate if it has not
+    /// spoken yet.
+    ///
+    /// A tenth of a second is generous for a callback the system posts as soon
+    /// as the delegate is set, and short enough that nothing on screen waits
+    /// noticeably. Timing out leaves the placeholder, which is the honest
+    /// answer when the system has not said anything.
+    private func settledAuthorization() -> CLAuthorizationStatus {
+        if !hasSettled {
+            _ = authorizationSettled.wait(timeout: .now() + 0.1)
+        }
+        return authorization
+    }
+
     private var locationGranted: Bool {
-        let status = location.authorizationStatus
+        let status = settledAuthorization()
         return status == .authorized || status == .authorizedAlways
     }
 
     private func authorizationName() -> String {
-        switch location.authorizationStatus {
+        switch settledAuthorization() {
         case .notDetermined: return "notDetermined"
         case .restricted: return "restricted"
         case .denied: return "denied"

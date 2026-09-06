@@ -101,12 +101,17 @@ class SessionCode {
     return buffer.toString();
   }
 
+  /// What every network this app raises is called, before the derived part.
+  ///
+  /// A device scanning the air filters on this to tell our networks from the
+  /// neighbours' — which is how two desktops find each other with no camera
+  /// between them.
+  static const String ssidPrefix = 'DirectDrop-';
+
   /// The network's name, which both ends work out independently.
   ///
-  /// Prefixed so a device scanning the air can tell our networks from the
-  /// neighbours' before trying to join one, and short enough to leave room
-  /// inside the 32 bytes an SSID allows.
-  String get ssid => 'DirectDrop-${_deriveString('ssid', 6)}';
+  /// Short enough to leave room inside the 32 bytes an SSID allows.
+  String get ssid => '$ssidPrefix${_deriveString('ssid', 6)}';
 
   /// The network's passphrase. Twelve characters, comfortably past WPA2's
   /// eight-character floor.
