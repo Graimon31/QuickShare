@@ -21,10 +21,26 @@ add_executable(${BINARY_NAME} WIN32
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
 
-# hotspot_plugin.cpp needs two things beyond the defaults: wlanapi for the
-# nearby-network list, and windowsapp for the C++/WinRT projection that drives
-# Wi-Fi Direct. Neither is linked by a stock Flutter runner.
+# hotspot_plugin.cpp needs three things beyond the defaults.
+#
+# wlanapi for the nearby-network list and windowsapp for the C++/WinRT
+# projection that drives Wi-Fi Direct — neither is linked by a stock runner.
+#
+# flutter_wrapper_plugin is the one that is easy to miss. Flutter splits its
+# C++ wrapper in two: `flutter_wrapper_app` (which the runner already links)
+# carries core_implementations.cc and the engine/view-controller, while
+# plugin_registrar.cc goes only into `flutter_wrapper_plugin` — on the
+# assumption that plugins live in their own DLLs and the app never registers
+# one itself. This app does, from inside the exe, so it needs that half too;
+# without it every PluginRegistrar and PluginRegistrarManager symbol is an
+# unresolved external at link time.
+#
+# Both libraries contain core_implementations.cc, which is not a conflict:
+# a static library only gives up the objects that resolve something still
+# missing, and those symbols are already satisfied by flutter_wrapper_app
+# above.
 target_link_libraries(${BINARY_NAME} PRIVATE wlanapi windowsapp)
+target_link_libraries(${BINARY_NAME} PRIVATE flutter_wrapper_plugin)
 
 # Add preprocessor definitions for the build version.
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")
