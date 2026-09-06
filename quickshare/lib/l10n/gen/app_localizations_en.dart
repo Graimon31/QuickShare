@@ -783,4 +783,37 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get nearbyIdle => 'Waiting';
+
+  @override
+  String get inviteTitle => 'Accept files?';
+
+  @override
+  String get inviteAccept => 'Accept';
+
+  @override
+  String get inviteDecline => 'Decline';
+
+  @override
+  String get inviteUnknownSize => 'size unknown';
+
+  @override
+  String get nearbyOrPaste => 'Or paste a code';
+
+  @override
+  String get inviteAsking => 'Asking…';
+
+  @override
+  String get inviteAccepted => 'Accepted — sending now';
+
+  @override
+  String get inviteDeclined => 'Declined';
+
+  @override
+  String get inviteUnreachable => 'Could not reach that device';
+
+  @override
+  String get inviteBusy => 'That device is deciding on another transfer';
+
+  @override
+  String get nearbySendTo => 'Send straight to a device';
 }

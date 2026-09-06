@@ -1453,6 +1453,72 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Waiting'**
   String get nearbyIdle;
+
+  /// No description provided for @inviteTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Accept files?'**
+  String get inviteTitle;
+
+  /// No description provided for @inviteAccept.
+  ///
+  /// In en, this message translates to:
+  /// **'Accept'**
+  String get inviteAccept;
+
+  /// No description provided for @inviteDecline.
+  ///
+  /// In en, this message translates to:
+  /// **'Decline'**
+  String get inviteDecline;
+
+  /// No description provided for @inviteUnknownSize.
+  ///
+  /// In en, this message translates to:
+  /// **'size unknown'**
+  String get inviteUnknownSize;
+
+  /// No description provided for @nearbyOrPaste.
+  ///
+  /// In en, this message translates to:
+  /// **'Or paste a code'**
+  String get nearbyOrPaste;
+
+  /// No description provided for @inviteAsking.
+  ///
+  /// In en, this message translates to:
+  /// **'Asking…'**
+  String get inviteAsking;
+
+  /// No description provided for @inviteAccepted.
+  ///
+  /// In en, this message translates to:
+  /// **'Accepted — sending now'**
+  String get inviteAccepted;
+
+  /// No description provided for @inviteDeclined.
+  ///
+  /// In en, this message translates to:
+  /// **'Declined'**
+  String get inviteDeclined;
+
+  /// No description provided for @inviteUnreachable.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not reach that device'**
+  String get inviteUnreachable;
+
+  /// No description provided for @inviteBusy.
+  ///
+  /// In en, this message translates to:
+  /// **'That device is deciding on another transfer'**
+  String get inviteBusy;
+
+  /// No description provided for @nearbySendTo.
+  ///
+  /// In en, this message translates to:
+  /// **'Send straight to a device'**
+  String get nearbySendTo;
 }
 
 class _AppLocalizationsDelegate

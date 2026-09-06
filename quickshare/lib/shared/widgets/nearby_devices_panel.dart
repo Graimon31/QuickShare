@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:quickshare/core/network/device_presence.dart';
 import 'package:quickshare/core/network/lan_discovery.dart';
+import 'package:quickshare/core/transfer/invitation_listener.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
@@ -33,6 +34,14 @@ class NearbyDevicesPanel extends StatefulWidget {
   /// pick somebody to send to.
   final bool servingOnly;
 
+  /// Called when another device asks to send something here.
+  ///
+  /// Passing it is what makes this device appear as one that can be sent to;
+  /// without it the panel only browses. A screen that has no way to ask its
+  /// user must not advertise otherwise, or senders pick it and wait out the
+  /// answer window for a prompt nobody ever saw.
+  final InvitationPrompt? onInvitation;
+
   /// Injected by tests; the real one talks to the network.
   final DevicePresence? presence;
 
@@ -40,6 +49,7 @@ class NearbyDevicesPanel extends StatefulWidget {
     super.key,
     required this.onSelected,
     this.servingOnly = false,
+    this.onInvitation,
     this.presence,
   });
 
@@ -68,7 +78,7 @@ class _NearbyDevicesPanelState extends State<NearbyDevicesPanel> {
     _subscription = _presence.peers.listen((peers) {
       if (mounted) setState(() => _peers = peers);
     });
-    final started = await _presence.start();
+    final started = await _presence.start(onInvitation: widget.onInvitation);
     if (mounted) {
       setState(() {
         _announcing = started;

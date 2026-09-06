@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:ui';
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -9,7 +11,13 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
+import 'package:quickshare/core/network/device_presence.dart';
+import 'package:quickshare/core/network/lan_discovery.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/core/transfer/invitation_sender.dart';
+import 'package:quickshare/core/transfer/transfer_invitation.dart';
+import 'package:quickshare/shared/models/qr_payload.dart';
+import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
@@ -26,6 +34,77 @@ class QRDisplayPage extends StatefulWidget {
 }
 
 class _QRDisplayPageState extends State<QRDisplayPage> {
+  /// True while one invitation is out, so a second tap does not send another
+  /// before the first is answered.
+  bool _inviting = false;
+
+  /// Offers this session to one device and reports what came back.
+  ///
+  /// The receiver fetches the files itself once it agrees — the sender's
+  /// server is already listening, and this only hands over the address and the
+  /// token to reach it with. Which is why the token is here rather than in the
+  /// announcement everyone on the network can read.
+  Future<void> _invite(
+    BuildContext context,
+    DiscoveredPeer peer,
+    QRReady state,
+  ) async {
+    if (_inviting) return;
+    final l10n = AppLocalizations.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+
+    if (!peer.acceptsInvitations) {
+      // An older build, or a device that is only browsing. Its own screen
+      // never showed a prompt, so waiting for one would time out.
+      messenger.showSnackBar(SnackBar(content: Text(l10n.inviteUnreachable)));
+      return;
+    }
+
+    // The fingerprint lives in the QR payload rather than on the session:
+    // decoding what we are already showing beats threading it through the
+    // bloc for one field.
+    String fingerprint;
+    try {
+      fingerprint = QRPayload.decode(state.qrData).tlsFingerprint;
+    } catch (_) {
+      fingerprint = '';
+    }
+
+    setState(() => _inviting = true);
+    messenger.showSnackBar(SnackBar(content: Text(l10n.inviteAsking)));
+
+    final result = await InvitationSender().invite(
+      address: peer.address,
+      port: peer.invitePort,
+      invitation: TransferInvitation(
+        senderName: DevicePresence.describeThisDevice(),
+        senderPlatform: Platform.operatingSystem,
+        itemCount: state.itemCount,
+        totalBytes: state.totalBytes,
+        port: state.session.serverPort,
+        sessionId: state.session.id,
+        token: state.session.authToken,
+        tlsFingerprint: fingerprint,
+      ),
+    );
+
+    if (!mounted) return;
+    setState(() => _inviting = false);
+
+    // Each outcome gets its own words. Telling somebody their friend declined
+    // when the machine was asleep is worse than saying nothing.
+    final message = switch (result.outcome) {
+      InvitationOutcome.accepted => l10n.inviteAccepted,
+      InvitationOutcome.declined => l10n.inviteDeclined,
+      InvitationOutcome.busy => l10n.inviteBusy,
+      InvitationOutcome.unreachable => l10n.inviteUnreachable,
+      InvitationOutcome.unusable => l10n.inviteUnreachable,
+    };
+    messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Timer? _timer;
   int _secondsLeft = AppConstants.sessionTimeoutSeconds;
   bool _expired = false;
@@ -152,6 +231,15 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
+                        // Straight to a device, for the pair with no camera
+                        // between them: the QR below still covers a phone,
+                        // but two desktops have nothing to point at each
+                        // other.
+                        NearbyDevicesPanel(
+                          onSelected: (peer) => _invite(context, peer, state),
+                        ),
+                        const SizedBox(height: 28),
+
                         // Subtitle instruction
                         Text(
                           l10n.qrDisplayScanOrShare,

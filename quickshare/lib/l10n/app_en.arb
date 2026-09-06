@@ -378,5 +378,16 @@
   "nearbyBlocked": "This network hides devices from each other",
   "nearbyBlockedHint": "Guest and public Wi-Fi usually do. Use the code below instead.",
   "nearbyReady": "Ready to send",
-  "nearbyIdle": "Waiting"
+  "nearbyIdle": "Waiting",
+  "inviteTitle": "Accept files?",
+  "inviteAccept": "Accept",
+  "inviteDecline": "Decline",
+  "inviteUnknownSize": "size unknown",
+  "nearbyOrPaste": "Or paste a code",
+  "inviteAsking": "Asking…",
+  "inviteAccepted": "Accepted — sending now",
+  "inviteDeclined": "Declined",
+  "inviteUnreachable": "Could not reach that device",
+  "inviteBusy": "That device is deciding on another transfer",
+  "nearbySendTo": "Send straight to a device"
 }

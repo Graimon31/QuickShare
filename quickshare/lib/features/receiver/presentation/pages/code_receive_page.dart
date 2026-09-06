@@ -7,6 +7,8 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/shared/widgets/invitation_dialog.dart';
+import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
@@ -128,6 +130,28 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // Being on this screen is what makes this device receivable: the panel
+        // announces it and answers invitations. Nothing here is tappable — a
+        // listed device is one that can see *us*, and the transfer starts when
+        // one of them asks.
+        NearbyDevicesPanel(
+          onSelected: (_) {},
+          onInvitation: (invitation) async {
+            if (!mounted) return false;
+            return showInvitationDialog(context, invitation);
+          },
+        ),
+        const SizedBox(height: 24),
+        Text(
+          l10n.nearbyOrPaste,
+          style: GoogleFonts.inter(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: AppColors.textSecondary,
+            letterSpacing: 0.4,
+          ),
+        ),
+        const SizedBox(height: 10),
         Text(
           l10n.codeReceivePastePrompt,
           style: GoogleFonts.inter(

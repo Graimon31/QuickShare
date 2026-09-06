@@ -235,5 +235,16 @@
   "nearbyBlocked": "Эта сеть скрывает устройства друг от друга",
   "nearbyBlockedHint": "Так обычно устроены гостевые и публичные сети. Используйте код ниже.",
   "nearbyReady": "Готов отправить",
-  "nearbyIdle": "Ожидает"
+  "nearbyIdle": "Ожидает",
+  "inviteTitle": "Принять файлы?",
+  "inviteAccept": "Принять",
+  "inviteDecline": "Отклонить",
+  "inviteUnknownSize": "размер неизвестен",
+  "nearbyOrPaste": "Или вставьте код",
+  "inviteAsking": "Спрашиваем…",
+  "inviteAccepted": "Принято — отправляем",
+  "inviteDeclined": "Отклонено",
+  "inviteUnreachable": "Не удалось связаться с устройством",
+  "inviteBusy": "Устройство сейчас решает по другой передаче",
+  "nearbySendTo": "Отправить сразу на устройство"
 }

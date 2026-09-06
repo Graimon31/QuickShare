@@ -788,4 +788,37 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get nearbyIdle => 'Ожидает';
+
+  @override
+  String get inviteTitle => 'Принять файлы?';
+
+  @override
+  String get inviteAccept => 'Принять';
+
+  @override
+  String get inviteDecline => 'Отклонить';
+
+  @override
+  String get inviteUnknownSize => 'размер неизвестен';
+
+  @override
+  String get nearbyOrPaste => 'Или вставьте код';
+
+  @override
+  String get inviteAsking => 'Спрашиваем…';
+
+  @override
+  String get inviteAccepted => 'Принято — отправляем';
+
+  @override
+  String get inviteDeclined => 'Отклонено';
+
+  @override
+  String get inviteUnreachable => 'Не удалось связаться с устройством';
+
+  @override
+  String get inviteBusy => 'Устройство сейчас решает по другой передаче';
+
+  @override
+  String get nearbySendTo => 'Отправить сразу на устройство';
 }
