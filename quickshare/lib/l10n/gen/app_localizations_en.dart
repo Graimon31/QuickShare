@@ -757,4 +757,30 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get logsEmpty => 'No entries yet';
+
+  @override
+  String get nearbyTitle => 'Devices nearby';
+
+  @override
+  String get nearbySearching => 'Looking…';
+
+  @override
+  String get nearbyEmpty => 'No devices yet';
+
+  @override
+  String get nearbyEmptyHint =>
+      'Open DirectDrop on the other device. Both have to be on the same network.';
+
+  @override
+  String get nearbyBlocked => 'This network hides devices from each other';
+
+  @override
+  String get nearbyBlockedHint =>
+      'Guest and public Wi-Fi usually do. Use the code below instead.';
+
+  @override
+  String get nearbyReady => 'Ready to send';
+
+  @override
+  String get nearbyIdle => 'Waiting';
 }

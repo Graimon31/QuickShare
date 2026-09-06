@@ -1,9 +1,7 @@
 {
   "@@locale": "ru",
-
   "appName": "DirectDrop",
   "appTagline": "Мгновенно делитесь файлами по Wi-Fi, Bluetooth\nили по ссылке через интернет",
-
   "commonCancel": "Отмена",
   "commonClear": "Очистить",
   "commonSave": "Сохранить",
@@ -13,7 +11,6 @@
   "commonSettings": "Настройки",
   "commonChange": "Изменить",
   "commonOk": "ОК",
-
   "homeSendTitle": "Отправить файл",
   "homeSendSubtitle": "Выберите файл и поделитесь им",
   "homeReceiveTitle": "Получить файл",
@@ -21,10 +18,8 @@
   "homeReceiveSubtitleMobile": "Отсканируйте QR-код",
   "homeDropHere": "Перетащите файл сюда для отправки",
   "homeSettingsTooltip": "Настройки",
-
   "errorOops": "Ой!",
   "errorGoHome": "На главную",
-
   "pickerTitle": "Отправка файла или папки",
   "pickerIndexing": "Индексируем выбранное…",
   "pickerStartingSession": "Запуск защищённого прямого соединения",
@@ -44,14 +39,19 @@
   "pickerSendFilesHint": "Файлы и папки — можно выбрать сразу несколько",
   "pickerIndexingFound": "Найдено: {count} · {size}",
   "@pickerIndexingFound": {
-    "placeholders": { "count": { "type": "int" }, "size": { "type": "String" } }
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
   },
-
   "wifiPromptTitle": "Включить Wi-Fi для более быстрой отправки?",
   "wifiPromptBody": "Один Bluetooth работает медленно — большое видео может идти часами.\n\nС включённым Wi-Fi устройства соединяются напрямую, и те же файлы уходят за секунды. Подключаться к сети не нужно, достаточно включить сам модуль.",
   "wifiPromptDecline": "Отправить по Bluetooth",
   "wifiPromptAccept": "Открыть настройки",
-
   "completeSaving": "Сохраняем…",
   "completeTitle": "Получено!",
   "completeWhereTo": "Куда сохранить?",
@@ -62,7 +62,6 @@
   "completeSavedCount": "Сохранено: {count}",
   "completeWaitingCount": "Ждут решения: {count}",
   "completeFailedCount": "Не удалось сохранить: {count}",
-
   "settingsTitle": "Настройки",
   "settingsStorage": "Хранилище",
   "settingsCache": "Кэш",
@@ -72,7 +71,6 @@
   "settingsClearCacheBody": "Всё полученное, но ещё не сохранённое, будет удалено. Файлы, которые вы уже сохранили на устройство, не пострадают.",
   "settingsCacheFreed": "Освобождено {size}",
   "settingsCacheNothingToClear": "Нечего очищать",
-
   "settingsSaveLocation": "Папка сохранения",
   "settingsSaveLocationDefault": "По умолчанию для этого устройства",
   "settingsSaveLocationDefaultSubtitle": "Папка «Загрузки», которую обычно использует эта система",
@@ -82,12 +80,10 @@
   "settingsSaveLocationFootnote": "Сюда попадают только файлы, которые DirectDrop сохраняет автоматически — фото на телефоне всё равно уходит в галерею, а всё, о чём приложение вас спрашивает, по-прежнему сохраняется туда, куда вы укажете в тот момент.",
   "settingsSaveLocationPickerTitle": "Куда сохранять полученные файлы?",
   "settingsSaveLocationError": "Не удалось использовать эту папку: {error}",
-
   "settingsLanguage": "Язык",
   "settingsLanguageEnglish": "English",
   "settingsLanguageRussian": "Русский",
   "settingsLanguageFootnote": "Меняет интерфейс сразу же, только на этом устройстве.",
-
   "settingsLastTransfers": "Последние передачи",
   "settingsNoTransfersYet": "Пока нет передач",
   "settingsNoTransfersYetSubtitle": "Здесь появится передача, как только она завершится.",
@@ -96,7 +92,6 @@
   "settingsTransferPeerSent": "Отправлено на {address}",
   "settingsTransferPeerReceived": "Соединение с {address}",
   "settingsTransferFootnote": "Скорость объясняется маршрутом. Прямая связь — самая быстрая, передача через интернет-реле — самая медленная. Скопируйте сведения, если просите кого-то о помощи.",
-
   "commonSend": "Отправить",
   "commonCopy": "Копировать",
   "commonNo": "Нет",
@@ -104,9 +99,7 @@
   "commonOpenSettings": "Открыть настройки",
   "commonUnknownError": "Неизвестная ошибка",
   "transferFileReceived": "Файл получен",
-
   "sharedItemsCount": "{count, plural, one{{count} файл} few{{count} файла} many{{count} файлов} other{{count} файла}}",
-
   "mediaSelectedCount": "Выбрано: {count}",
   "mediaNotStored": "Эти файлы не хранятся на устройстве — откройте их в Фото, чтобы они загрузились, и попробуйте снова.",
   "mediaSkippedICloud": "{count, plural, one{{count} файл есть} few{{count} файла есть} many{{count} файлов есть} other{{count} файла есть}} только в iCloud — пропущены.",
@@ -118,7 +111,6 @@
   "mediaChooseMore": "Выбрать ещё",
   "mediaLimitedBanner": "Вы поделились только частью фото.",
   "mediaManage": "Управлять",
-
   "qrDisplayTitle": "Отправка файла",
   "qrDisplayPreparing": "Готовим отправку…",
   "qrDisplayPreparingDetail": "Создаём защищённую QR-сессию",
@@ -132,7 +124,6 @@
   "qrDisplayTotalSize": "Общий размер: {size}",
   "qrDisplaySessionExpires": "Сессия истекает через {time}",
   "qrDisplayCancelTransfer": "Отменить передачу",
-
   "precondWifiTitle": "Включите Wi-Fi",
   "precondWifiBody": "Передача по локальной сети работает только с включённым Wi-Fi-модулем.",
   "precondBluetoothTitle": "Включите Bluetooth",
@@ -146,7 +137,6 @@
   "sessionExpiredTitle": "Сессия истекла",
   "sessionExpiredBody": "За отведённое время никто не подключился. Обновите, чтобы создать новую сессию.",
   "sessionRefresh": "Обновить",
-
   "senderProgressCancelTitle": "Отменить передачу?",
   "senderProgressCancelBody": "Вы уверены, что хотите остановить отправку этого файла?",
   "senderProgressCancelConfirm": "Да, отменить",
@@ -156,7 +146,6 @@
   "senderProgressSending": "Отправка…",
   "senderProgressFailed": "Передача не удалась",
   "senderProgressPreparing": "Готовим передачу…",
-
   "fallbackTooLargeTitle": "Слишком много для этого соединения",
   "fallbackNoRouteTitle": "Нет прямого пути к другому устройству",
   "fallbackTooLargeBody": "Единственный доступный путь идёт через публичное реле. {size} шли бы очень долго и вряд ли дошли бы до конца, поэтому пока ничего не отправлено.",
@@ -168,7 +157,6 @@
   "fallbackCreateNetwork": "Создать сеть для этой передачи",
   "fallbackGoBack": "Вернуться и выбрать другой способ",
   "fallbackRelayCap": "Передача через реле ограничена {size}.",
-
   "localNetTitle": "Локальная сеть",
   "localNetCreating": "Создаём сеть…",
   "localNetWorking": "Работаем…",
@@ -180,13 +168,11 @@
   "localNetJoinedButton": "Готово, подключено",
   "localNetStep2Title": "Теперь отсканируйте этот в приложении",
   "localNetStep2Subtitle": "Он указывает на файлы на {host}.",
-
   "btSendTitle": "Bluetooth",
   "btSendPreparing": "Готовим Bluetooth…",
   "btSendPreparingDetail": "Делаем устройство видимым",
   "btSendScanPrompt": "Отсканируйте этот QR-код на принимающем устройстве",
   "btSendAutoConnectNote": "Принимающее устройство подключится по Bluetooth и начнёт передачу автоматически.",
-
   "btReceiveLookingForLink": "Ищем прямую связь…",
   "btReceiveDirectLinkPlaceholder": "Получаем напрямую по Wi-Fi",
   "btReceiveTitle": "Устройства рядом",
@@ -198,7 +184,6 @@
   "btReceivePairingWith": "Соединяемся с {name}",
   "btReceiveConnectionFailed": "Не удалось подключиться",
   "btReceiveScanAgain": "Искать снова",
-
   "codeReceivePasteError": "Вставьте ссылку от отправителя.",
   "codeReceiveParseError": "Не удалось прочитать эту ссылку. Скопируйте ссылку под QR-кодом у отправителя.",
   "codeReceiveTitle": "Получить файл",
@@ -215,7 +200,6 @@
   "codeReceiveTransferFailed": "Передача не удалась",
   "codeReceiveSignalingError": "Сервер сигнализации недоступен ({url}). Укажите свой сервер через:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com",
   "codeReceiveTryAnother": "Попробовать другой код",
-
   "qrScanCameraPermission": "Нужен доступ к камере",
   "qrScanDetected": "QR найден — открываем передачу…",
   "qrScanCameraError": "Ошибка камеры: {code}\nПопробуйте закрыть и снова открыть Получение.",
@@ -223,7 +207,6 @@
   "qrScanPointCamera": "Наведите камеру на QR-код",
   "qrScanPreparingCamera": "Готовим камеру…",
   "qrScanPreparingDetail": "Запрашиваем доступ к камере",
-
   "downloadWakelockWarning": "Держите экран включённым и приложение открытым до окончания передачи файла.",
   "downloadCancelTitle": "Отменить скачивание?",
   "downloadTitle": "Скачивание…",
@@ -235,16 +218,22 @@
   "downloadPreparingDetail": "Ждём отправителя",
   "downloadErrorSenderUnreachable": "Связь с отправителем потеряна. Возможно, он отменил передачу, закрыл приложение или у него пропал Wi-Fi. Попросите его начать передачу заново.",
   "downloadErrorCancelledBySender": "Отправитель отменил передачу.",
-
   "previewReadyTitle": "Готово к приёму",
   "previewFolderTransfer": "Передача папки",
   "previewFolderSize": "Размер папки: {size}",
   "previewCalculatingSize": "Считаем размер…",
   "previewStarting": "Начинаем передачу файла…",
   "previewStartNow": "Начать сейчас",
-
   "settingsLogs": "Журнал",
   "settingsLogsSubtitle": "Технический лог — скопируйте его, когда сообщаете о проблеме с передачей",
   "logsCopyAll": "Скопировать весь журнал",
-  "logsEmpty": "Записей пока нет"
+  "logsEmpty": "Записей пока нет",
+  "nearbyTitle": "Устройства рядом",
+  "nearbySearching": "Ищем…",
+  "nearbyEmpty": "Пока никого",
+  "nearbyEmptyHint": "Откройте DirectDrop на другом устройстве. Оба должны быть в одной сети.",
+  "nearbyBlocked": "Эта сеть скрывает устройства друг от друга",
+  "nearbyBlockedHint": "Так обычно устроены гостевые и публичные сети. Используйте код ниже.",
+  "nearbyReady": "Готов отправить",
+  "nearbyIdle": "Ожидает"
 }

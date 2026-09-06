@@ -762,4 +762,30 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get logsEmpty => 'Записей пока нет';
+
+  @override
+  String get nearbyTitle => 'Устройства рядом';
+
+  @override
+  String get nearbySearching => 'Ищем…';
+
+  @override
+  String get nearbyEmpty => 'Пока никого';
+
+  @override
+  String get nearbyEmptyHint =>
+      'Откройте DirectDrop на другом устройстве. Оба должны быть в одной сети.';
+
+  @override
+  String get nearbyBlocked => 'Эта сеть скрывает устройства друг от друга';
+
+  @override
+  String get nearbyBlockedHint =>
+      'Так обычно устроены гостевые и публичные сети. Используйте код ниже.';
+
+  @override
+  String get nearbyReady => 'Готов отправить';
+
+  @override
+  String get nearbyIdle => 'Ожидает';
 }

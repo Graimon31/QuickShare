@@ -1405,6 +1405,54 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'No entries yet'**
   String get logsEmpty;
+
+  /// No description provided for @nearbyTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Devices nearby'**
+  String get nearbyTitle;
+
+  /// No description provided for @nearbySearching.
+  ///
+  /// In en, this message translates to:
+  /// **'Looking…'**
+  String get nearbySearching;
+
+  /// No description provided for @nearbyEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No devices yet'**
+  String get nearbyEmpty;
+
+  /// No description provided for @nearbyEmptyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Open DirectDrop on the other device. Both have to be on the same network.'**
+  String get nearbyEmptyHint;
+
+  /// No description provided for @nearbyBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'This network hides devices from each other'**
+  String get nearbyBlocked;
+
+  /// No description provided for @nearbyBlockedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Guest and public Wi-Fi usually do. Use the code below instead.'**
+  String get nearbyBlockedHint;
+
+  /// No description provided for @nearbyReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Ready to send'**
+  String get nearbyReady;
+
+  /// No description provided for @nearbyIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting'**
+  String get nearbyIdle;
 }
 
 class _AppLocalizationsDelegate

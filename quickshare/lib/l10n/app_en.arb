@@ -1,9 +1,7 @@
 {
   "@@locale": "en",
-
   "appName": "DirectDrop",
   "appTagline": "Share files instantly over Wi-Fi, Bluetooth,\nor by link over the internet",
-
   "commonCancel": "Cancel",
   "commonClear": "Clear",
   "commonSave": "Save",
@@ -13,7 +11,6 @@
   "commonSettings": "Settings",
   "commonChange": "Change",
   "commonOk": "OK",
-
   "homeSendTitle": "Send File",
   "homeSendSubtitle": "Select and share a file",
   "homeReceiveTitle": "Receive File",
@@ -21,10 +18,8 @@
   "homeReceiveSubtitleMobile": "Scan a QR code to download",
   "homeDropHere": "Drop file here to send",
   "homeSettingsTooltip": "Settings",
-
   "errorOops": "Oops!",
   "errorGoHome": "Go Home",
-
   "pickerTitle": "Send File or Folder",
   "pickerIndexing": "Indexing selection…",
   "pickerStartingSession": "Starting a secure peer-to-peer session",
@@ -44,37 +39,57 @@
   "pickerSendFilesHint": "Files and folders — pick as many as you like",
   "pickerIndexingFound": "Found {count} · {size}",
   "@pickerIndexingFound": {
-    "placeholders": { "count": { "type": "int" }, "size": { "type": "String" } }
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "size": {
+        "type": "String"
+      }
+    }
   },
-
   "wifiPromptTitle": "Turn on Wi-Fi to send faster?",
   "wifiPromptBody": "Bluetooth on its own is slow — a large video can take hours.\n\nWith Wi-Fi switched on, the two devices connect directly and the same files take seconds. You do not need to join a network: the radio just has to be on.",
   "wifiPromptDecline": "Send over Bluetooth",
   "wifiPromptAccept": "Open settings",
-
   "completeSaving": "Saving…",
   "completeTitle": "Received!",
   "completeWhereTo": "Where should these go?",
   "completeSaveOne": "Save to device",
   "completeSaveMany": "Save {count} files to device",
   "@completeSaveMany": {
-    "placeholders": { "count": { "type": "int" } }
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "completeReceiveAnother": "Receive Another",
   "completeDontSave": "Don't save",
   "completeSavedCount": "{count} saved",
   "@completeSavedCount": {
-    "placeholders": { "count": { "type": "int" } }
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "completeWaitingCount": "{count} waiting for you",
   "@completeWaitingCount": {
-    "placeholders": { "count": { "type": "int" } }
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "completeFailedCount": "{count} could not be saved",
   "@completeFailedCount": {
-    "placeholders": { "count": { "type": "int" } }
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
-
   "settingsTitle": "Settings",
   "settingsStorage": "Storage",
   "settingsCache": "Cache",
@@ -84,10 +99,13 @@
   "settingsClearCacheBody": "Anything received but not yet saved will be deleted. Files you already saved to this device are not affected.",
   "settingsCacheFreed": "Freed {size}",
   "@settingsCacheFreed": {
-    "placeholders": { "size": { "type": "String" } }
+    "placeholders": {
+      "size": {
+        "type": "String"
+      }
+    }
   },
   "settingsCacheNothingToClear": "Nothing to clear",
-
   "settingsSaveLocation": "Save location",
   "settingsSaveLocationDefault": "Default for this device",
   "settingsSaveLocationDefaultSubtitle": "The Downloads folder this platform normally uses",
@@ -98,14 +116,16 @@
   "settingsSaveLocationPickerTitle": "Where should received files go?",
   "settingsSaveLocationError": "Could not use that folder: {error}",
   "@settingsSaveLocationError": {
-    "placeholders": { "error": { "type": "String" } }
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
   },
-
   "settingsLanguage": "Language",
   "settingsLanguageEnglish": "English",
   "settingsLanguageRussian": "Русский",
   "settingsLanguageFootnote": "Changes the interface immediately, on this device only.",
-
   "settingsLastTransfers": "Last transfers",
   "settingsNoTransfersYet": "No transfers yet",
   "settingsNoTransfersYetSubtitle": "A transfer appears here once it finishes.",
@@ -113,14 +133,21 @@
   "settingsDetailsCopied": "Details copied",
   "settingsTransferPeerSent": "Sent to {address}",
   "@settingsTransferPeerSent": {
-    "placeholders": { "address": { "type": "String" } }
+    "placeholders": {
+      "address": {
+        "type": "String"
+      }
+    }
   },
   "settingsTransferPeerReceived": "Connected to {address}",
   "@settingsTransferPeerReceived": {
-    "placeholders": { "address": { "type": "String" } }
+    "placeholders": {
+      "address": {
+        "type": "String"
+      }
+    }
   },
   "settingsTransferFootnote": "The route explains the speed. A direct link is the fastest, a relayed internet transfer the slowest — copy the details if you are asking someone for help.",
-
   "commonSend": "Send",
   "commonCopy": "Copy",
   "commonNo": "No",
@@ -128,20 +155,26 @@
   "commonOpenSettings": "Open Settings",
   "commonUnknownError": "Unknown error",
   "transferFileReceived": "File received",
-
   "sharedItemsCount": "{count, plural, =1{1 file} other{{count} files}}",
   "@sharedItemsCount": {
-    "placeholders": { "count": {} }
+    "placeholders": {
+      "count": {}
+    }
   },
-
   "mediaSelectedCount": "{count} selected",
   "@mediaSelectedCount": {
-    "placeholders": { "count": { "type": "int" } }
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
   },
   "mediaNotStored": "These items are not stored on this device — open them in Photos once so they download, then try again.",
   "mediaSkippedICloud": "{count, plural, =1{1 item is} other{{count} items are}} only in iCloud and were skipped.",
   "@mediaSkippedICloud": {
-    "placeholders": { "count": {} }
+    "placeholders": {
+      "count": {}
+    }
   },
   "mediaAccessDeniedTitle": "DirectDrop has no access to your photos",
   "mediaAccessDeniedBody": "Grant access in Settings to send photos and videos.",
@@ -151,7 +184,6 @@
   "mediaChooseMore": "Choose more",
   "mediaLimitedBanner": "You have shared only some photos.",
   "mediaManage": "Manage",
-
   "qrDisplayTitle": "Share File",
   "qrDisplayPreparing": "Preparing share…",
   "qrDisplayPreparingDetail": "Generating a secure QR session",
@@ -161,20 +193,31 @@
   "qrDisplayPhoneHint": "On the phone: open DirectDrop → Receive and scan this QR.",
   "qrDisplayRenderError": "QR Render Error: {error}",
   "@qrDisplayRenderError": {
-    "placeholders": { "error": { "type": "String" } }
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
   },
   "qrDisplayShareLinkLabel": "Share link",
   "qrDisplayLinkCopied": "Link copied to clipboard",
   "qrDisplayTotalSize": "Total size: {size}",
   "@qrDisplayTotalSize": {
-    "placeholders": { "size": { "type": "String" } }
+    "placeholders": {
+      "size": {
+        "type": "String"
+      }
+    }
   },
   "qrDisplaySessionExpires": "Session expires in {time}",
   "@qrDisplaySessionExpires": {
-    "placeholders": { "time": { "type": "String" } }
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
   },
   "qrDisplayCancelTransfer": "Cancel Transfer",
-
   "precondWifiTitle": "Turn on Wi-Fi",
   "precondWifiBody": "Local network transfer needs the Wi-Fi module to be on.",
   "precondBluetoothTitle": "Turn on Bluetooth",
@@ -188,7 +231,6 @@
   "sessionExpiredTitle": "Session expired",
   "sessionExpiredBody": "Nobody connected in time. Refresh to create a new session.",
   "sessionRefresh": "Refresh",
-
   "senderProgressCancelTitle": "Cancel Transfer?",
   "senderProgressCancelBody": "Are you sure you want to stop sending this file?",
   "senderProgressCancelConfirm": "Yes, Cancel",
@@ -198,12 +240,15 @@
   "senderProgressSending": "Sending...",
   "senderProgressFailed": "Transfer failed",
   "senderProgressPreparing": "Preparing transfer…",
-
   "fallbackTooLargeTitle": "Too large for this connection",
   "fallbackNoRouteTitle": "No direct route to the other device",
   "fallbackTooLargeBody": "The only route available goes through a public relay. {size} would take a long time and would not reliably finish, so nothing has been sent yet.",
   "@fallbackTooLargeBody": {
-    "placeholders": { "size": { "type": "String" } }
+    "placeholders": {
+      "size": {
+        "type": "String"
+      }
+    }
   },
   "fallbackNoRouteBody": "A VPN or this network's NAT is blocking a direct connection, and no relay was reachable. Nothing has been sent yet.",
   "fallbackWifiTitle": "Put both devices on one network",
@@ -214,9 +259,12 @@
   "fallbackGoBack": "Go back and pick another method",
   "fallbackRelayCap": "Relay transfers are capped at {size}.",
   "@fallbackRelayCap": {
-    "placeholders": { "size": { "type": "String" } }
+    "placeholders": {
+      "size": {
+        "type": "String"
+      }
+    }
   },
-
   "localNetTitle": "Local network",
   "localNetCreating": "Creating the network…",
   "localNetWorking": "Working…",
@@ -229,15 +277,17 @@
   "localNetStep2Title": "Now scan this one in the app",
   "localNetStep2Subtitle": "It points at the files on {host}.",
   "@localNetStep2Subtitle": {
-    "placeholders": { "host": { "type": "String" } }
+    "placeholders": {
+      "host": {
+        "type": "String"
+      }
+    }
   },
-
   "btSendTitle": "Bluetooth",
   "btSendPreparing": "Preparing Bluetooth…",
   "btSendPreparingDetail": "Making this device discoverable",
   "btSendScanPrompt": "Scan this QR code on the receiving device",
   "btSendAutoConnectNote": "The receiving device will connect over Bluetooth and start the transfer automatically.",
-
   "btReceiveLookingForLink": "Looking for a direct link…",
   "btReceiveDirectLinkPlaceholder": "Receiving over direct Wi-Fi",
   "btReceiveTitle": "Nearby devices",
@@ -248,11 +298,14 @@
   "btReceiveConnecting": "Connecting over Bluetooth…",
   "btReceivePairingWith": "Pairing with {name}",
   "@btReceivePairingWith": {
-    "placeholders": { "name": { "type": "String" } }
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
   },
   "btReceiveConnectionFailed": "Connection failed",
   "btReceiveScanAgain": "Scan again",
-
   "codeReceivePasteError": "Paste the share link from the sender.",
   "codeReceiveParseError": "Could not read that link. Copy the share link under the QR on the sender.",
   "codeReceiveTitle": "Receive a file",
@@ -269,21 +322,27 @@
   "codeReceiveTransferFailed": "Transfer failed",
   "codeReceiveSignalingError": "Signaling server unreachable ({url}). Specify a remote server using:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com",
   "@codeReceiveSignalingError": {
-    "placeholders": { "url": { "type": "String" } }
+    "placeholders": {
+      "url": {
+        "type": "String"
+      }
+    }
   },
   "codeReceiveTryAnother": "Try another code",
-
   "qrScanCameraPermission": "Camera permission required",
   "qrScanDetected": "QR detected — opening transfer…",
   "qrScanCameraError": "Camera error: {code}\nTry closing and opening Receive again.",
   "@qrScanCameraError": {
-    "placeholders": { "code": { "type": "String" } }
+    "placeholders": {
+      "code": {
+        "type": "String"
+      }
+    }
   },
   "qrScanEnterCode": "Enter Code",
   "qrScanPointCamera": "Point camera at the QR code",
   "qrScanPreparingCamera": "Preparing camera…",
   "qrScanPreparingDetail": "Camera access is being initialized",
-
   "downloadWakelockWarning": "Keep the screen on and the app open until the transfer finishes.",
   "downloadCancelTitle": "Cancel Download?",
   "downloadTitle": "Downloading...",
@@ -295,19 +354,29 @@
   "downloadPreparingDetail": "Waiting for the sender",
   "downloadErrorSenderUnreachable": "Lost the connection to the sender. It may have cancelled, closed the app, or lost Wi-Fi. Ask them to start the transfer again.",
   "downloadErrorCancelledBySender": "The sender cancelled the transfer.",
-
   "previewReadyTitle": "Ready to Receive",
   "previewFolderTransfer": "Folder Transfer",
   "previewFolderSize": "Folder size: {size}",
   "@previewFolderSize": {
-    "placeholders": { "size": { "type": "String" } }
+    "placeholders": {
+      "size": {
+        "type": "String"
+      }
+    }
   },
   "previewCalculatingSize": "Calculating size…",
   "previewStarting": "Starting file transfer…",
   "previewStartNow": "Start Now",
-
   "settingsLogs": "Logs",
   "settingsLogsSubtitle": "Technical journal — copy it when reporting a transfer problem",
   "logsCopyAll": "Copy entire log",
-  "logsEmpty": "No entries yet"
+  "logsEmpty": "No entries yet",
+  "nearbyTitle": "Devices nearby",
+  "nearbySearching": "Looking…",
+  "nearbyEmpty": "No devices yet",
+  "nearbyEmptyHint": "Open DirectDrop on the other device. Both have to be on the same network.",
+  "nearbyBlocked": "This network hides devices from each other",
+  "nearbyBlockedHint": "Guest and public Wi-Fi usually do. Use the code below instead.",
+  "nearbyReady": "Ready to send",
+  "nearbyIdle": "Waiting"
 }
