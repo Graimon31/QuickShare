@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -7,6 +8,10 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/network/device_presence.dart';
+import 'package:quickshare/core/network/session_code.dart';
+import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/shared/widgets/invitation_dialog.dart';
 import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
@@ -23,6 +28,11 @@ class CodeReceivePage extends StatefulWidget {
 
 class _CodeReceivePageState extends State<CodeReceivePage> {
   final _controller = TextEditingController();
+
+  /// Owned here rather than inside the panel, because the typed code has to be
+  /// matched against the same list the panel is drawing — a code names a
+  /// session, and the session is on one of the devices already discovered.
+  final DevicePresence _presence = DevicePresence();
   String? _inputError;
   bool _isSubmitting = false;
 
@@ -38,6 +48,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
 
   @override
   void dispose() {
+    unawaited(_presence.dispose());
     _controller.dispose();
     super.dispose();
   }
@@ -63,6 +74,15 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       _inputError = null;
     });
 
+    // Ten digits mean a device in this room rather than a link from somewhere
+    // else, and those are resolved against what is on the network rather than
+    // parsed — there is nothing inside a code but the code.
+    final code = SessionCode.parse(raw);
+    if (code != null) {
+      await _startFromCode(code);
+      return;
+    }
+
     try {
       if (!mounted) return;
       // The full pasted string so `n`/`s`/`c` preview fields survive; the
@@ -77,6 +97,45 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     }
   }
 
+
+  /// Finds the device offering [code] and starts collecting from it.
+  ///
+  /// The code is never sent anywhere. Each side derives the same two things
+  /// from it — a public identifier, which the sender advertises, and the
+  /// session token, which authenticates the fetch — so matching one against
+  /// the network is enough to open a session that nobody else can.
+  Future<void> _startFromCode(SessionCode code) async {
+    final l10n = AppLocalizations.of(context);
+
+    final match = _presence.current
+        .where((peer) => peer.sessionPublicId == code.publicId)
+        .firstOrNull;
+
+    if (match == null) {
+      // Either the sender is not on this network, or discovery cannot see it —
+      // the panel above says which, so this only has to say what failed.
+      setState(() {
+        _isSubmitting = false;
+        _inputError = l10n.codeNotFound;
+      });
+      return;
+    }
+
+    final payload = QRPayload(
+      version: AppConstants.qhtpPayloadVersion,
+      ip: match.address.address,
+      port: match.port,
+      token: code.sessionToken,
+      sessionId: code.sessionToken,
+      mode: 'http-lan',
+      tlsFingerprint: match.tlsFingerprint,
+    );
+
+    if (!mounted) return;
+    context
+        .read<ReceiverBloc>()
+        .add(QRCodeScanned(payload.encode(), fromPaste: true));
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -135,6 +194,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
         // listed device is one that can see *us*, and the transfer starts when
         // one of them asks.
         NearbyDevicesPanel(
+          presence: _presence,
           onSelected: (_) {},
           onInvitation: (invitation) async {
             if (!mounted) return false;

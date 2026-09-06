@@ -160,6 +160,7 @@ void main() {
           startedAt: DateTime.now(),
         );
         when(() => mockRepository.startQhtpTransfer(any(),
+                authToken: any(named: 'authToken'),
                 onIndexProgress: any(named: 'onIndexProgress')))
             .thenAnswer((_) async => Right(dummySession));
         when(() => mockRepository.generateQRPayload(any()))
@@ -231,6 +232,7 @@ void main() {
       '— not zero bytes and a guessed route',
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
+                authToken: any(named: 'authToken'),
                 onIndexProgress: any(named: 'onIndexProgress')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
@@ -270,6 +272,7 @@ void main() {
       'a Wi-Fi send raises no direct link of its own',
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
+                authToken: any(named: 'authToken'),
                 onIndexProgress: any(named: 'onIndexProgress')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
@@ -301,6 +304,7 @@ void main() {
       'a loopback client is labelled the direct link, whatever raised it',
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
+                authToken: any(named: 'authToken'),
                 onIndexProgress: any(named: 'onIndexProgress')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
@@ -334,6 +338,7 @@ void main() {
       'cancelling mid-transfer still leaves a record, not silence',
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
+                authToken: any(named: 'authToken'),
                 onIndexProgress: any(named: 'onIndexProgress')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))

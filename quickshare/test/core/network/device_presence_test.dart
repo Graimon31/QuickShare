@@ -18,7 +18,7 @@ class _RecordingDiscovery extends LanDiscoveryService {
   }
 
   @override
-  void update(DiscoveryAnnouncement self) => announced.add(self);
+  Future<void> update(DiscoveryAnnouncement self) async => announced.add(self);
 
   @override
   Future<void> stop() async {}

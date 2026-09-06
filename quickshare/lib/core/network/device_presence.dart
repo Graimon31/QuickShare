@@ -126,7 +126,11 @@ class DevicePresence {
 
   /// Says that this device is now serving a session, so the others can dial
   /// it without being told separately.
-  void nowServing({required int port, required String tlsFingerprint}) {
+  void nowServing({
+    required int port,
+    required String tlsFingerprint,
+    String sessionPublicId = '',
+  }) {
     final current = _announcement;
     if (current == null) return;
     _announcement = DiscoveryAnnouncement(
@@ -136,6 +140,7 @@ class DevicePresence {
       port: port,
       tlsFingerprint: tlsFingerprint,
       invitePort: current.invitePort,
+      sessionPublicId: sessionPublicId,
     );
     _discovery.update(_announcement!);
   }
@@ -161,9 +166,14 @@ class DevicePresence {
   }
 
   Future<void> dispose() async {
+    // Started before anything is awaited, so the discovery service cancels its
+    // pending work now rather than after the invitation listener has finished
+    // closing. An await here is an async gap, and a screen being torn down
+    // does not always get another turn.
+    final discoveryClosed = _discovery.dispose();
     await _invitations?.stop();
     _invitations = null;
-    await _discovery.dispose();
+    await discoveryClosed;
     _announcement = null;
   }
 }

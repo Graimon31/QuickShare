@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:quickshare/app.dart';
 import 'package:quickshare/core/di/service_locator.dart';
+import 'package:quickshare/core/network/device_presence.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
@@ -38,6 +39,7 @@ void main() async {
   // limit, and asking them to reproduce it with a debugger attached is not a
   // support process.
   unawaited(_reportWifiCapabilities());
+  unawaited(_reportDiscovery());
 
   runApp(const DirectDropApp());
 }
@@ -91,5 +93,38 @@ Future<void> _reportWifiCapabilities() async {
     }
   } catch (e) {
     AppLogger.warning('Could not report Wi-Fi capabilities: $e', tag: 'WIFI');
+  }
+}
+
+/// Whether this device can announce itself on the local network, said once at
+/// startup.
+///
+/// The same reasoning as the Wi-Fi line above, and for a failure with the same
+/// shape: discovery not working looks identical to nobody being nearby, and
+/// the difference is a permission on some platforms and a network on others.
+/// On macOS 15 and iOS this is also what triggers the system's local-network
+/// prompt, which has to happen once before any of it works.
+Future<void> _reportDiscovery() async {
+  final presence = DevicePresence();
+  try {
+    final announcing = await presence.start(name: DevicePresence.describeThisDevice());
+    if (!announcing) {
+      AppLogger.warning(
+          'Discovery: this device is not announcing — on Apple platforms check '
+          'Local Network permission, otherwise the network is blocking it',
+          tag: 'DISCOVERY');
+      return;
+    }
+    // Long enough for the responder to publish and for anything already out
+    // there to answer.
+    await Future<void>.delayed(const Duration(seconds: 5));
+    AppLogger.info(
+        'Discovery: announcing, ${presence.current.length} other device(s) '
+        'visible',
+        tag: 'DISCOVERY');
+  } catch (e) {
+    AppLogger.warning('Discovery probe failed: $e', tag: 'DISCOVERY');
+  } finally {
+    await presence.dispose();
   }
 }

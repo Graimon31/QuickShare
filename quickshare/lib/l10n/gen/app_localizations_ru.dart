@@ -821,4 +821,23 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get nearbySendTo => 'Отправить сразу на устройство';
+
+  @override
+  String get codeLabel => 'Код для принимающего устройства';
+
+  @override
+  String get codeHint =>
+      'Введите его на другом устройстве, если его нет в списке выше';
+
+  @override
+  String get codeEnterPrompt => 'Введите код с устройства-отправителя';
+
+  @override
+  String get codeEnterHint => '10 цифр';
+
+  @override
+  String get codeNotFound => 'Рядом нет устройства с таким кодом';
+
+  @override
+  String get codeMalformed => 'Код состоит из 10 цифр';
 }

@@ -52,7 +52,6 @@ DiscoveredPeer peer({
       platform: platform,
       address: InternetAddress('192.168.1.42'),
       port: port,
-      lastSeen: DateTime.now(),
     );
 
 void main() {
@@ -160,17 +159,34 @@ void main() {
     expect(find.text('Bob Desktop'), findsNothing);
   });
 
-  testWidgets('the panel stops announcing when it leaves the screen',
-      (tester) async {
-    // Otherwise a socket and a two-second timer outlive every screen that ever
-    // showed the list.
+  testWidgets('a presence the screen owns outlives the panel', (tester) async {
+    // The receiving screen resolves a typed code against the same list the
+    // panel draws, so it still needs the presence after the panel is gone.
+    // Only a presence the panel created itself is its to clean up.
     final presence = _StubPresence();
     await pump(tester, presence);
 
     await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     await tester.pump();
 
-    expect(() => presence.emit([peer()]), throwsStateError,
-        reason: 'the stream is closed once the panel is disposed');
+    expect(() => presence.emit([peer()]), returnsNormally,
+        reason: 'the panel must not close what it was handed');
+  });
+
+  testWidgets('the panel stops listening when it leaves the screen',
+      (tester) async {
+    // Whoever owns the presence, the panel must stop reacting — a setState
+    // after dispose is an error, and this is the path that would cause one.
+    final presence = _StubPresence();
+    await pump(tester, presence);
+    presence.emit([peer(name: 'Bob Desktop')]);
+    await tester.pump();
+
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    await tester.pump();
+
+    presence.emit([peer(id: 'other', name: 'Someone Else')]);
+    await tester.pump();
+    // Nothing to assert on screen; the test passes by not throwing.
   });
 }

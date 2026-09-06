@@ -1519,6 +1519,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Send straight to a device'**
   String get nearbySendTo;
+
+  /// No description provided for @codeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Code for the receiving device'**
+  String get codeLabel;
+
+  /// No description provided for @codeHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Type this on the other device if it is not in the list above'**
+  String get codeHint;
+
+  /// No description provided for @codeEnterPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the code from the sender'**
+  String get codeEnterPrompt;
+
+  /// No description provided for @codeEnterHint.
+  ///
+  /// In en, this message translates to:
+  /// **'10 digits'**
+  String get codeEnterHint;
+
+  /// No description provided for @codeNotFound.
+  ///
+  /// In en, this message translates to:
+  /// **'No device nearby is offering that code'**
+  String get codeNotFound;
+
+  /// No description provided for @codeMalformed.
+  ///
+  /// In en, this message translates to:
+  /// **'A code is 10 digits'**
+  String get codeMalformed;
 }
 
 class _AppLocalizationsDelegate

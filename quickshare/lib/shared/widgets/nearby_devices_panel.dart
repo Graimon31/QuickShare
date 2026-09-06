@@ -23,6 +23,27 @@ import 'package:quickshare/l10n/gen/app_localizations.dart';
 ///    anything with client isolation block multicast, and there the list can
 ///    never fill. Saying "no devices" there would be a lie that leaves someone
 ///    waiting; the panel says so and points at the code instead.
+/// What this device is currently offering, for the panel to announce.
+///
+/// Announced so a receiver who was told the code can find this device among
+/// several — and so one that is simply browsing sees it marked as having
+/// something to collect.
+class ServingSession {
+  final int port;
+  final String tlsFingerprint;
+
+  /// Derived from the session code and not reversible: it names the session to
+  /// somebody who already has the code, without telling everyone else in range
+  /// what the code is.
+  final String publicId;
+
+  const ServingSession({
+    required this.port,
+    required this.tlsFingerprint,
+    required this.publicId,
+  });
+}
+
 class NearbyDevicesPanel extends StatefulWidget {
   /// Called with a device the user picked.
   final void Function(DiscoveredPeer peer) onSelected;
@@ -42,6 +63,10 @@ class NearbyDevicesPanel extends StatefulWidget {
   /// answer window for a prompt nobody ever saw.
   final InvitationPrompt? onInvitation;
 
+  /// The session this device is offering, if any — announced so a receiver
+  /// can find it by the code it was given.
+  final ServingSession? serving;
+
   /// Injected by tests; the real one talks to the network.
   final DevicePresence? presence;
 
@@ -50,6 +75,7 @@ class NearbyDevicesPanel extends StatefulWidget {
     required this.onSelected,
     this.servingOnly = false,
     this.onInvitation,
+    this.serving,
     this.presence,
   });
 
@@ -59,6 +85,13 @@ class NearbyDevicesPanel extends StatefulWidget {
 
 class _NearbyDevicesPanelState extends State<NearbyDevicesPanel> {
   late final DevicePresence _presence;
+
+  /// Whether this panel created the presence and therefore has to clean it up.
+  /// An injected one belongs to the screen, which may still need it after the
+  /// panel is gone — the code-entry field on the receiving screen resolves
+  /// against the same list.
+  late final bool _ownsPresence;
+
   StreamSubscription<List<DiscoveredPeer>>? _subscription;
 
   List<DiscoveredPeer> _peers = const [];
@@ -70,6 +103,7 @@ class _NearbyDevicesPanelState extends State<NearbyDevicesPanel> {
   @override
   void initState() {
     super.initState();
+    _ownsPresence = widget.presence == null;
     _presence = widget.presence ?? DevicePresence();
     _start();
   }
@@ -79,6 +113,7 @@ class _NearbyDevicesPanelState extends State<NearbyDevicesPanel> {
       if (mounted) setState(() => _peers = peers);
     });
     final started = await _presence.start(onInvitation: widget.onInvitation);
+    _announceServing();
     if (mounted) {
       setState(() {
         _announcing = started;
@@ -88,11 +123,32 @@ class _NearbyDevicesPanelState extends State<NearbyDevicesPanel> {
   }
 
   @override
+  void didUpdateWidget(NearbyDevicesPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The session usually opens a moment after the panel is first drawn, so
+    // what this device advertises has to be able to change under it.
+    if (oldWidget.serving?.publicId != widget.serving?.publicId ||
+        oldWidget.serving?.port != widget.serving?.port) {
+      _announceServing();
+    }
+  }
+
+  void _announceServing() {
+    final serving = widget.serving;
+    if (serving == null) return;
+    _presence.nowServing(
+      port: serving.port,
+      tlsFingerprint: serving.tlsFingerprint,
+      sessionPublicId: serving.publicId,
+    );
+  }
+
+  @override
   void dispose() {
     _subscription?.cancel();
     // Not awaited: dispose cannot be async, and the socket closing a moment
     // after the screen is gone harms nothing.
-    unawaited(_presence.dispose());
+    if (_ownsPresence) unawaited(_presence.dispose());
     super.dispose();
   }
 

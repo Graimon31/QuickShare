@@ -18,6 +18,8 @@ PODS:
     - FlutterMacOS
   - network_info_plus (0.0.1):
     - FlutterMacOS
+  - nsd_macos (0.0.1):
+    - FlutterMacOS
   - open_file_mac (1.0.3):
     - FlutterMacOS
   - package_info_plus (0.0.1):
@@ -42,6 +44,7 @@ DEPENDENCIES:
   - gal (from `Flutter/ephemeral/.symlinks/plugins/gal/darwin`)
   - mobile_scanner (from `Flutter/ephemeral/.symlinks/plugins/mobile_scanner/macos`)
   - network_info_plus (from `Flutter/ephemeral/.symlinks/plugins/network_info_plus/macos`)
+  - nsd_macos (from `Flutter/ephemeral/.symlinks/plugins/nsd_macos/macos`)
   - open_file_mac (from `Flutter/ephemeral/.symlinks/plugins/open_file_mac/macos`)
   - package_info_plus (from `Flutter/ephemeral/.symlinks/plugins/package_info_plus/macos`)
   - photo_manager (from `Flutter/ephemeral/.symlinks/plugins/photo_manager/darwin`)
@@ -71,6 +74,8 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral/.symlinks/plugins/mobile_scanner/macos
   network_info_plus:
     :path: Flutter/ephemeral/.symlinks/plugins/network_info_plus/macos
+  nsd_macos:
+    :path: Flutter/ephemeral/.symlinks/plugins/nsd_macos/macos
   open_file_mac:
     :path: Flutter/ephemeral/.symlinks/plugins/open_file_mac/macos
   package_info_plus:
@@ -92,6 +97,7 @@ SPEC CHECKSUMS:
   gal: baecd024ebfd13c441269ca7404792a7152fde89
   mobile_scanner: bd1e7cd9b67b442f4d903747f4778e040513f860
   network_info_plus: 21d1cd6a015ccb2fdff06a1fbfa88d54b4e92f61
+  nsd_macos: 2bf2a077506c4aa72e448c0ee754e102624ade80
   open_file_mac: 76f06c8597551249bdb5e8fd8827a98eae0f4585
   package_info_plus: f0052d280d17aa382b932f399edf32507174e870
   photo_manager: c303e4476f6c220274119f0212a7753e45edd4a2

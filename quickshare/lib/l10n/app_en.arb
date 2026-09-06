@@ -389,5 +389,11 @@
   "inviteDeclined": "Declined",
   "inviteUnreachable": "Could not reach that device",
   "inviteBusy": "That device is deciding on another transfer",
-  "nearbySendTo": "Send straight to a device"
+  "nearbySendTo": "Send straight to a device",
+  "codeLabel": "Code for the receiving device",
+  "codeHint": "Type this on the other device if it is not in the list above",
+  "codeEnterPrompt": "Enter the code from the sender",
+  "codeEnterHint": "10 digits",
+  "codeNotFound": "No device nearby is offering that code",
+  "codeMalformed": "A code is 10 digits"
 }

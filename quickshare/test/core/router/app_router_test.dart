@@ -71,6 +71,13 @@ void main() {
         findsNothing,
         reason: '$path hit the global errorBuilder',
       );
+
+      // Tear the page down before the test ends. Some screens start real work
+      // when they appear — the receiving one announces this device on the
+      // local network — and leaving them mounted leaves that work running,
+      // which surfaces here as a pending timer rather than as the leak it is.
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
     });
   }
 }

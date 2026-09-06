@@ -8,8 +8,6 @@
 // is where the port number has to survive a round trip through a datagram.
 //
 // Skips itself where multicast is unavailable, as the discovery tests do.
-import 'dart:io';
-
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:quickshare/core/network/device_presence.dart';
@@ -21,16 +19,13 @@ void main() {
   late DevicePresence alice;
   late DevicePresence bob;
 
-  // A group of its own, so this file cannot hear the devices another test
-  // file is announcing. `flutter test` runs files in parallel, and two of them
-  // sharing the default group means `firstWhere(name == 'Bob Desktop')` can
-  // find somebody else's Bob — which is exactly what happened, and looked like
-  // an invitation port that failed to survive the announcement.
+  // A service type of its own, so this file cannot hear the devices another
+  // test file is announcing. `flutter test` runs files in parallel, and
+  // sharing the real type means `firstWhere(name == 'Bob Desktop')` can find
+  // somebody else's Bob — which is exactly what happened once already, and
+  // looked like an invitation port that failed to survive the announcement.
   DevicePresence isolated() => DevicePresence(
-        discovery: LanDiscoveryService(
-          group: InternetAddress('224.0.0.172'),
-          port: 53329,
-        ),
+        discovery: LanDiscoveryService(serviceType: '_ddhandshake._tcp'),
       );
 
   setUp(() {
@@ -179,8 +174,8 @@ void main() {
     final first =
         alice.current.firstWhere((p) => p.name == 'Bob Desktop').invitePort;
 
-    // Several more announcement rounds.
-    await Future<void>.delayed(LanDiscoveryService.announceInterval * 3);
+    // Several more resolution rounds.
+    await Future<void>.delayed(const Duration(seconds: 6));
     final later =
         alice.current.firstWhere((p) => p.name == 'Bob Desktop').invitePort;
 

@@ -816,4 +816,23 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get nearbySendTo => 'Send straight to a device';
+
+  @override
+  String get codeLabel => 'Code for the receiving device';
+
+  @override
+  String get codeHint =>
+      'Type this on the other device if it is not in the list above';
+
+  @override
+  String get codeEnterPrompt => 'Enter the code from the sender';
+
+  @override
+  String get codeEnterHint => '10 digits';
+
+  @override
+  String get codeNotFound => 'No device nearby is offering that code';
+
+  @override
+  String get codeMalformed => 'A code is 10 digits';
 }

@@ -1,211 +1,144 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nsd/nsd.dart' as nsd;
 
 import 'package:quickshare/core/network/lan_discovery.dart';
 
 void main() {
-  final here = InternetAddress('192.168.1.50');
-  final there = InternetAddress('192.168.1.77');
+  const announcement = DiscoveryAnnouncement(
+    id: 'peer-1',
+    name: 'Bob Desktop',
+    platform: 'windows',
+  );
 
-  DiscoveryAnnouncement announcement({
-    String id = 'peer-1',
-    String name = 'Pixel',
-    String platform = 'android',
-    int port = 0,
-    String fingerprint = '',
+  Uint8List bytes(String value) => Uint8List.fromList(utf8.encode(value));
+
+  /// A resolved service as the platform would hand one back.
+  nsd.Service service({
+    Map<String, Uint8List?>? txt,
+    List<InternetAddress>? addresses,
+    int port = 1,
   }) =>
-      DiscoveryAnnouncement(
-        id: id,
-        name: name,
-        platform: platform,
+      nsd.Service(
+        name: 'Bob Desktop',
+        type: LanDiscoveryService.serviceType,
         port: port,
-        tlsFingerprint: fingerprint,
+        addresses: addresses ?? [InternetAddress('192.168.1.42')],
+        txt: txt ?? announcement.toTxt(),
       );
 
-  group('DiscoveryAnnouncement', () {
-    test('survives a round trip', () {
-      final original = announcement(port: 8000, fingerprint: 'abc123');
-      final decoded = DiscoveryAnnouncement.decode(original.encode());
+  group('what this device publishes', () {
+    test('carries what it takes to draw a row and open a socket', () {
+      const serving = DiscoveryAnnouncement(
+        id: 'peer-1',
+        name: 'Bob Desktop',
+        platform: 'windows',
+        port: 8000,
+        tlsFingerprint: 'the-fingerprint',
+        invitePort: 62810,
+      );
 
-      expect(decoded, isNotNull);
-      expect(decoded!.id, equals(original.id));
-      expect(decoded.name, equals(original.name));
-      expect(decoded.platform, equals(original.platform));
-      expect(decoded.port, equals(8000));
-      expect(decoded.tlsFingerprint, equals('abc123'));
+      final peer = DiscoveryAnnouncement.peerFrom(service(txt: serving.toTxt()));
+
+      expect(peer, isNotNull);
+      expect(peer!.id, equals('peer-1'));
+      expect(peer.name, equals('Bob Desktop'));
+      expect(peer.platform, equals('windows'));
+      expect(peer.port, equals(8000));
+      expect(peer.tlsFingerprint, equals('the-fingerprint'));
+      expect(peer.invitePort, equals(62810));
+      expect(peer.isServing, isTrue);
+      expect(peer.acceptsInvitations, isTrue);
     });
 
-    test('an idle device carries neither a port nor a fingerprint', () {
+    test('an idle device advertises neither a port nor a fingerprint', () {
       // Both are session facts. A device that is merely present has no server
-      // and therefore no certificate, and every byte here goes out several
-      // times a second to everyone in the room.
-      final json = jsonDecode(utf8.decode(announcement().encode()))
-          as Map<String, dynamic>;
+      // and therefore no certificate, and a TXT record has a few hundred bytes
+      // to spend before it starts costing.
+      final txt = announcement.toTxt();
 
-      expect(json.containsKey('p'), isFalse);
-      expect(json.containsKey('tf'), isFalse);
+      expect(txt.containsKey('p'), isFalse);
+      expect(txt.containsKey('tf'), isFalse);
+      expect(txt.containsKey('ip'), isFalse);
     });
 
-    test('anything that is not ours decodes to null rather than throwing', () {
-      // This runs on every packet arriving on a shared multicast group, so a
-      // neighbour's unrelated traffic is an ordinary event.
-      expect(DiscoveryAnnouncement.decode(utf8.encode('not json')), isNull);
-      expect(DiscoveryAnnouncement.decode(utf8.encode('{}')), isNull);
-      expect(DiscoveryAnnouncement.decode(utf8.encode('[1,2,3]')), isNull);
-      expect(DiscoveryAnnouncement.decode(const [0xff, 0xfe, 0x00]), isNull);
-    });
+    test('a device that only receives says so, and is not "serving"', () {
+      const receiving = DiscoveryAnnouncement(
+        id: 'peer-1',
+        name: 'Bob Desktop',
+        platform: 'windows',
+        invitePort: 62810,
+      );
 
-    test('a future protocol version is ignored, not guessed at', () {
-      final future = jsonEncode({'v': 99, 'id': 'x', 'n': 'X', 'os': 'linux'});
-      expect(DiscoveryAnnouncement.decode(utf8.encode(future)), isNull);
-    });
+      final peer =
+          DiscoveryAnnouncement.peerFrom(service(txt: receiving.toTxt()));
 
-    test('an announcement missing a required field is refused', () {
-      final noName = jsonEncode({'v': 1, 'id': 'x', 'os': 'linux'});
-      final noId = jsonEncode({'v': 1, 'n': 'X', 'os': 'linux'});
-      expect(DiscoveryAnnouncement.decode(utf8.encode(noName)), isNull);
-      expect(DiscoveryAnnouncement.decode(utf8.encode(noId)), isNull);
-    });
-
-    test('a nonsense port reads as "not serving" rather than as a port', () {
-      final bad = jsonEncode(
-          {'v': 1, 'id': 'x', 'n': 'X', 'os': 'linux', 'p': 999999});
-      expect(DiscoveryAnnouncement.decode(utf8.encode(bad))!.port, equals(0));
-    });
-
-    test('the query packet is recognised and is not an announcement', () {
-      expect(DiscoveryAnnouncement.isQuery(DiscoveryAnnouncement.encodeQuery()),
-          isTrue);
-      expect(DiscoveryAnnouncement.isQuery(announcement().encode()), isFalse);
-      expect(DiscoveryAnnouncement.decode(DiscoveryAnnouncement.encodeQuery()),
-          isNull);
+      expect(peer!.acceptsInvitations, isTrue);
+      expect(peer.isServing, isFalse,
+          reason: 'ready to be sent to is not the same as offering something');
     });
   });
 
-  group('PeerRegistry', () {
-    test('a peer heard twice is one row, not two', () {
-      final registry = PeerRegistry();
-      final now = DateTime(2026, 9, 6, 12);
-
-      registry.record(announcement(), there, now);
-      registry.record(announcement(), there, now.add(const Duration(seconds: 1)));
-
-      expect(registry.visible(now.add(const Duration(seconds: 1))), hasLength(1));
+  group('reading somebody else', () {
+    test('a record from another version is ignored, not guessed at', () {
+      final txt = announcement.toTxt()..['v'] = bytes('99');
+      expect(DiscoveryAnnouncement.peerFrom(service(txt: txt)), isNull);
     });
 
-    test('a repeat that says nothing new reports no change', () {
-      // The list on screen redraws on every change this returns, and a
-      // heartbeat arrives every two seconds from every device in the room.
-      final registry = PeerRegistry();
-      final now = DateTime(2026, 9, 6, 12);
+    test('a record missing what a row needs is refused', () {
+      for (final key in ['id', 'n', 'os']) {
+        final txt = announcement.toTxt()..remove(key);
+        expect(DiscoveryAnnouncement.peerFrom(service(txt: txt)), isNull,
+            reason: 'without "$key" there is nothing to draw');
+      }
+    });
 
-      expect(registry.record(announcement(), there, now), isTrue);
+    test('a service with no address is refused', () {
+      // However well-formed the rest is, there is nothing to connect to.
       expect(
-        registry.record(announcement(), there,
-            now.add(const Duration(seconds: 1))),
-        isFalse,
+        DiscoveryAnnouncement.peerFrom(service(addresses: const [])),
+        isNull,
       );
     });
 
-    test('a peer that starts serving is a change worth redrawing for', () {
-      final registry = PeerRegistry();
-      final now = DateTime(2026, 9, 6, 12);
+    test('IPv4 is preferred when a device answers on both', () {
+      final peer = DiscoveryAnnouncement.peerFrom(service(addresses: [
+        InternetAddress('fe80::1'),
+        InternetAddress('192.168.1.42'),
+      ]));
 
-      registry.record(announcement(), there, now);
-      final changed = registry.record(
-        announcement(port: 8000, fingerprint: 'abc'),
-        there,
-        now.add(const Duration(seconds: 1)),
-      );
-
-      expect(changed, isTrue);
-      expect(registry.visible(now).single.isServing, isTrue);
+      expect(peer!.address.address, equals('192.168.1.42'));
     });
 
-    test('a peer that moved to another address is followed, not duplicated',
-        () {
-      final registry = PeerRegistry();
-      final now = DateTime(2026, 9, 6, 12);
-
-      registry.record(announcement(), there, now);
-      registry.record(announcement(), InternetAddress('192.168.1.99'), now);
-
-      final visible = registry.visible(now);
-      expect(visible, hasLength(1));
-      expect(visible.single.address.address, equals('192.168.1.99'));
+    test('a nonsense port reads as "not serving" rather than as a port', () {
+      final txt = announcement.toTxt()..['p'] = bytes('999999');
+      expect(DiscoveryAnnouncement.peerFrom(service(txt: txt))!.port, isZero);
     });
 
-    test('our own announcement never appears in the list', () {
-      // It comes straight back to us on the group, and a screen that means
-      // "devices near you" listing this device is nonsense.
-      final registry = PeerRegistry();
-      final now = DateTime(2026, 9, 6, 12);
+    test('bytes that are not text do not take the whole record down', () {
+      // TXT values are opaque binary on Apple platforms, so anything can turn
+      // up in one.
+      final txt = announcement.toTxt()
+        ..['tf'] = Uint8List.fromList([0xff, 0xfe, 0x00]);
 
-      final changed = registry.record(
-        announcement(id: 'me'),
-        here,
-        now,
-        ignoreId: 'me',
-      );
-
-      expect(changed, isFalse);
-      expect(registry.visible(now), isEmpty);
+      final peer = DiscoveryAnnouncement.peerFrom(service(txt: txt));
+      expect(peer, isNotNull);
+      expect(peer!.tlsFingerprint, isEmpty);
     });
 
-    test('a peer nobody has heard from disappears', () {
-      final registry = PeerRegistry();
-      final now = DateTime(2026, 9, 6, 12);
-
-      registry.record(announcement(), there, now);
-      final later = now.add(PeerRegistry.presenceTimeout * 2);
-
-      expect(registry.visible(later), isEmpty);
-      expect(registry.prune(later), isTrue);
-    });
-
-    test('one lost packet does not blink a device out of the list', () {
-      // Wi-Fi drops individual multicast datagrams routinely. The timeout is
-      // several announcement intervals for exactly this reason.
-      final registry = PeerRegistry();
-      final now = DateTime(2026, 9, 6, 12);
-
-      registry.record(announcement(), there, now);
-      final oneMissed = now.add(LanDiscoveryService.announceInterval * 2);
-
-      expect(registry.visible(oneMissed), hasLength(1));
-    });
-
-    test('two devices are two rows, newest first', () {
-      final registry = PeerRegistry();
-      final now = DateTime(2026, 9, 6, 12);
-
-      registry.record(announcement(id: 'a', name: 'Older'), there, now);
-      registry.record(
-        announcement(id: 'b', name: 'Newer'),
-        InternetAddress('192.168.1.88'),
-        now.add(const Duration(seconds: 1)),
-      );
-
-      final visible = registry.visible(now.add(const Duration(seconds: 1)));
-      expect(visible.map((p) => p.name), equals(['Newer', 'Older']));
-    });
-
-    test('pruning nothing reports nothing', () {
-      final registry = PeerRegistry();
-      final now = DateTime(2026, 9, 6, 12);
-
-      registry.record(announcement(), there, now);
-      expect(registry.prune(now), isFalse);
+    test('an empty TXT map is refused rather than crashing', () {
+      expect(DiscoveryAnnouncement.peerFrom(service(txt: {})), isNull);
     });
   });
 
   group('LanDiscoveryService', () {
-    test('the group is link-local, so it cannot leave the subnet', () {
-      // 224.0.0.0/24 is not forwarded by routers, which is exactly the reach
-      // "devices near you" should have.
-      expect(LanDiscoveryService.multicastGroup.address, startsWith('224.0.0.'));
+    test('advertises the service type both Apple platforms declare', () {
+      // iOS refuses to browse a type that is not in NSBonjourServices, so this
+      // string existing in both Info.plists is load-bearing.
+      expect(LanDiscoveryService.serviceType, equals('_directdrop._tcp'));
     });
 
     test('a service that never started stops without complaint', () async {

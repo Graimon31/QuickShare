@@ -19,32 +19,33 @@ import 'package:crypto/crypto.dart';
 /// as a QR where there is a camera, and as eight characters a person can read
 /// aloud where there is not.
 ///
-/// ## Why eight characters
+/// ## Why ten digits
 ///
-/// The alphabet below is 32 symbols, so each character is five bits and a code
-/// is 40. That is the whole strength of the passphrase too, since it is
-/// derived from this and nothing else — worth stating plainly rather than
-/// implying WPA2's usual margins. It is sized for what it defends: a network
-/// that exists for a single transfer, in radio range, for a couple of minutes.
-/// An attacker has to be in the room and has that long to try 10^12
-/// possibilities against an access point that answers as fast as radio allows.
+/// Digits, not letters, because this is read aloud across a table or typed on
+/// a phone keypad — and both are noticeably worse with an alphabet that mixes
+/// cases and shapes. Ten of them is 10^10, a shade over 33 bits.
 ///
-/// Ten characters would be 50 bits and is a one-line change if that trade ever
-/// looks wrong; the cost is two more characters to read out loud.
+/// That is the whole strength of the passphrase too, since it is derived from
+/// this and nothing else — worth stating plainly rather than implying WPA2's
+/// usual margins. It is sized for what it defends: a network that exists for
+/// one transfer, in radio range, for a couple of minutes, where an attacker
+/// has to be in the room and gets that long to try against an access point
+/// answering at radio speed.
 class SessionCode {
-  /// Crockford's Base32: the digits plus the letters, less `I`, `L`, `O` and
-  /// `U`. The first three are the pairs people mistype off a screen; `U` is
-  /// dropped so a derived string cannot spell something unfortunate.
-  ///
-  /// Exactly 32 symbols matters beyond readability: deriving a character is a
-  /// byte modulo the alphabet size, and only a power of two divides 256
-  /// evenly. At 31 the low characters would come up fractionally more often
-  /// than the high ones — a small bias, but a free one to avoid.
-  static const String alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  /// Digits only. What a person reads out or types on a numeric keypad.
+  static const String alphabet = '0123456789';
 
-  /// Grouped in fours with a dash when shown, which is how people read and
-  /// retype strings of this length without losing their place.
-  static const int length = 8;
+  /// Ten digits, shown in two groups of five.
+  static const int length = 10;
+
+  /// The alphabet the *derived* passphrase uses.
+  ///
+  /// Crockford's Base32, less `I`, `L`, `O` and `U`: the passphrase is
+  /// occasionally read off a screen and typed into a system Wi-Fi dialog by
+  /// hand, where those are the characters people get wrong. Exactly 32 symbols
+  /// matters beyond readability — deriving a character is a byte modulo the
+  /// alphabet size, and only a power of two divides 256 evenly.
+  static const String passphraseAlphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
   /// The canonical form: upper case, no separators.
   final String code;
@@ -71,9 +72,7 @@ class SessionCode {
   /// valid-looking code that derives the wrong network, surfacing later as
   /// "cannot connect" with nothing to point at.
   static SessionCode? parse(String input) {
-    final cleaned = input
-        .toUpperCase()
-        .replaceAll(RegExp(r'[\s\-—–_]'), '');
+    final cleaned = input.replaceAll(RegExp(r'[\s\-—–_()]'), '');
     if (cleaned.length != length) return null;
     for (final rune in cleaned.runes) {
       if (!alphabet.contains(String.fromCharCode(rune))) return null;
@@ -81,9 +80,12 @@ class SessionCode {
     return SessionCode(cleaned);
   }
 
-  /// How the code is shown to a person: `K7M2-P4QX`.
+  /// How the code is shown to a person: `12345 67890`.
+  ///
+  /// Split in the middle because ten unbroken digits is past what most people
+  /// hold in their head between glancing at one screen and typing on another.
   String get display =>
-      '${code.substring(0, 4)}-${code.substring(4)}';
+      '${code.substring(0, 5)} ${code.substring(5)}';
 
   /// Domain-separated derivation, so one output can never be read off another.
   ///
@@ -96,10 +98,19 @@ class SessionCode {
     final bytes = _derive(purpose);
     final buffer = StringBuffer();
     for (var i = 0; i < chars; i++) {
-      buffer.write(alphabet[bytes[i] % alphabet.length]);
+      buffer.write(passphraseAlphabet[bytes[i] % passphraseAlphabet.length]);
     }
     return buffer.toString();
   }
+
+  /// A public name for this session, safe to broadcast.
+  ///
+  /// The code itself must never go on the wire: it derives the session token,
+  /// so publishing it would hand the session to everyone in range. This is a
+  /// separate derivation with no way back to the code, which lets a receiver
+  /// who *was* told the code recognise the right sender among several without
+  /// telling anyone who was not.
+  String get publicId => _deriveString('cid', 8);
 
   /// What every network this app raises is called, before the derived part.
   ///

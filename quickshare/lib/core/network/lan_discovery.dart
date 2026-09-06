@@ -1,19 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:quickshare/core/network/network_info_service.dart';
+import 'package:nsd/nsd.dart' as nsd;
+
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// A device that has announced itself on this network, as last heard.
 ///
-/// The address is taken from the datagram's own sender rather than from a
-/// field inside it: a device that gets its address wrong — or lies about it —
-/// then simply cannot be reached, instead of poisoning the list with an
-/// address that belongs to somebody else.
+/// The address comes from the resolved mDNS record rather than from anything
+/// the device claims about itself in a payload: a device that gets its own
+/// address wrong then simply cannot be reached, instead of poisoning the list
+/// with an address belonging to somebody else.
 class DiscoveredPeer {
-  /// Stable across announcements from the same session, so a peer heard twice
-  /// is one row rather than two.
+  /// Stable for as long as the far side keeps announcing, so a device heard
+  /// twice is one row rather than two.
   final String id;
 
   /// What to show in the list. Chosen by the far side; treated as display text
@@ -27,8 +29,8 @@ class DiscoveredPeer {
 
   final InternetAddress address;
 
-  /// The QHTP port this peer serves on, or 0 when it is only listening for
-  /// invitations rather than offering a session.
+  /// The QHTP port this peer serves on, or 0 when it is only present rather
+  /// than offering a session.
   final int port;
 
   /// Certificate fingerprint to pin, when this peer is already serving. Empty
@@ -40,12 +42,15 @@ class DiscoveredPeer {
   ///
   /// Separate from [port], which is where its own files are served from: a
   /// device can be ready to receive without offering anything, and usually is.
-  /// Zero also covers a peer on a build from before invitations existed, which
-  /// simply never mentions the field.
   final int invitePort;
 
-  /// When this peer was last heard from, for [isStale].
-  final DateTime lastSeen;
+  /// Identifies the session this peer is offering, for somebody who was told
+  /// its code. Empty when the peer is not offering one.
+  ///
+  /// Derived from the code and not reversible: it lets a receiver who has the
+  /// code pick the right sender out of several, without telling everyone else
+  /// in range what the code is.
+  final String sessionPublicId;
 
   const DiscoveredPeer({
     required this.id,
@@ -53,9 +58,9 @@ class DiscoveredPeer {
     required this.platform,
     required this.address,
     required this.port,
-    required this.lastSeen,
     this.tlsFingerprint = '',
     this.invitePort = 0,
+    this.sessionPublicId = '',
   });
 
   /// Whether this peer is offering a session right now, as opposed to merely
@@ -65,31 +70,16 @@ class DiscoveredPeer {
   /// Whether this peer can be asked to accept a transfer.
   bool get acceptsInvitations => invitePort > 0;
 
-  bool isStale(DateTime now, Duration after) =>
-      now.difference(lastSeen) > after;
-
-  DiscoveredPeer copyWith({DateTime? lastSeen}) => DiscoveredPeer(
-        id: id,
-        name: name,
-        platform: platform,
-        address: address,
-        port: port,
-        tlsFingerprint: tlsFingerprint,
-        invitePort: invitePort,
-        lastSeen: lastSeen ?? this.lastSeen,
-      );
-
   @override
   String toString() =>
       'DiscoveredPeer($name, $platform, ${address.address}:$port)';
 }
 
-/// What one device shouts into the network so the others can list it.
+/// What one device publishes about itself, as DNS-SD TXT records.
 ///
-/// Deliberately small: every field costs bytes in a datagram that goes out
-/// several times a second to every device in the room, and anything that is
-/// not needed to *draw a row and open a socket* belongs in the session itself,
-/// behind the token.
+/// Deliberately small. Every value travels in a TXT record, which has a
+/// practical ceiling of a few hundred bytes, and anything not needed to *draw
+/// a row and open a socket* belongs in the session itself, behind the token.
 class DiscoveryAnnouncement {
   static const int version = 1;
 
@@ -98,9 +88,11 @@ class DiscoveryAnnouncement {
   final String platform;
   final int port;
   final String tlsFingerprint;
-
-  /// Where this device listens for invitations, or 0 when it is not.
   final int invitePort;
+
+  /// The public half of this session's code — see
+  /// [DiscoveredPeer.sessionPublicId]. Empty when nothing is on offer.
+  final String sessionPublicId;
 
   const DiscoveryAnnouncement({
     required this.id,
@@ -109,247 +101,210 @@ class DiscoveryAnnouncement {
     this.port = 0,
     this.tlsFingerprint = '',
     this.invitePort = 0,
+    this.sessionPublicId = '',
   });
 
-  /// A request for everyone present to announce themselves immediately.
-  ///
-  /// Without it a device that has just opened the app waits out a whole
-  /// announcement interval before anything appears on screen, which reads as
-  /// "nobody is here" rather than "still looking". A join is one packet and
-  /// the replies are the announcements that were going to be sent anyway.
-  static const String queryMarker = '?';
+  static Uint8List _bytes(String value) =>
+      Uint8List.fromList(utf8.encode(value));
 
-  Map<String, dynamic> toJson() => {
-        'v': version,
-        'id': id,
-        'n': name,
-        'os': platform,
-        if (port > 0) 'p': port,
-        if (tlsFingerprint.isNotEmpty) 'tf': tlsFingerprint,
-        if (invitePort > 0) 'ip': invitePort,
+  /// The TXT records this device advertises.
+  ///
+  /// Keys are kept to the short forms DNS-SD prefers — the specification
+  /// suggests nine characters or fewer, and a record repeated by every device
+  /// on the network several times a minute is not the place to spell things
+  /// out.
+  Map<String, Uint8List?> toTxt() => {
+        'v': _bytes('$version'),
+        'id': _bytes(id),
+        'n': _bytes(name),
+        'os': _bytes(platform),
+        if (port > 0) 'p': _bytes('$port'),
+        if (tlsFingerprint.isNotEmpty) 'tf': _bytes(tlsFingerprint),
+        if (invitePort > 0) 'ip': _bytes('$invitePort'),
+        if (sessionPublicId.isNotEmpty) 'cid': _bytes(sessionPublicId),
       };
 
-  List<int> encode() => utf8.encode(jsonEncode(toJson()));
-
-  /// The "everybody speak up" packet, which carries no payload of its own.
-  static List<int> encodeQuery() => utf8.encode(queryMarker);
-
-  static bool isQuery(List<int> datagram) {
-    if (datagram.length != 1) return false;
-    return datagram.first == queryMarker.codeUnitAt(0);
-  }
-
-  /// Parses one datagram, or returns null if it is not one of ours.
-  ///
-  /// Null rather than throwing because this runs on every packet arriving on a
-  /// multicast group that other software shares: a neighbour's unrelated
-  /// traffic is an ordinary event, not an error worth a stack trace.
-  static DiscoveryAnnouncement? decode(List<int> datagram) {
+  static String? _text(Map<String, Uint8List?>? txt, String key) {
+    final value = txt?[key];
+    if (value == null || value.isEmpty) return null;
     try {
-      final decoded = jsonDecode(utf8.decode(datagram));
-      if (decoded is! Map<String, dynamic>) return null;
-      if (decoded['v'] != version) return null;
-
-      final id = decoded['id'];
-      final name = decoded['n'];
-      final platform = decoded['os'];
-      if (id is! String || id.isEmpty) return null;
-      if (name is! String || name.isEmpty) return null;
-      if (platform is! String || platform.isEmpty) return null;
-
-      final port = decoded['p'];
-      final invitePort = decoded['ip'];
-      return DiscoveryAnnouncement(
-        id: id,
-        name: name,
-        platform: platform,
-        port: port is int && port > 0 && port < 65536 ? port : 0,
-        tlsFingerprint: decoded['tf'] as String? ?? '',
-        invitePort:
-            invitePort is int && invitePort > 0 && invitePort < 65536
-                ? invitePort
-                : 0,
-      );
+      return utf8.decode(value);
     } catch (_) {
+      // Opaque bytes on Apple platforms, so anything can turn up here.
       return null;
     }
   }
-}
 
-/// The list of peers currently on the network, kept from announcements.
-///
-/// Split out from the socket so the part with the rules in it — when a peer
-/// appears, when it is replaced, when it disappears — can be tested without a
-/// network at all. Everything here is synchronous and deterministic; the
-/// socket half only feeds it bytes and a clock.
-class PeerRegistry {
-  /// How long a peer survives without being heard from.
+  static int _number(Map<String, Uint8List?>? txt, String key) {
+    final raw = _text(txt, key);
+    final parsed = raw == null ? null : int.tryParse(raw);
+    if (parsed == null || parsed <= 0 || parsed > 65535) return 0;
+    return parsed;
+  }
+
+  /// Reads a resolved service, or returns null if it is not one of ours.
   ///
-  /// Three announcement intervals rather than one: Wi-Fi drops individual
-  /// multicast datagrams routinely, and a device blinking out of the list
-  /// because one packet was lost is worse than a device lingering two seconds
-  /// after it really left.
-  static const Duration presenceTimeout = Duration(seconds: 7);
+  /// Null rather than throwing: the same service type can be answered by an
+  /// older build, a half-resolved record, or something else entirely, and none
+  /// of those are worth unwinding the stack for.
+  static DiscoveredPeer? peerFrom(nsd.Service service) {
+    final txt = service.txt;
+    if (_text(txt, 'v') != '$version') return null;
 
-  final Map<String, DiscoveredPeer> _peers = {};
+    final id = _text(txt, 'id');
+    final name = _text(txt, 'n');
+    final platform = _text(txt, 'os');
+    if (id == null || id.isEmpty) return null;
+    if (name == null || name.isEmpty) return null;
+    if (platform == null || platform.isEmpty) return null;
 
-  /// Peers heard recently enough to still be there, most recently seen first.
-  List<DiscoveredPeer> visible(DateTime now) {
-    final live = _peers.values
-        .where((peer) => !peer.isStale(now, presenceTimeout))
-        .toList()
-      ..sort((a, b) => b.lastSeen.compareTo(a.lastSeen));
-    return live;
-  }
-
-  /// Records an announcement. Returns true when this changed what a list on
-  /// screen would show, so a caller can avoid rebuilding for a heartbeat that
-  /// says exactly what the last one did.
-  bool record(
-    DiscoveryAnnouncement announcement,
-    InternetAddress from,
-    DateTime now, {
-    String? ignoreId,
-  }) {
-    // Our own announcements come straight back to us on the multicast group.
-    // Listing yourself as a peer is not useful and is confusing on a screen
-    // that means "devices near you".
-    if (ignoreId != null && announcement.id == ignoreId) return false;
-
-    final existing = _peers[announcement.id];
-    final peer = DiscoveredPeer(
-      id: announcement.id,
-      name: announcement.name,
-      platform: announcement.platform,
-      address: from,
-      port: announcement.port,
-      tlsFingerprint: announcement.tlsFingerprint,
-      invitePort: announcement.invitePort,
-      lastSeen: now,
+    // Without an address there is nothing to connect to, however well-formed
+    // the rest of the record is. `firstWhere` with a fallback is not enough
+    // here: an empty list makes the fallback itself throw, and a resolve that
+    // came back with no addresses at all is an ordinary event rather than an
+    // error worth unwinding the stack for.
+    final addresses = service.addresses;
+    if (addresses == null || addresses.isEmpty) return null;
+    final address = addresses.firstWhere(
+      (a) => a.type == InternetAddressType.IPv4,
+      orElse: () => addresses.first,
     );
-    _peers[announcement.id] = peer;
 
-    if (existing == null) return true;
-    return existing.name != peer.name ||
-        existing.address != peer.address ||
-        existing.port != peer.port ||
-        existing.tlsFingerprint != peer.tlsFingerprint ||
-        existing.invitePort != peer.invitePort;
+    return DiscoveredPeer(
+      id: id,
+      name: name,
+      platform: platform,
+      address: address,
+      port: _number(txt, 'p'),
+      tlsFingerprint: _text(txt, 'tf') ?? '',
+      invitePort: _number(txt, 'ip'),
+      sessionPublicId: _text(txt, 'cid') ?? '',
+    );
   }
-
-  /// Drops peers nobody has heard from. Returns true if anything went.
-  bool prune(DateTime now) {
-    final before = _peers.length;
-    _peers.removeWhere((_, peer) => peer.isStale(now, presenceTimeout));
-    return _peers.length != before;
-  }
-
-  void clear() => _peers.clear();
 }
 
 /// Announces this device on the local network and lists the others.
 ///
-/// A plain UDP multicast group rather than mDNS: the discovery this needs is
-/// "who is running this app on this network", which is one packet in each
-/// direction, while a conforming mDNS responder is a protocol with a plugin
-/// and native code on all five platforms behind it. `RawDatagramSocket` is in
-/// `dart:io` and behaves the same everywhere.
+/// DNS-SD (Bonjour / mDNS) through each platform's own API, rather than a
+/// multicast socket of our own. That choice is forced rather than preferred:
+/// since iOS 14 an app may not send or receive arbitrary multicast without
+/// `com.apple.developer.networking.multicast`, an entitlement Apple grants by
+/// application and does not offer to free accounts at all. A socket bound to a
+/// group of our own simply fails there — "No route to host" on every send,
+/// which looks exactly like an empty room from the outside.
 ///
-/// Note the whole thing is best effort and says so: networks that block
-/// multicast — guest Wi-Fi, most captive portals, anything with client
-/// isolation — will produce an empty list forever, and the UI has to offer the
-/// QR path rather than leaving somebody staring at a spinner.
+/// mDNS is exempt because it goes through the system responder rather than a
+/// raw socket, and it is the same mechanism AirPlay and printers use. It also
+/// happens to be a standard, so this interoperates rather than only talking to
+/// itself.
+///
+/// Still best effort: networks that isolate clients — guest Wi-Fi, captive
+/// portals — carry no mDNS between devices either, and there the list stays
+/// empty however long anyone waits.
 class LanDiscoveryService {
-  /// Link-local scope: routers do not forward 224.0.0.0/24 beyond the subnet,
-  /// which is exactly the reach "devices near you" should have.
-  static final InternetAddress multicastGroup =
-      InternetAddress('224.0.0.171');
+  /// The DNS-SD service type. Already declared in `NSBonjourServices` on both
+  /// Apple platforms, without which iOS refuses to browse at all.
+  static const String serviceType = '_directdrop._tcp';
 
-  static const int multicastPort = 53319;
+  /// How long any single call into the platform's responder may take.
+  ///
+  /// Registration in particular can sit for a long time — the responder
+  /// retries under a new name on each conflict, and on a busy network that
+  /// adds up. None of that is worth a screen that never finishes loading: a
+  /// list that stays empty is a worse outcome than a list that says so, but
+  /// both beat a spinner that never stops.
+  static const Duration platformCallTimeout = Duration(seconds: 10);
 
-  /// How often a device repeats itself. Fast enough that a list feels live,
-  /// slow enough that ten devices in a room cost a handful of packets a
-  /// second between them.
-  static const Duration announceInterval = Duration(seconds: 2);
+  /// The type actually advertised. Overridable so two test files can run in
+  /// parallel without each one's devices turning up in the other's list —
+  /// the same isolation a separate multicast group used to give.
+  final String type;
 
-  final int port;
-  final InternetAddress group;
+  /// Timers behind the timeouts below, so they can be cancelled rather than
+  /// left to fire into a service that is already gone.
+  ///
+  /// `Future.timeout` schedules a timer nobody can reach, which outlives
+  /// [stop] and keeps a torn-down screen alive in a widget test — and, less
+  /// visibly, in the app.
+  final Set<Timer> _pendingTimeouts = {};
 
-  RawDatagramSocket? _socket;
-  Timer? _announceTimer;
-  Timer? _pruneTimer;
+  nsd.Registration? _registration;
+  nsd.Discovery? _discovery;
   DiscoveryAnnouncement? _self;
 
-  final NetworkInfoService _networkInfo = NetworkInfoService();
-  final PeerRegistry _registry = PeerRegistry();
+  final Map<String, DiscoveredPeer> _peers = {};
   final StreamController<List<DiscoveredPeer>> _peersController =
       StreamController<List<DiscoveredPeer>>.broadcast();
 
-  LanDiscoveryService({InternetAddress? group, int? port})
-      : group = group ?? multicastGroup,
-        port = port ?? multicastPort;
+  LanDiscoveryService({String? serviceType})
+      : type = serviceType ?? LanDiscoveryService.serviceType;
+
+  /// Bounds one call into the platform's responder, with a timer this service
+  /// can cancel.
+  Future<T> _bounded<T>(Future<T> call, String what) {
+    final completer = Completer<T>();
+    late final Timer timer;
+    timer = Timer(platformCallTimeout, () {
+      _pendingTimeouts.remove(timer);
+      if (!completer.isCompleted) {
+        completer.completeError(TimeoutException(what));
+      }
+    });
+    _pendingTimeouts.add(timer);
+
+    call.then((value) {
+      timer.cancel();
+      _pendingTimeouts.remove(timer);
+      if (!completer.isCompleted) completer.complete(value);
+    }, onError: (Object error, StackTrace stack) {
+      timer.cancel();
+      _pendingTimeouts.remove(timer);
+      if (!completer.isCompleted) completer.completeError(error, stack);
+    });
+
+    return completer.future;
+  }
 
   /// The current list, and every change to it.
   Stream<List<DiscoveredPeer>> get peers => _peersController.stream;
 
-  List<DiscoveredPeer> get current => _registry.visible(DateTime.now());
+  List<DiscoveredPeer> get current => List.unmodifiable(_peers.values);
 
-  bool get isRunning => _socket != null;
+  bool get isRunning => _discovery != null;
 
-  /// Starts listening, and announces [self] until [stop].
+  /// Starts browsing, and announces [self] until [stop].
   ///
-  /// Failure here is not fatal to anything: a device that cannot open the
-  /// group still transfers perfectly well over a scanned QR code, so this
-  /// reports the problem and returns false rather than throwing into a UI that
-  /// has a working alternative.
+  /// Failure is not fatal to anything: a device that cannot join the local
+  /// network still transfers perfectly well over a scanned QR code or a typed
+  /// code, so this reports the problem and returns false rather than throwing
+  /// into a UI that has a working alternative.
   Future<bool> start(DiscoveryAnnouncement self) async {
-    if (_socket != null) await stop();
+    if (_discovery != null) await stop();
     _self = self;
 
     try {
-      final lan = await _networkInfo.primaryLanInterface();
-      final socket = await RawDatagramSocket.bind(
-        InternetAddress.anyIPv4,
-        port,
-        reuseAddress: true,
-        reusePort: !Platform.isWindows, // Windows has no SO_REUSEPORT.
+      _discovery = await _bounded(
+        nsd.startDiscovery(
+          type,
+          // Resolved records carry the TXT payload and the addresses, which is
+          // the whole point — an unresolved name cannot be drawn or dialled.
+          autoResolve: true,
+          ipLookupType: nsd.IpLookupType.v4,
+        ),
+        'the responder did not start a browse in time',
       );
-      // Both halves have to name the interface, and for different reasons:
-      // joining on it is what makes the group's traffic arrive, and
-      // IP_MULTICAST_IF is what makes our own packets leave through it.
-      if (lan != null) {
-        socket.joinMulticast(group, lan);
-        _pinOutgoingInterface(socket, lan);
-      } else {
-        socket.joinMulticast(group);
-      }
-      socket.multicastLoopback = true;
-      _socket = socket;
+      _discovery!.addServiceListener(_onServiceEvent);
 
-      socket.listen(_onEvent, onError: (Object e) {
-        AppLogger.warning('Discovery socket error: $e', tag: 'DISCOVERY');
-      });
-
-      _announce();
-      _query();
-      _announceTimer = Timer.periodic(announceInterval, (_) => _announce());
-      _pruneTimer = Timer.periodic(announceInterval, (_) => _pruneNow());
+      await _publish(self);
 
       AppLogger.info(
-          'Announcing as "${self.name}" on ${group.address}:$port'
-          '${lan == null ? ' (no LAN interface found — using the default '
-              'route, which a VPN may own)' : ' via ${lan.name}'}',
-          tag: 'DISCOVERY');
+          'Announcing as "${self.name}" over $type', tag: 'DISCOVERY');
       return true;
-    } on SocketException catch (e) {
-      AppLogger.warning(
-          'Could not join the discovery group — this network may block '
-          'multicast; the QR path still works: ${e.message}',
-          tag: 'DISCOVERY');
-      await stop();
-      return false;
     } catch (e) {
-      AppLogger.warning('Discovery did not start: $e', tag: 'DISCOVERY');
+      AppLogger.warning(
+          'Local discovery unavailable on this network — the code path still '
+          'works: $e',
+          tag: 'DISCOVERY');
       await stop();
       return false;
     }
@@ -357,118 +312,116 @@ class LanDiscoveryService {
 
   /// Replaces what this device says about itself — used when a session opens
   /// and the announcement gains a port to dial.
-  void update(DiscoveryAnnouncement self) {
+  ///
+  /// DNS-SD has no "amend" operation, so this re-publishes. Kept off the
+  /// caller's mind because the alternative is every call site knowing that.
+  Future<void> update(DiscoveryAnnouncement self) async {
     _self = self;
-    if (_socket != null) _announce();
+    if (_discovery == null) return;
+    await _publish(self);
+  }
+
+  Future<void> _publish(DiscoveryAnnouncement self) async {
+    await _unpublish();
+
+    // DNS-SD requires a port, and it is the one a peer would actually dial:
+    // the invitation port when this device accepts transfers, the QHTP port
+    // when it is serving one, and otherwise a placeholder that says "present,
+    // nothing to open". The TXT records carry both explicitly, so nothing has
+    // to infer which case this is from the port alone.
+    final advertisedPort = self.invitePort > 0
+        ? self.invitePort
+        : (self.port > 0 ? self.port : 1);
+
+    try {
+      _registration = await _bounded(
+        nsd.register(
+          nsd.Service(
+            name: self.name,
+            type: type,
+            port: advertisedPort,
+            txt: self.toTxt(),
+          ),
+        ),
+        'the responder did not publish in time',
+      );
+    } catch (e) {
+      // Browsing without being listed is still useful: this device can see
+      // others and send to them, it just cannot be sent to.
+      AppLogger.warning('Not listed on this network: $e', tag: 'DISCOVERY');
+    }
+  }
+
+  Future<void> _unpublish() async {
+    final registration = _registration;
+    _registration = null;
+    if (registration == null) return;
+    try {
+      await _bounded(nsd.unregister(registration), 'unregister timed out');
+    } catch (_) {
+      // Already gone, or the responder went away with the network.
+    }
+  }
+
+  void _onServiceEvent(nsd.Service service, nsd.ServiceStatus status) {
+    final peer = DiscoveryAnnouncement.peerFrom(service);
+    if (peer == null) return;
+
+    // Our own registration comes back through the browser like any other.
+    // Listing this device on a screen that means "devices near you" is
+    // nonsense.
+    if (peer.id == _self?.id) return;
+
+    switch (status) {
+      case nsd.ServiceStatus.found:
+        _peers[peer.id] = peer;
+      case nsd.ServiceStatus.lost:
+        _peers.remove(peer.id);
+    }
+    _emit();
   }
 
   Future<void> stop() async {
-    _announceTimer?.cancel();
-    _announceTimer = null;
-    _pruneTimer?.cancel();
-    _pruneTimer = null;
-    try {
-      _socket?.leaveMulticast(group);
-    } catch (_) {
-      // Already gone, or never joined.
+    // First, before anything that can wait: a call still in flight is exactly
+    // the case this is unwinding, and cancelling its timeout at the end of the
+    // method means never reaching it. That left a ten-second timer alive after
+    // the screen was gone.
+    _cancelPendingTimeouts();
+
+    final discovery = _discovery;
+    _discovery = null;
+    await _unpublish();
+    if (discovery != null) {
+      discovery.removeServiceListener(_onServiceEvent);
+      try {
+        await _bounded(nsd.stopDiscovery(discovery), 'stop timed out');
+      } catch (_) {
+        // Nothing left to stop.
+      }
     }
-    _socket?.close();
-    _socket = null;
-    _registry.clear();
+    _cancelPendingTimeouts();
+    _peers.clear();
     _self = null;
   }
 
+  void _cancelPendingTimeouts() {
+    for (final timer in _pendingTimeouts) {
+      timer.cancel();
+    }
+    _pendingTimeouts.clear();
+  }
+
   Future<void> dispose() async {
+    // Synchronously, before the first await: whoever is tearing this down may
+    // itself be inside an async teardown, and a timer that survives until the
+    // next microtask is a timer that outlives the screen.
+    _cancelPendingTimeouts();
     await stop();
     await _peersController.close();
   }
 
-  /// `IP_MULTICAST_IF` — sends through [interface] rather than through
-  /// whatever the routing table prefers.
-  ///
-  /// This is the difference between discovery working and silently doing
-  /// nothing on any machine with an always-on VPN: the tunnel holds the
-  /// default route, so without this every announcement leaves into it and no
-  /// device on the actual network ever hears one. The symptom is an empty
-  /// list, identical to a network that blocks multicast.
-  ///
-  /// The option number is not portable — BSD (so macOS and iOS) and Windows
-  /// use 9, Linux and Android use 32 — and there is no constant for it in
-  /// `dart:io`.
-  void _pinOutgoingInterface(RawDatagramSocket socket, NetworkInterface interface) {
-    final address = interface.addresses
-        .where((a) => a.type == InternetAddressType.IPv4)
-        .firstOrNull;
-    if (address == null) return;
-
-    final optionValue = Platform.isLinux || Platform.isAndroid ? 32 : 9;
-    try {
-      socket.setRawOption(RawSocketOption(
-        RawSocketOption.levelIPv4,
-        optionValue,
-        address.rawAddress,
-      ));
-    } on OSError catch (e) {
-      // Not fatal: the socket still works, it just may send through the wrong
-      // interface. Worth a line, because that is the shape of the bug.
-      AppLogger.warning(
-          'Could not pin discovery to ${interface.name}: ${e.message}',
-          tag: 'DISCOVERY');
-    } catch (e) {
-      AppLogger.warning('Could not pin discovery to ${interface.name}: $e',
-          tag: 'DISCOVERY');
-    }
-  }
-
-  void _onEvent(RawSocketEvent event) {
-    if (event != RawSocketEvent.read) return;
-    final datagram = _socket?.receive();
-    if (datagram == null) return;
-
-    if (DiscoveryAnnouncement.isQuery(datagram.data)) {
-      // Somebody just arrived and wants the room to speak up.
-      _announce();
-      return;
-    }
-
-    final announcement = DiscoveryAnnouncement.decode(datagram.data);
-    if (announcement == null) return;
-
-    final changed = _registry.record(
-      announcement,
-      datagram.address,
-      DateTime.now(),
-      ignoreId: _self?.id,
-    );
-    if (changed) _emit();
-  }
-
-  void _announce() {
-    final self = _self;
-    final socket = _socket;
-    if (self == null || socket == null) return;
-    try {
-      socket.send(self.encode(), group, port);
-    } on SocketException catch (e) {
-      AppLogger.warning('Announcement not sent: ${e.message}',
-          tag: 'DISCOVERY');
-    }
-  }
-
-  void _query() {
-    try {
-      _socket?.send(DiscoveryAnnouncement.encodeQuery(), group, port);
-    } on SocketException {
-      // The periodic announcements still bring the list up, just slower.
-    }
-  }
-
-  void _pruneNow() {
-    if (_registry.prune(DateTime.now())) _emit();
-  }
-
   void _emit() {
     if (_peersController.isClosed) return;
-    _peersController.add(_registry.visible(DateTime.now()));
+    _peersController.add(List.unmodifiable(_peers.values));
   }
 }

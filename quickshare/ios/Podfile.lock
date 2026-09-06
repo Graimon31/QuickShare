@@ -100,6 +100,8 @@ PODS:
   - nanopb/encode (2.30910.0)
   - network_info_plus (0.0.1):
     - Flutter
+  - nsd_ios (0.0.1):
+    - Flutter
   - open_file_ios (1.0.3):
     - Flutter
   - package_info_plus (0.4.5):
@@ -131,6 +133,7 @@ DEPENDENCIES:
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - mobile_scanner (from `.symlinks/plugins/mobile_scanner/ios`)
   - network_info_plus (from `.symlinks/plugins/network_info_plus/ios`)
+  - nsd_ios (from `.symlinks/plugins/nsd_ios/ios`)
   - open_file_ios (from `.symlinks/plugins/open_file_ios/ios`)
   - package_info_plus (from `.symlinks/plugins/package_info_plus/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
@@ -177,6 +180,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/mobile_scanner/ios"
   network_info_plus:
     :path: ".symlinks/plugins/network_info_plus/ios"
+  nsd_ios:
+    :path: ".symlinks/plugins/nsd_ios/ios"
   open_file_ios:
     :path: ".symlinks/plugins/open_file_ios/ios"
   package_info_plus:
@@ -213,6 +218,7 @@ SPEC CHECKSUMS:
   mobile_scanner: 92e8812bf22a8f84131e2a7f9d0f44dad1a4742b
   nanopb: 438bc412db1928dac798aa6fd75726007be04262
   network_info_plus: cf61925ab5205dce05a4f0895989afdb6aade5fc
+  nsd_ios: d2eedc5904efa30a0e36d42f2501a39fd7fbe73f
   open_file_ios: c1143c28b4c65f721cdd58d9fba2f7a1c55206cd
   package_info_plus: af8e2ca6888548050f16fa2f1938db7b5a5df499
   permission_handler_apple: 92d754bbaa7361d436db2d6c3c1c2a0fdcec462e

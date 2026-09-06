@@ -38,6 +38,18 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
   /// before the first is answered.
   bool _inviting = false;
 
+  /// The certificate a receiver has to pin, read back out of the QR payload.
+  ///
+  /// It lives there rather than on the session, and decoding what is already
+  /// on screen beats threading one more field through the bloc.
+  static String _fingerprintOf(QRReady state) {
+    try {
+      return QRPayload.decode(state.qrData).tlsFingerprint;
+    } catch (_) {
+      return '';
+    }
+  }
+
   /// Offers this session to one device and reports what came back.
   ///
   /// The receiver fetches the files itself once it agrees — the sender's
@@ -63,12 +75,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     // The fingerprint lives in the QR payload rather than on the session:
     // decoding what we are already showing beats threading it through the
     // bloc for one field.
-    String fingerprint;
-    try {
-      fingerprint = QRPayload.decode(state.qrData).tlsFingerprint;
-    } catch (_) {
-      fingerprint = '';
-    }
+    final fingerprint = _fingerprintOf(state);
 
     setState(() => _inviting = true);
     messenger.showSnackBar(SnackBar(content: Text(l10n.inviteAsking)));
@@ -237,6 +244,17 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         // other.
                         NearbyDevicesPanel(
                           onSelected: (peer) => _invite(context, peer, state),
+                          // What a receiver who was told the code matches
+                          // against. Derived from the code and not reversible,
+                          // so it identifies this session without handing it
+                          // to everyone in range.
+                          serving: state.code == null
+                              ? null
+                              : ServingSession(
+                                  port: state.session.serverPort,
+                                  tlsFingerprint: _fingerprintOf(state),
+                                  publicId: state.code!.publicId,
+                                ),
                         ),
                         const SizedBox(height: 28),
 
@@ -327,13 +345,27 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         ).animate().scale(delay: 150.ms, duration: 350.ms),
 
                         const SizedBox(height: 20),
-                        CopyValueRow(
-                          icon: Icons.link,
-                          label: l10n.qrDisplayShareLinkLabel,
-                          value: shareLink,
-                          copiedMessage: l10n.qrDisplayLinkCopied,
-                          copyTooltip: l10n.commonCopy,
-                        ).animate().fadeIn(delay: 250.ms),
+                        // A link is the only thing that travels when the two
+                        // people are not together, so the internet transport
+                        // keeps it. On the local ones they are in the same
+                        // room, where ten digits read aloud beat a link that
+                        // has to go through a messenger to get across.
+                        if (isInternet)
+                          CopyValueRow(
+                            icon: Icons.link,
+                            label: l10n.qrDisplayShareLinkLabel,
+                            value: shareLink,
+                            copiedMessage: l10n.qrDisplayLinkCopied,
+                            copyTooltip: l10n.commonCopy,
+                          ).animate().fadeIn(delay: 250.ms)
+                        else if (state.code != null)
+                          CopyValueRow(
+                            icon: Icons.pin_rounded,
+                            label: l10n.codeLabel,
+                            value: state.code!.display,
+                            copiedMessage: l10n.qrDisplayLinkCopied,
+                            copyTooltip: l10n.commonCopy,
+                          ).animate().fadeIn(delay: 250.ms),
 
                         const SizedBox(height: 20),
 

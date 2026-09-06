@@ -15,6 +15,7 @@ import 'package:quickshare/features/sender/data/indexer/transfer_selection.dart'
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
+import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
@@ -153,6 +154,14 @@ class QRReady extends SenderState {
   final String? folderName;
   final int totalBytes;
 
+  /// The short numeric code for this session, on the transports where one is
+  /// offered.
+  ///
+  /// Null for the internet transport, which hands over a link instead: the two
+  /// devices are not in the same room there, so reading digits aloud is not an
+  /// option and the link is the only thing that travels.
+  final SessionCode? code;
+
   const QRReady(
     this.qrData,
     this.session,
@@ -161,11 +170,13 @@ class QRReady extends SenderState {
     this.itemCount = 1,
     this.folderName,
     this.totalBytes = 0,
+    this.code,
   });
 
   @override
   List<Object?> get props =>
-      [qrData, session, mode, webLinkUrl, itemCount, totalBytes, folderName];
+      [qrData, session, mode, webLinkUrl, itemCount, totalBytes, folderName,
+       code];
 }
 
 /// Bluetooth is advertising and waiting for a receiver that scanned [qrData].
@@ -702,8 +713,15 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
     emit(const ServerStarting());
     _subscribeToWifiProgress();
+
+    // One code decides the session's token, so somebody who was read the
+    // digits can open it without anything else travelling between the two
+    // devices.
+    final sessionCode = SessionCode.generate();
+
     final result = await repository.startQhtpTransfer(
       event.paths,
+      authToken: sessionCode.sessionToken,
       onIndexProgress: (items, bytes) {
         // Safe to emit from here: the walk runs inside this handler's await,
         // so the emitter is still open. The generation check keeps a
@@ -735,7 +753,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         qrResult.fold(
           (failure) => emit(SenderError(failure.message)),
           (qrData) {
-            emit(QRReady(qrData, session, mode));
+            emit(QRReady(qrData, session, mode, code: sessionCode));
           },
         );
       },
