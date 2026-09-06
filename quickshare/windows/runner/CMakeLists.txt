@@ -8,6 +8,7 @@ project(runner LANGUAGES CXX)
 # Any new source files that you add to the application should be added here.
 add_executable(${BINARY_NAME} WIN32
   "flutter_window.cpp"
+  "hotspot_plugin.cpp"
   "main.cpp"
   "utils.cpp"
   "win32_window.cpp"
@@ -19,6 +20,11 @@ add_executable(${BINARY_NAME} WIN32
 # Apply the standard set of build settings. This can be removed for applications
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
+
+# hotspot_plugin.cpp needs two things beyond the defaults: wlanapi for the
+# nearby-network list, and windowsapp for the C++/WinRT projection that drives
+# Wi-Fi Direct. Neither is linked by a stock Flutter runner.
+target_link_libraries(${BINARY_NAME} PRIVATE wlanapi windowsapp)
 
 # Add preprocessor definitions for the build version.
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")

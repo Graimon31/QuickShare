@@ -98,7 +98,8 @@ class LocalHotspotService {
   /// asks it there and refuses with something the user can act on, because
   /// that question needs a process to answer and this getter has to be cheap
   /// enough to call while drawing a screen.
-  bool get canHost => Platform.isAndroid || Platform.isLinux;
+  bool get canHost =>
+      Platform.isAndroid || Platform.isLinux || Platform.isWindows;
 
   /// True when this platform can join one from inside the app.
   ///
@@ -133,9 +134,21 @@ class LocalHotspotService {
     }
     if (Platform.isLinux) return _startHostingOnLinux();
 
+    // Windows is told what to call the network; Android names its own and
+    // ignores these. Both answers come back the same way, so the caller does
+    // not have to care which happened.
+    //
+    // The pair comes from a session code so the far side can derive it rather
+    // than be told it — the same reasoning as everywhere else, and the reason
+    // this is not a random string.
+    final code = SessionCode.generate();
+
     try {
       final result = await _methodChannel
-          .invokeMethod<Map<Object?, Object?>>('startHotspot');
+          .invokeMethod<Map<Object?, Object?>>('startHotspot', {
+        'ssid': code.ssid,
+        'passphrase': code.passphrase,
+      });
       if (result == null) {
         throw const HotspotException(
             'the platform returned no hotspot details');

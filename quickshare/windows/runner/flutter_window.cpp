@@ -4,6 +4,8 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
+#include "hotspot_plugin.h"
+
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
@@ -25,6 +27,8 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  directdrop::HotspotPlugin::RegisterWithRegistrar(
+      flutter_controller_->engine()->GetRegistrarForPlugin("HotspotPlugin"));
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
