@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+import 'package:quickshare/core/network/linux_hotspot.dart';
+import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// Credentials for a temporary Wi-Fi network raised by the sender.
@@ -81,11 +83,22 @@ class LocalHotspotService {
 
   final MethodChannel _methodChannel;
 
-  LocalHotspotService({MethodChannel? channel})
-      : _methodChannel = channel ?? _channel;
+  /// Linux is driven through NetworkManager rather than a native plugin —
+  /// see [LinuxHotspot] for why.
+  final LinuxHotspot _linux;
+
+  LocalHotspotService({MethodChannel? channel, LinuxHotspot? linux})
+      : _methodChannel = channel ?? _channel,
+        _linux = linux ?? LinuxHotspot();
 
   /// True when this platform can raise a network for the other device.
-  bool get canHost => Platform.isAndroid;
+  ///
+  /// A platform answer, not a hardware one: on Linux plenty of adapters cannot
+  /// act as an access point at all, and only the driver knows. [startHosting]
+  /// asks it there and refuses with something the user can act on, because
+  /// that question needs a process to answer and this getter has to be cheap
+  /// enough to call while drawing a screen.
+  bool get canHost => Platform.isAndroid || Platform.isLinux;
 
   /// True when this platform can join one from inside the app.
   ///
@@ -118,6 +131,8 @@ class LocalHotspotService {
           '${Platform.operatingSystem} cannot create a hotspot from inside an '
           'app; the other device has to host');
     }
+    if (Platform.isLinux) return _startHostingOnLinux();
+
     try {
       final result = await _methodChannel
           .invokeMethod<Map<Object?, Object?>>('startHotspot');
@@ -136,6 +151,7 @@ class LocalHotspotService {
 
   Future<void> stopHosting() async {
     if (!canHost) return;
+    if (Platform.isLinux) return _linux.stop();
     try {
       await _methodChannel.invokeMethod<void>('stopHotspot');
     } on PlatformException catch (e) {
@@ -152,6 +168,19 @@ class LocalHotspotService {
   /// through CoreWLAN and needs no prompt, but does leave the Mac off whatever
   /// network it was on — [stopHosting] puts it back.
   Future<void> join(HotspotCredentials credentials) async {
+    if (Platform.isLinux) {
+      try {
+        await _linux.join(
+          ssid: credentials.ssid,
+          passphrase: credentials.passphrase,
+        );
+        AppLogger.info('Joined ${credentials.ssid}', tag: 'HOTSPOT');
+        return;
+      } on HotspotCommandException catch (e) {
+        throw HotspotException(e.message);
+      }
+    }
+
     try {
       await _methodChannel.invokeMethod<void>('joinHotspot', {
         'ssid': credentials.ssid,
@@ -172,6 +201,13 @@ class LocalHotspotService {
   /// that one the user can act on.
   Future<List<String>> scanForNetworks({String? prefix}) async {
     if (!canScanForNetworks) return const [];
+    if (Platform.isLinux) {
+      try {
+        return await _linux.scan(prefix: prefix);
+      } on HotspotCommandException catch (e) {
+        throw HotspotException(e.message);
+      }
+    }
     try {
       final found = await _methodChannel.invokeMethod<List<Object?>>(
         'scanForNetworks',
@@ -231,6 +267,8 @@ class LocalHotspotService {
   /// leaving somebody stranded there with no explanation is worse than the
   /// transfer was good.
   Future<String?> currentSsid() async {
+    if (Platform.isLinux) return _linux.currentSsid();
+
     try {
       return await _methodChannel.invokeMethod<String>('currentSsid');
     } on MissingPluginException {
@@ -238,6 +276,49 @@ class LocalHotspotService {
     } on PlatformException {
       return null;
     }
+  }
+
+  /// Raises the network through NetworkManager, having first asked the driver
+  /// whether it can.
+  ///
+  /// The capability check is here rather than in [canHost] because it costs a
+  /// process, and because failing at this point can say what is wrong: an
+  /// adapter with no AP mode is a fact about the hardware, and telling someone
+  /// to host from the other device is more use than "could not create
+  /// network".
+  Future<HotspotCredentials> _startHostingOnLinux() async {
+    if (!await _linux.isAvailable) {
+      throw const HotspotException(
+          'NetworkManager is not running, so this machine cannot create a '
+          'network. The other device can host instead.');
+    }
+    if (!await _linux.canHost) {
+      throw const HotspotException(
+          "This machine's Wi-Fi adapter cannot act as an access point. The "
+          'other device has to create the network.');
+    }
+
+    // Both halves come from a session code, which is the point of having one:
+    // the far side derives the same pair from the code it was shown, so
+    // nothing about the network has to be transmitted. `startHosting` does not
+    // take the code yet — the sender still has to thread it through — so one
+    // is minted here and its name and passphrase used.
+    final code = SessionCode.generate();
+    final credentials = HotspotCredentials(
+      ssid: code.ssid,
+      passphrase: code.passphrase,
+    );
+
+    try {
+      await _linux.start(
+        ssid: credentials.ssid,
+        passphrase: credentials.passphrase,
+      );
+    } on HotspotCommandException catch (e) {
+      throw HotspotException(e.message);
+    }
+
+    return credentials.withHost(await awaitHotspotAddress());
   }
 
   /// Waits for the hotspot interface to be assigned an address.
