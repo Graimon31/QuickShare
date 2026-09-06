@@ -2,6 +2,8 @@
 
 #include <optional>
 
+#include <flutter/plugin_registrar_windows.h>
+
 #include "flutter/generated_plugin_registrant.h"
 
 #include "hotspot_plugin.h"
@@ -27,8 +29,14 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  // GetRegistrarForPlugin returns the C-level ref; the C++ wrapper that owns
+  // plugin lifetime comes from the registrar manager, which is what
+  // AddPlugin needs.
   directdrop::HotspotPlugin::RegisterWithRegistrar(
-      flutter_controller_->engine()->GetRegistrarForPlugin("HotspotPlugin"));
+      flutter::PluginRegistrarManager::GetInstance()
+          ->GetRegistrar<flutter::PluginRegistrarWindows>(
+              flutter_controller_->engine()->GetRegistrarForPlugin(
+                  "HotspotPlugin")));
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {

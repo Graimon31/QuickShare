@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <variant>
 
 namespace directdrop {
 
@@ -32,12 +33,12 @@ namespace directdrop {
 // The catch is that the two cannot run at once — Windows gives Mobile Hotspot
 // priority — so hosting fails while the user has that switched on, and says
 // so.
-class HotspotPlugin {
+class HotspotPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows* registrar);
 
   HotspotPlugin();
-  ~HotspotPlugin();
+  ~HotspotPlugin() override;
 
   HotspotPlugin(const HotspotPlugin&) = delete;
   HotspotPlugin& operator=(const HotspotPlugin&) = delete;
