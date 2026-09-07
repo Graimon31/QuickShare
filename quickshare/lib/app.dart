@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/localization/locale_controller.dart';
+import 'package:quickshare/core/network/app_presence.dart';
 import 'package:quickshare/core/network/hotspot_lifecycle_guard.dart';
 import 'package:quickshare/core/router/app_router.dart';
 import 'package:quickshare/core/theme/app_theme.dart';
@@ -40,12 +41,16 @@ class _DirectDropAppState extends State<DirectDropApp> {
     });
     _deepLinks.init();
     _hotspotGuard.attach();
+    // Discoverable for as long as the app is open, rather than only on the
+    // screens that happen to draw a list — see [AppPresence].
+    unawaited(AppPresence.instance.start());
   }
 
   @override
   void dispose() {
     _payloadSub?.cancel();
     _hotspotGuard.detach();
+    unawaited(AppPresence.instance.stop());
     _deepLinks.dispose();
     super.dispose();
   }

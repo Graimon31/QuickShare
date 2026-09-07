@@ -145,6 +145,10 @@ class _NearbyDevicesPanelState extends State<NearbyDevicesPanel> {
 
   @override
   void dispose() {
+    // The presence outlives this screen now, so a session announced here would
+    // otherwise keep being advertised after the screen that owned it is gone —
+    // and a receiver would find a sender with nothing left to give.
+    if (widget.serving != null) _presence.noLongerServing();
     _subscription?.cancel();
     // Not awaited: dispose cannot be async, and the socket closing a moment
     // after the screen is gone harms nothing.

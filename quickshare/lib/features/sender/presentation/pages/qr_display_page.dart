@@ -11,6 +11,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
+import 'package:quickshare/core/network/app_presence.dart';
 import 'package:quickshare/core/network/device_presence.dart';
 import 'package:quickshare/core/network/lan_discovery.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
@@ -243,6 +244,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         // but two desktops have nothing to point at each
                         // other.
                         NearbyDevicesPanel(
+                          presence: AppPresence.instance.presence,
                           onSelected: (peer) => _invite(context, peer, state),
                           // What a receiver who was told the code matches
                           // against. Derived from the code and not reversible,

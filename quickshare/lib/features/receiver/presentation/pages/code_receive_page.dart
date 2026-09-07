@@ -9,10 +9,9 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
-import 'package:quickshare/core/network/device_presence.dart';
+import 'package:quickshare/core/network/app_presence.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
-import 'package:quickshare/shared/widgets/invitation_dialog.dart';
 import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
@@ -29,10 +28,9 @@ class CodeReceivePage extends StatefulWidget {
 class _CodeReceivePageState extends State<CodeReceivePage> {
   final _controller = TextEditingController();
 
-  /// Owned here rather than inside the panel, because the typed code has to be
-  /// matched against the same list the panel is drawing — a code names a
-  /// session, and the session is on one of the devices already discovered.
-  final DevicePresence _presence = DevicePresence();
+  /// The app's own presence, not one of this screen's making: being
+  /// discoverable is not a property of standing on this page, and the typed
+  /// code is matched against the same list the panel draws.
   String? _inputError;
   bool _isSubmitting = false;
 
@@ -48,7 +46,6 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
 
   @override
   void dispose() {
-    unawaited(_presence.dispose());
     _controller.dispose();
     super.dispose();
   }
@@ -107,7 +104,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
   Future<void> _startFromCode(SessionCode code) async {
     final l10n = AppLocalizations.of(context);
 
-    final match = _presence.current
+    final match = (AppPresence.instance.presence?.current ?? const [])
         .where((peer) => peer.sessionPublicId == code.publicId)
         .firstOrNull;
 
@@ -194,12 +191,8 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
         // listed device is one that can see *us*, and the transfer starts when
         // one of them asks.
         NearbyDevicesPanel(
-          presence: _presence,
+          presence: AppPresence.instance.presence,
           onSelected: (_) {},
-          onInvitation: (invitation) async {
-            if (!mounted) return false;
-            return showInvitationDialog(context, invitation);
-          },
         ),
         const SizedBox(height: 24),
         Text(

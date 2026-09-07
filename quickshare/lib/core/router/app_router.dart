@@ -65,7 +65,14 @@ CustomTransitionPage<void> _qsPage(
 /// BLoC providers are scoped to their respective feature routes
 /// using ShellRoute to ensure proper lifecycle management.
 class AppRouter {
+  /// The app's navigator, so something without a screen of its own — an
+  /// invitation arriving from another device — can still put a dialog in front
+  /// of whoever is using it.
+  static final GlobalKey<NavigatorState> navigatorKey =
+      GlobalKey<NavigatorState>();
+
   static final GoRouter router = GoRouter(
+    navigatorKey: navigatorKey,
     initialLocation: '/',
     routes: [
       // Home

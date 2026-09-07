@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:quickshare/app.dart';
 import 'package:quickshare/core/di/service_locator.dart';
-import 'package:quickshare/core/network/device_presence.dart';
+import 'package:quickshare/core/network/app_presence.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
@@ -96,37 +96,28 @@ Future<void> _reportWifiCapabilities() async {
   }
 }
 
-/// Whether this device can announce itself on the local network, said once at
-/// startup.
+/// Whether this device is discoverable, said once at startup.
 ///
 /// The same reasoning as the Wi-Fi line above, and for a failure with the same
-/// shape: discovery not working looks identical to nobody being nearby, and
-/// the difference is a permission on some platforms and a network on others.
-/// On macOS 15 and iOS this is also what triggers the system's local-network
-/// prompt, which has to happen once before any of it works.
+/// shape: not being discoverable looks identical to nobody being nearby, and
+/// the difference is a permission on some platforms and the network on others.
+///
+/// Reports on the app's own presence rather than raising one of its own — two
+/// would announce this device twice and each would list it against itself.
 Future<void> _reportDiscovery() async {
-  final presence = DevicePresence();
   try {
-    final announcing = await presence.start(name: DevicePresence.describeThisDevice());
-    if (!announcing) {
-      AppLogger.warning(
-          'Discovery: this device is not announcing — on Apple platforms check '
-          'Local Network permission, otherwise the network is blocking it',
-          tag: 'DISCOVERY');
-      return;
-    }
-    // Long enough for the responder to publish and for anything already out
-    // there to answer.
     // Long enough for the responder to publish and for anything already out
     // there to answer.
     await Future<void>.delayed(const Duration(seconds: 5));
+    final presence = AppPresence.instance.presence;
+    if (presence == null) {
+      AppLogger.warning('Discovery: no presence was started', tag: 'DISCOVERY');
+      return;
+    }
     AppLogger.info(
-        'Discovery: announcing, ${presence.current.length} other device(s) '
-        'visible',
+        'Discovery: ${presence.current.length} other device(s) visible',
         tag: 'DISCOVERY');
   } catch (e) {
     AppLogger.warning('Discovery probe failed: $e', tag: 'DISCOVERY');
-  } finally {
-    await presence.dispose();
   }
 }
