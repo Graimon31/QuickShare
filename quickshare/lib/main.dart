@@ -117,6 +117,8 @@ Future<void> _reportDiscovery() async {
     }
     // Long enough for the responder to publish and for anything already out
     // there to answer.
+    // Long enough for the responder to publish and for anything already out
+    // there to answer.
     await Future<void>.delayed(const Duration(seconds: 5));
     AppLogger.info(
         'Discovery: announcing, ${presence.current.length} other device(s) '

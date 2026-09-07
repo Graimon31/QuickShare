@@ -233,6 +233,25 @@ class LanDiscoveryService {
   DiscoveryAnnouncement? _self;
 
   final Map<String, DiscoveredPeer> _peers = {};
+
+  /// Re-reads what the browser has collected, on a timer.
+  ///
+  /// A service is announced once and resolved once, and the two can race: a
+  /// device that appears while we are already browsing is reported the instant
+  /// its announcement lands, which is sometimes before its TXT record and
+  /// address are available to read. That record parses to nothing, and with
+  /// only a one-shot "found" event it would never be looked at again — so the
+  /// device that turned up second stayed invisible for as long as the screen
+  /// was open, while one that was already there when browsing began appeared
+  /// straight away.
+  ///
+  /// The browser keeps the full list regardless of whether we could read an
+  /// entry, so going back over it is enough to catch up.
+  Timer? _reconcile;
+
+  /// How often to go back over the browser's list. Fast enough that a device
+  /// somebody just opened shows up while they are still looking at the screen.
+  static const Duration reconcileInterval = Duration(seconds: 2);
   final StreamController<List<DiscoveredPeer>> _peersController =
       StreamController<List<DiscoveredPeer>>.broadcast();
 
@@ -294,6 +313,7 @@ class LanDiscoveryService {
         'the responder did not start a browse in time',
       );
       _discovery!.addServiceListener(_onServiceEvent);
+      _reconcile = Timer.periodic(reconcileInterval, (_) => _reconcileNow());
 
       await _publish(self);
 
@@ -365,7 +385,12 @@ class LanDiscoveryService {
 
   void _onServiceEvent(nsd.Service service, nsd.ServiceStatus status) {
     final peer = DiscoveryAnnouncement.peerFrom(service);
-    if (peer == null) return;
+    if (peer == null) {
+      // Not ours, or not readable yet. The second case is the interesting one
+      // and is why [_reconcile] exists — it will be re-read there once the
+      // record fills in.
+      return;
+    }
 
     // Our own registration comes back through the browser like any other.
     // Listing this device on a screen that means "devices near you" is
@@ -381,12 +406,64 @@ class LanDiscoveryService {
     _emit();
   }
 
+  /// Goes back over everything the browser has, picking up whatever could not
+  /// be read when it first arrived.
+  Future<void> _reconcileNow() async {
+    final discovery = _discovery;
+    if (discovery == null) return;
+
+    var changed = false;
+    final seen = <String>{};
+
+    for (final service in discovery.services) {
+      var peer = DiscoveryAnnouncement.peerFrom(service);
+
+      if (peer == null) {
+        // Ask the platform to fill the record in. Cheap, and the only way an
+        // entry that arrived half-formed ever becomes usable.
+        try {
+          peer = DiscoveryAnnouncement.peerFrom(
+            await _bounded(nsd.resolve(service), 'resolve timed out'),
+          );
+        } catch (_) {
+          // Genuinely not ours, or gone again. Either way there is nothing to
+          // list.
+        }
+      }
+      if (peer == null) continue;
+      if (peer.id == _self?.id) continue;
+
+      seen.add(peer.id);
+      final existing = _peers[peer.id];
+      if (existing == null ||
+          existing.port != peer.port ||
+          existing.invitePort != peer.invitePort ||
+          existing.sessionPublicId != peer.sessionPublicId ||
+          existing.address != peer.address) {
+        _peers[peer.id] = peer;
+        changed = true;
+      }
+    }
+
+    // Anything the browser has dropped goes too, in case a "lost" event was
+    // missed while a resolve was in flight.
+    final gone = _peers.keys.where((id) => !seen.contains(id)).toList();
+    for (final id in gone) {
+      _peers.remove(id);
+      changed = true;
+    }
+
+    if (changed) _emit();
+  }
+
   Future<void> stop() async {
     // First, before anything that can wait: a call still in flight is exactly
     // the case this is unwinding, and cancelling its timeout at the end of the
     // method means never reaching it. That left a ten-second timer alive after
     // the screen was gone.
     _cancelPendingTimeouts();
+    _reconcile?.cancel();
+    _reconcile = null;
 
     final discovery = _discovery;
     _discovery = null;
