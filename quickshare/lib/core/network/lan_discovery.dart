@@ -406,30 +406,42 @@ class LanDiscoveryService {
     _emit();
   }
 
-  /// Goes back over everything the browser has, picking up whatever could not
-  /// be read when it first arrived.
+  /// True while a pass is in flight, so a responder slower than
+  /// [reconcileInterval] cannot queue ticks up behind itself.
+  bool _reconciling = false;
+
+  /// Goes back over everything the browser has, re-reading each record.
+  ///
+  /// Re-reading is the point, not an optimisation to skip. A device's TXT is
+  /// what says whether it is offering a session, and changing it produces no
+  /// browse event at all — `autoResolve` fires once, when the name first
+  /// appears, and never again. So a device seen while it was idle stayed idle
+  /// in this list for as long as it was on screen: the sender opened a
+  /// session, published a port and a session id, and the receiver went on
+  /// showing "waiting" and matching a typed code against nothing.
+  ///
+  /// The resolves go out together rather than one after another, so a pass
+  /// costs one round trip however many devices are on the network.
   Future<void> _reconcileNow() async {
     final discovery = _discovery;
     if (discovery == null) return;
+    if (_reconciling) return;
+    _reconciling = true;
+    try {
+      await _reconcilePass(discovery);
+    } finally {
+      _reconciling = false;
+    }
+  }
 
+  Future<void> _reconcilePass(nsd.Discovery discovery) async {
     var changed = false;
     final seen = <String>{};
 
-    for (final service in discovery.services) {
-      var peer = DiscoveryAnnouncement.peerFrom(service);
+    final services = List<nsd.Service>.of(discovery.services);
+    final resolved = await Future.wait(services.map(_reread));
 
-      if (peer == null) {
-        // Ask the platform to fill the record in. Cheap, and the only way an
-        // entry that arrived half-formed ever becomes usable.
-        try {
-          peer = DiscoveryAnnouncement.peerFrom(
-            await _bounded(nsd.resolve(service), 'resolve timed out'),
-          );
-        } catch (_) {
-          // Genuinely not ours, or gone again. Either way there is nothing to
-          // list.
-        }
-      }
+    for (final peer in resolved) {
       if (peer == null) continue;
       if (peer.id == _self?.id) continue;
 
@@ -440,6 +452,16 @@ class LanDiscoveryService {
           existing.invitePort != peer.invitePort ||
           existing.sessionPublicId != peer.sessionPublicId ||
           existing.address != peer.address) {
+        // Worth a line: a device that never turns up here as serving is the
+        // whole difference between a code that matches and one that reports
+        // nothing nearby, and that is not visible from either end afterwards.
+        if (existing?.isServing != peer.isServing) {
+          AppLogger.info(
+              peer.isServing
+                  ? '${peer.name} is offering a session on :${peer.port}'
+                  : '${peer.name} is no longer offering a session',
+              tag: 'DISCOVERY');
+        }
         _peers[peer.id] = peer;
         changed = true;
       }
@@ -454,6 +476,23 @@ class LanDiscoveryService {
     }
 
     if (changed) _emit();
+  }
+
+  /// Asks the platform for one service's current record.
+  ///
+  /// Falls back to what the browser already handed us when the responder will
+  /// not answer: a device we can still see is better listed from a stale
+  /// record than dropped off the screen because one resolve timed out.
+  Future<DiscoveredPeer?> _reread(nsd.Service service) async {
+    try {
+      final peer = DiscoveryAnnouncement.peerFrom(
+        await _bounded(nsd.resolve(service), 'resolve timed out'),
+      );
+      if (peer != null) return peer;
+    } catch (_) {
+      // Gone again, or the responder is busy.
+    }
+    return DiscoveryAnnouncement.peerFrom(service);
   }
 
   Future<void> stop() async {
