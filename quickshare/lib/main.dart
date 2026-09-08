@@ -114,8 +114,23 @@ Future<void> _reportDiscovery() async {
       AppLogger.warning('Discovery: no presence was started', tag: 'DISCOVERY');
       return;
     }
+    final peers = presence.current;
+    if (peers.isEmpty) {
+      AppLogger.info('Discovery: nothing else on this network yet',
+          tag: 'DISCOVERY');
+      return;
+    }
+    // Named, and with what each is offering. A bare count answers the one
+    // question nobody asks: when a typed code finds nothing, what is wanted
+    // is whether the device holding it was seen at all, and whether it was
+    // seen to be offering anything.
+    final described = peers
+        .map((p) => p.isServing
+            ? '${p.name} offering :${p.port}'
+            : '${p.name} idle')
+        .join(', ');
     AppLogger.info(
-        'Discovery: ${presence.current.length} other device(s) visible',
+        'Discovery: ${peers.length} other device(s) visible — $described',
         tag: 'DISCOVERY');
   } catch (e) {
     AppLogger.warning('Discovery probe failed: $e', tag: 'DISCOVERY');
