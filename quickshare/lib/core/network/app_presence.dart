@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/network/device_presence.dart';
 import 'package:quickshare/core/router/app_router.dart';
 import 'package:quickshare/core/transfer/transfer_invitation.dart';
@@ -64,7 +67,7 @@ class AppPresence {
   /// invitation can arrive while the user is anywhere, including a screen that
   /// knows nothing about transfers, and declining by default is the wrong
   /// answer to "you were not on the right page".
-  Future<bool> _ask(TransferInvitation invitation) async {
+  Future<bool> _ask(TransferInvitation invitation, InternetAddress from) async {
     final context = AppRouter.navigatorKey.currentContext;
     if (context == null || !context.mounted) {
       // No UI to ask with. Silence is a decline, as it is everywhere else.
@@ -72,7 +75,38 @@ class AppPresence {
           'An invitation arrived with no screen to show it on', tag: 'INVITE');
       return false;
     }
-    return showInvitationDialog(context, invitation);
+
+    final accepted = await showInvitationDialog(context, invitation);
+    if (!accepted) return false;
+
+    // Saying yes is not the transfer. The sender is already serving and will
+    // wait indefinitely for somebody to fetch — so agreeing without going and
+    // fetching leaves both sides sitting on screens where nothing happens,
+    // which is exactly what it did.
+    //
+    // The address comes from the connection the invitation arrived on, not
+    // from anything inside it: a device cannot be trusted to name its own.
+    final payload = QRPayload(
+      version: AppConstants.qhtpPayloadVersion,
+      ip: from.address,
+      port: invitation.port,
+      token: invitation.token,
+      sessionId: invitation.sessionId,
+      mode: 'http-lan',
+      tlsFingerprint: invitation.tlsFingerprint,
+      // No name: the invitation counts files and bytes for the dialog but
+      // does not describe them, and the manifest names everything anyway.
+      itemCount: invitation.itemCount,
+      fileSize: invitation.totalBytes,
+    );
+
+    AppLogger.info(
+        'Accepted ${invitation.senderName}; collecting from '
+        '${from.address}:${invitation.port}',
+        tag: 'INVITE');
+
+    AppRouter.router.go('/receive/download', extra: {'payload': payload});
+    return true;
   }
 
   /// Says this device is now offering a session, so a receiver that was given

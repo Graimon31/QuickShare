@@ -52,7 +52,7 @@ void main() {
     expect(
       await bob.start(
         name: 'Probe Bob',
-        onInvitation: (_) async => true,
+        onInvitation: (_, __) async => true,
       ),
       isTrue,
     );

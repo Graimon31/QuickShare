@@ -34,6 +34,11 @@ class DevicePresence {
 
   DiscoveryAnnouncement? _announcement;
 
+  /// The start currently in flight, so a caller that arrives mid-start joins
+  /// it rather than racing it — two concurrent discoveries would publish the
+  /// same service twice and leak the loser's timers.
+  Future<bool>? _startInFlight;
+
   DevicePresence({LanDiscoveryService? discovery})
       : _discovery = discovery ?? LanDiscoveryService();
 
@@ -91,11 +96,42 @@ class DevicePresence {
   /// device is listed but cannot be sent to, which is the right shape for a
   /// screen that is only browsing.
   ///
+  /// The first call owns the announcement, including whether invitations are
+  /// accepted. Every screen with a device list calls this on the shared
+  /// presence, so a repeat must never rebuild what this device says:
+  /// rebuilding without [onInvitation] dropped the invitation port from the
+  /// announcement while the listener kept listening, and senders saw a device
+  /// they could not ask. A repeat joins a start already in flight, or retries
+  /// a discovery that is down, and otherwise changes nothing.
+  ///
   /// Returns false when the network will not carry it — guest Wi-Fi and
   /// captive portals block multicast — which is a fact the screen has to know,
   /// because an empty list then means "we cannot look here", not "nobody is
   /// nearby".
   Future<bool> start({String? name, InvitationPrompt? onInvitation}) async {
+    final inFlight = _startInFlight;
+    if (inFlight != null) return inFlight;
+
+    final existing = _announcement;
+    if (existing != null && _discovery.isRunning) return true;
+
+    late final Future<bool> future;
+    future = _start(existing: existing, name: name, onInvitation: onInvitation)
+        .whenComplete(() => _startInFlight = null);
+    _startInFlight = future;
+    return future;
+  }
+
+  Future<bool> _start({
+    required DiscoveryAnnouncement? existing,
+    required String? name,
+    required InvitationPrompt? onInvitation,
+  }) async {
+    if (existing != null) {
+      // Discovery is down but the announcement stands — retry it as it is.
+      return _discovery.start(existing);
+    }
+
     var invitePort = 0;
     if (onInvitation != null) {
       final listener = InvitationListener(onInvitation: onInvitation);

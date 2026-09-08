@@ -28,7 +28,7 @@ void main() {
 
     test('a yes carries everything needed to fetch the files', () async {
       TransferInvitation? seen;
-      listener = InvitationListener(onInvitation: (i) async {
+      listener = InvitationListener(onInvitation: (i, _) async {
         seen = i;
         return true;
       });
@@ -49,8 +49,30 @@ void main() {
       expect(seen!.senderName, equals("Farman's MacBook"));
     });
 
+    test('the receiver is told where to fetch from', () async {
+      // Agreeing is not the transfer: the sender is already serving and waits
+      // for somebody to come and get the files. Without the address that came
+      // with the request there is nothing to open, and both sides sit on
+      // screens where nothing happens — which is exactly what they did.
+      //
+      // It comes from the connection rather than from the invitation on
+      // purpose: a device cannot be trusted to name its own address.
+      InternetAddress? seenFrom;
+      listener = InvitationListener(onInvitation: (_, from) async {
+        seenFrom = from;
+        return true;
+      });
+      final port = await listener.start();
+
+      await InvitationSender()
+          .invite(address: loopback, port: port, invitation: invitation);
+
+      expect(seenFrom, isNotNull);
+      expect(seenFrom!.address, equals(loopback.address));
+    });
+
     test('a no is a no, not an error', () async {
-      listener = InvitationListener(onInvitation: (_) async => false);
+      listener = InvitationListener(onInvitation: (_, __) async => false);
       final port = await listener.start();
 
       final result = await InvitationSender().invite(
@@ -65,7 +87,7 @@ void main() {
     test('the person is told what they are agreeing to', () async {
       // Somebody offered 40 GB should get to know before they say yes.
       TransferInvitation? seen;
-      listener = InvitationListener(onInvitation: (i) async {
+      listener = InvitationListener(onInvitation: (i, _) async {
         seen = i;
         return true;
       });
@@ -83,7 +105,7 @@ void main() {
       // Two prompts nobody can see is worse than one honest refusal.
       final firstPromptShown = Completer<void>();
       final release = Completer<bool>();
-      listener = InvitationListener(onInvitation: (_) async {
+      listener = InvitationListener(onInvitation: (_, __) async {
         if (!firstPromptShown.isCompleted) firstPromptShown.complete();
         return release.future;
       });
@@ -103,7 +125,7 @@ void main() {
 
     test('junk on the port is refused without disturbing anyone', () async {
       var prompted = false;
-      listener = InvitationListener(onInvitation: (_) async {
+      listener = InvitationListener(onInvitation: (_, __) async {
         prompted = true;
         return true;
       });
@@ -146,7 +168,7 @@ void main() {
       // window is injectable so this takes milliseconds instead of the 45
       // seconds a person gets.
       final listener = InvitationListener(
-        onInvitation: (_) => Completer<bool>().future, // nobody ever answers
+        onInvitation: (_, __) => Completer<bool>().future, // nobody ever answers
         answerWindow: const Duration(milliseconds: 100),
       );
       final port = await listener.start();

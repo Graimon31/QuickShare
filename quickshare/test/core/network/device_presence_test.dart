@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -10,10 +11,21 @@ import 'package:quickshare/core/network/lan_discovery.dart';
 class _RecordingDiscovery extends LanDiscoveryService {
   final List<DiscoveryAnnouncement> announced = [];
   bool startSucceeds = true;
+  bool _running = false;
+
+  /// When set, start waits on it — so a test can hold a start in flight and
+  /// see what a second caller does meanwhile.
+  Completer<void>? startGate;
+
+  @override
+  bool get isRunning => _running;
 
   @override
   Future<bool> start(DiscoveryAnnouncement self) async {
+    final gate = startGate;
+    if (gate != null) await gate.future;
     announced.add(self);
+    _running = startSucceeds;
     return startSucceeds;
   }
 
@@ -21,7 +33,9 @@ class _RecordingDiscovery extends LanDiscoveryService {
   Future<void> update(DiscoveryAnnouncement self) async => announced.add(self);
 
   @override
-  Future<void> stop() async {}
+  Future<void> stop() async {
+    _running = false;
+  }
 
   @override
   Future<void> dispose() async {}
@@ -34,6 +48,12 @@ void main() {
   setUp(() {
     discovery = _RecordingDiscovery();
     presence = DevicePresence(discovery: discovery);
+  });
+
+  tearDown(() async {
+    // A start with a prompt binds a real socket; leaving it open would keep
+    // the test isolate alive.
+    await presence.dispose();
   });
 
   group('what this device says about itself', () {
@@ -123,6 +143,72 @@ void main() {
       // than "nobody is nearby".
       discovery.startSucceeds = false;
       expect(await presence.start(name: 'Test Machine'), isFalse);
+    });
+  });
+
+  group('a repeated start', () {
+    test('keeps the invitation port in the announcement', () async {
+      // Every screen with a device list calls start on the shared presence,
+      // and none of them passes a prompt — the shared one already has it. A
+      // repeat rebuilding the announcement without it dropped the port while
+      // the listener kept listening, and senders saw a device they could not
+      // ask.
+      await presence.start(
+          name: 'Test Machine', onInvitation: (_, __) async => true);
+      final port = discovery.announced.single.invitePort;
+      expect(port, greaterThan(0),
+          reason: 'a device with a prompt is one that can be asked');
+
+      expect(await presence.start(), isTrue);
+
+      expect(discovery.announced.single.invitePort, equals(port),
+          reason: 'the first start owns the announcement');
+    });
+
+    test('on a running discovery says nothing new', () async {
+      await presence.start(name: 'Test Machine');
+
+      expect(await presence.start(name: 'Test Machine'), isTrue);
+
+      expect(discovery.announced, hasLength(1),
+          reason: 'an announcement that repeats itself is wasted airtime');
+    });
+
+    test('one already in flight is joined, not run twice', () async {
+      // A screen can appear while the app's own start is still waiting on the
+      // platform — a deep link lands on the code-entry page straight away. A
+      // second start must not race the first into publishing twice.
+      discovery.startGate = Completer<void>();
+
+      final first = presence.start(name: 'Test Machine');
+      final second = presence.start(name: 'A Different Name');
+
+      discovery.startGate!.complete();
+      expect(await first, isTrue);
+      expect(await second, isTrue);
+
+      expect(discovery.announced, hasLength(1));
+      expect(discovery.announced.single.name, equals('Test Machine'),
+          reason: 'the first call owns the announcement');
+    });
+
+    test('while discovery is down retries with the same announcement',
+        () async {
+      discovery.startSucceeds = false;
+      expect(
+          await presence.start(
+              name: 'Test Machine', onInvitation: (_, __) async => true),
+          isFalse);
+
+      discovery.startSucceeds = true;
+      expect(await presence.start(), isTrue);
+
+      expect(discovery.announced, hasLength(2));
+      expect(discovery.announced.last.id, equals(discovery.announced.first.id),
+          reason: 'a retry is the same device, not a new one');
+      expect(discovery.announced.last.invitePort,
+          equals(discovery.announced.first.invitePort),
+          reason: 'the invitation port survives the retry');
     });
   });
 

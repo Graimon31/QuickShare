@@ -58,7 +58,7 @@ void main() {
     final aliceUp = await alice.start(name: 'Alice Laptop');
     final bobUp = await bob.start(
       name: 'Bob Desktop',
-      onInvitation: (invitation) async {
+      onInvitation: (invitation, _) async {
         asked = invitation;
         return true;
       },
@@ -111,7 +111,7 @@ void main() {
     final aliceUp = await alice.start(name: 'Alice Laptop');
     final bobUp = await bob.start(
       name: 'Bob Desktop',
-      onInvitation: (_) async => false,
+      onInvitation: (_, __) async => false,
     );
     if (!aliceUp || !bobUp) {
       markTestSkipped('multicast is unavailable on this host');
@@ -156,6 +156,43 @@ void main() {
     expect(serving.tlsFingerprint, equals('alice-cert'));
   }, timeout: const Timeout(Duration(seconds: 40)));
 
+  test('an invitation port survives a repeated start from another screen',
+      () async {
+    // Every screen with a device list calls start on the shared presence, and
+    // none of them passes a prompt — the shared one was started with it. A
+    // repeat that rebuilt the announcement dropped the port from the network
+    // while the listener kept listening, and tapping the device reported it
+    // as unreachable.
+    final aliceUp = await alice.start(name: 'Alice Laptop');
+    final bobUp = await bob.start(
+      name: 'Bob Desktop',
+      onInvitation: (_, __) async => true,
+    );
+    if (!aliceUp || !bobUp) {
+      markTestSkipped('multicast is unavailable on this host');
+      return;
+    }
+
+    await Future<void>.delayed(settle);
+    final before = alice.current.firstWhere((p) => p.name == 'Bob Desktop');
+    expect(before.acceptsInvitations, isTrue);
+
+    // What opening the code-entry screen does to the shared presence.
+    expect(await bob.start(), isTrue);
+    await Future<void>.delayed(settle);
+
+    final after = alice.current.firstWhere((p) => p.name == 'Bob Desktop');
+    expect(after.invitePort, equals(before.invitePort),
+        reason: 'a repeated start must not touch the announcement');
+
+    final result = await InvitationSender().invite(
+      address: after.address,
+      port: after.invitePort,
+      invitation: offer,
+    );
+    expect(result.accepted, isTrue);
+  }, timeout: const Timeout(Duration(seconds: 40)));
+
   test('an invitation port survives a device going quiet and coming back',
       () async {
     // Announcements repeat every couple of seconds; a field that is only in
@@ -163,7 +200,7 @@ void main() {
     final aliceUp = await alice.start(name: 'Alice Laptop');
     final bobUp = await bob.start(
       name: 'Bob Desktop',
-      onInvitation: (_) async => true,
+      onInvitation: (_, __) async => true,
     );
     if (!aliceUp || !bobUp) {
       markTestSkipped('multicast is unavailable on this host');

@@ -60,7 +60,7 @@ void main() {
     addTearDown(receiver.dispose);
     if (!await receiver.start(
       name: 'Late Receiver',
-      onInvitation: (_) async => true,
+      onInvitation: (_, __) async => true,
     )) {
       markTestSkipped('local discovery is unavailable to this binary');
       return;
@@ -81,7 +81,7 @@ void main() {
     addTearDown(receiver.dispose);
     if (!await receiver.start(
       name: 'Early Receiver',
-      onInvitation: (_) async => true,
+      onInvitation: (_, __) async => true,
     )) {
       markTestSkipped('local discovery is unavailable to this binary');
       return;

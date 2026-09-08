@@ -9,9 +9,17 @@ import 'package:quickshare/core/utils/app_logger.dart';
 
 /// Asks the person whether to accept, and answers when they have.
 ///
+/// [from] is where the request actually came from, which is the only place the
+/// sender's address can honestly be read: the invitation itself describes a
+/// session, and a device that named its own address could name somebody
+/// else's. The receiver needs it to fetch the files once it has agreed.
+///
 /// Returning false declines. Taking a long time is fine — the sender waits,
 /// and the listener has its own ceiling.
-typedef InvitationPrompt = Future<bool> Function(TransferInvitation invitation);
+typedef InvitationPrompt = Future<bool> Function(
+  TransferInvitation invitation,
+  InternetAddress from,
+);
 
 /// Listens for other devices offering to send something.
 ///
@@ -93,6 +101,20 @@ class InvitationListener {
           body: const InvitationVerdict.decline('not an invitation').encode());
     }
 
+    // Where this actually came from. Without it there is nothing to fetch
+    // from, however willing the person is.
+    final connection =
+        request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
+    final from = connection?.remoteAddress;
+    if (from == null) {
+      AppLogger.warning('An invitation arrived with no usable return address',
+          tag: 'INVITE');
+      return Response.ok(
+        const InvitationVerdict.decline('no return address').encode(),
+        headers: const {'content-type': 'application/json'},
+      );
+    }
+
     if (_busy) {
       return Response.ok(
         const InvitationVerdict.decline('already deciding on another transfer')
@@ -108,7 +130,7 @@ class InvitationListener {
           '(${invitation.itemCount} item(s), ${invitation.totalBytes} bytes)',
           tag: 'INVITE');
 
-      final accepted = await _prompt(invitation).timeout(
+      final accepted = await _prompt(invitation, from).timeout(
         _answerWindow,
         // Nobody answered. Declining is the only safe reading of silence.
         onTimeout: () => false,
