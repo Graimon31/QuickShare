@@ -175,6 +175,45 @@ void main() {
     );
 
     blocTest<SenderBloc, SenderState>(
+      // An invitation is built from these two fields. Left at their defaults,
+      // the other device was asked to accept "1 item, 0 bytes" — the one thing
+      // somebody needs in order to decide whether to accept at all.
+      'the session tells QRReady how much it is sending',
+      build: () {
+        final session = TransferSession(
+          id: 'test_session',
+          fileMetadata: const FileMetadata(
+            name: 'Holiday',
+            path: '/tmp/Holiday',
+            size: 4200000,
+            mimeType: 'application/octet-stream',
+          ),
+          serverPort: 8080,
+          authToken: 'test_token',
+          localIp: '192.168.1.100',
+          startedAt: DateTime.now(),
+          isQhtp: true,
+          itemCount: 12,
+        );
+        when(() => mockRepository.startQhtpTransfer(any(),
+                authToken: any(named: 'authToken'),
+                onIndexProgress: any(named: 'onIndexProgress')))
+            .thenAnswer((_) async => Right(session));
+        when(() => mockRepository.generateQRPayload(any()))
+            .thenAnswer((_) async => const Right('quickshare://join?room=123456'));
+        return SenderBloc(repository: mockRepository);
+      },
+      act: (bloc) =>
+          bloc.add(StartQhtpSend([testDir.path], mode: TransportType.wifi)),
+      expect: () => [
+        isA<ServerStarting>(),
+        isA<QRReady>()
+            .having((s) => s.itemCount, 'itemCount', 12)
+            .having((s) => s.totalBytes, 'totalBytes', 4200000),
+      ],
+    );
+
+    blocTest<SenderBloc, SenderState>(
       // The receiver's socket read only fails fast if the server is torn
       // down forced — see [LocalHttpServer.stop]. A plain stopServer() here
       // used to leave an active download's stream blocked on a 30-second

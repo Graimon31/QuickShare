@@ -50,6 +50,29 @@ class QRCodeScanned extends ReceiverEvent {
   List<Object> get props => [rawData, fromPaste];
 }
 
+/// What the sender says its session holds, having been asked for it.
+///
+/// Only the paths that carry no numbers of their own need this. A scanned QR
+/// spells out the name, the size and the item count, so the preview screen can
+/// draw them the instant it opens; a typed code carries none of that — it is
+/// ten digits — and the announcement it is matched against deliberately
+/// carries none either, since a TXT record is readable by everyone on the
+/// network and how much somebody is sending is nobody else's business. So the
+/// numbers are asked for over the session itself, behind the token, and land
+/// here.
+class QhtpPreviewFetched extends ReceiverEvent {
+  final QhtpSessionPreview preview;
+
+  /// Which session this describes, so an answer that arrives after the user
+  /// has moved on is dropped rather than drawn over whatever they moved on to.
+  final QRPayload forSession;
+
+  const QhtpPreviewFetched(this.preview, this.forSession);
+
+  @override
+  List<Object> get props => [preview, forSession];
+}
+
 class StartDownload extends ReceiverEvent {
   final QRPayload? payload;
 
@@ -206,6 +229,25 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   /// address itself, for anyone who wants to check the label's homework.
   String? _connectedTo;
 
+  /// Asks the sender what its session holds, for the screen already on show.
+  ///
+  /// Deliberately quiet about failure. The numbers are a courtesy — they make
+  /// the accept screen worth reading — and a sender that will not answer this
+  /// is still perfectly able to serve the transfer. Turning that into an error
+  /// would stop a working transfer over a missing subtitle.
+  Future<void> _askSenderWhatItIsSending(QRPayload payload) async {
+    final result = await repository.fetchQhtpSessionPreview(payload);
+    result.fold(
+      (failure) => AppLogger.info(
+          'The sender did not say what it is sending: ${failure.message}',
+          tag: 'RECEIVER'),
+      (preview) {
+        if (isClosed) return;
+        add(QhtpPreviewFetched(preview, payload));
+      },
+    );
+  }
+
   ReceiverBloc({
     required this.downloadFileUseCase,
     required this.repository,
@@ -246,8 +288,28 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
                     )
                   : null;
           emit(QRParsed(payload, qhtpPreview: embeddedPreview));
+
+          // Nothing to draw and nobody blocked on the answer: a session opened
+          // from a typed code arrives with no name, size or count at all, and
+          // the screen asking the person to accept it was showing them nothing
+          // to accept. Asked for after the screen is up rather than before it,
+          // because this is the call that used to freeze the scanner for
+          // twenty seconds when a network would not answer.
+          if (embeddedPreview == null) {
+            unawaited(_askSenderWhatItIsSending(payload));
+          }
         },
       );
+    });
+
+    on<QhtpPreviewFetched>((event, emit) {
+      final current = state;
+      // Still on the same screen, still the same session. Either being false
+      // means the answer is stale, and drawing it would put one session's
+      // numbers on another's screen.
+      if (current is! QRParsed) return;
+      if (current.payload != event.forSession) return;
+      emit(QRParsed(current.payload, qhtpPreview: event.preview));
     });
 
     on<StartDownload>((event, emit) async {

@@ -753,7 +753,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         qrResult.fold(
           (failure) => emit(SenderError(failure.message)),
           (qrData) {
-            emit(QRReady(qrData, session, mode, code: sessionCode));
+            // The totals travel with the state, not just inside the QR. An
+            // invitation is built from these fields, and leaving them at zero
+            // asked the person on the other device to accept "1 item, 0 bytes"
+            // — the one thing they need in order to decide.
+            emit(QRReady(
+              qrData,
+              session,
+              mode,
+              code: sessionCode,
+              itemCount: session.itemCount,
+              totalBytes: session.fileMetadata.size,
+            ));
           },
         );
       },
