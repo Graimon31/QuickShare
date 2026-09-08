@@ -63,20 +63,26 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
     return resolvedPath;
   }
 
+  /// Whether [ip] names one machine this device could dial.
+  ///
+  /// Deliberately permissive: the address is only ever one this device was
+  /// handed by a sender it already agreed to collect from — a scanned code, a
+  /// typed code, or the return address of an invitation someone accepted — and
+  /// the relay the internet mode uses is a public address by design. What is
+  /// left to catch here is an address that names no single machine, so a
+  /// multicast group and an unparseable string are the refusals.
+  ///
+  /// Link-local is explicitly allowed. Refusing it had the reasoning exactly
+  /// backwards: 169.254/16 and fe80::/10 cannot be routed off the wire they
+  /// arrived on, which makes them the most certainly-local addresses there
+  /// are. Refusing them broke the case they most obviously covered — an iPhone
+  /// on the end of a USB cable, where macOS and iOS both self-assign a 169.254
+  /// address and every accepted invitation then died with "Invalid IP".
   bool validatePrivateIp(String ip) {
-    if (ip == 'localhost' || ip == '127.0.0.1') return true;
+    if (ip == 'localhost') return true;
     final address = InternetAddress.tryParse(ip);
     if (address == null) return false;
-    if (address.isLoopback) return true;
-    if (address.isLinkLocal || address.isMulticast) return false;
-    if (address.type == InternetAddressType.IPv4) {
-      final bytes = address.rawAddress;
-      if (bytes[0] == 10) return true;
-      if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true;
-      if (bytes[0] == 192 && bytes[1] == 168) return true;
-      if (bytes[0] == 127) return true;
-    }
-    return true; // Allow local network IPs
+    return !address.isMulticast;
   }
 
   @override
