@@ -102,19 +102,23 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
   /// session token, which authenticates the fetch — so matching one against
   /// the network is enough to open a session that nobody else can.
   Future<void> _startFromCode(SessionCode code) async {
-    final l10n = AppLocalizations.of(context);
-
     final match = (AppPresence.instance.presence?.current ?? const [])
         .where((peer) => peer.sessionPublicId == code.publicId)
         .firstOrNull;
 
     if (match == null) {
-      // Either the sender is not on this network, or discovery cannot see it —
-      // the panel above says which, so this only has to say what failed.
-      setState(() {
-        _isSubmitting = false;
-        _inputError = l10n.codeNotFound;
-      });
+      // Nothing on this network is offering it — but a Bluetooth sender never
+      // would be. The same digits derive the same identifier there, and the
+      // sender puts it in what it advertises over the radio instead, so the
+      // code is worth trying on the other transport before reporting it as
+      // not found. Somebody holding ten digits does not know, and should not
+      // have to know, which radio the sender happened to pick.
+      setState(() => _isSubmitting = false);
+      context.go(
+        '/receive/bluetooth'
+        '?token=${Uri.encodeQueryComponent(code.sessionToken)}'
+        '&cid=${Uri.encodeQueryComponent(code.publicId)}',
+      );
       return;
     }
 

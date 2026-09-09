@@ -50,6 +50,12 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   /// the digits rather than sending them.
   String? _typedToken;
   String? _typedPublicId;
+
+  /// Set once a search for one particular session has gone long enough that
+  /// "still looking" stops being the honest word for it. Without this a code
+  /// with no sender behind it scanned for ever behind a spinner.
+  bool _searchGaveUp = false;
+  Timer? _searchClock;
   final _codeField = TextEditingController();
   String? _codeError;
 
@@ -193,6 +199,20 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     await _startScan();
   }
 
+  /// How long to look for one named session before saying it is not here.
+  static const Duration _searchBudget = Duration(seconds: 15);
+
+  void _restartSearchClock() {
+    _searchClock?.cancel();
+    _searchGaveUp = false;
+    if (_publicId == null || _publicId!.isEmpty) return;
+    _searchClock = Timer(_searchBudget, () {
+      if (mounted && _phase == _Phase.scanning && _devices.isEmpty) {
+        setState(() => _searchGaveUp = true);
+      }
+    });
+  }
+
   Future<void> _startScan() async {
     setState(() {
       _phase = _Phase.scanning;
@@ -200,6 +220,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       _error = null;
       _autoConnectAttempted = false;
     });
+    _restartSearchClock();
     try {
       await _transport.startScanning(
           sessionToken: _token, publicId: _publicId);
@@ -266,6 +287,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
 
   @override
   void dispose() {
+    _searchClock?.cancel();
     _codeField.dispose();
     _transport.cancel();
     _transport.dispose();
@@ -324,7 +346,12 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
               ),
             ),
             const SizedBox(height: 16),
-            if (_devices.isEmpty)
+            if (_devices.isEmpty && _searchGaveUp)
+              Text(
+                l10n.codeNotFound,
+                style: const TextStyle(color: AppColors.error, fontSize: 14),
+              )
+            else if (_devices.isEmpty)
               TransferPhaseLoader(
                 phaseLabel: l10n.btReceiveScanning,
                 detail: l10n.btReceiveScanningDetail,
