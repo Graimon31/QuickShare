@@ -92,6 +92,19 @@ class RelayBlocked extends SenderEvent {
   List<Object?> get props => [sessionBytes, limitBytes];
 }
 
+/// A device said it is nearby and waiting to be sent something over Bluetooth.
+class BluetoothReceiverAnnounced extends SenderEvent {
+  final String name;
+  const BluetoothReceiverAnnounced(this.name);
+  @override
+  List<Object?> get props => [name];
+}
+
+/// The person picked one of them.
+class SendToWaitingReceiver extends SenderEvent {
+  const SendToWaitingReceiver();
+}
+
 class TransferProgressEvent extends SenderEvent {
   final double progress;
   const TransferProgressEvent(this.progress);
@@ -191,10 +204,29 @@ class BluetoothAdvertising extends SenderState {
   /// pointed at the QR. Its public half is what this device advertises.
   final SessionCode? code;
 
+  /// Devices in range that have said they are ready to be sent something.
+  ///
+  /// Empty until one announces itself, which is the honest state: over
+  /// Bluetooth nothing is listed until a receiver opens its own screen, and
+  /// there is no way to poll for one that has not.
+  final List<String> waiting;
+
   const BluetoothAdvertising(this.session,
-      {required this.qrData, this.itemCount = 1, this.code});
+      {required this.qrData,
+      this.itemCount = 1,
+      this.code,
+      this.waiting = const []});
+
+  BluetoothAdvertising withWaiting(List<String> names) => BluetoothAdvertising(
+        session,
+        qrData: qrData,
+        itemCount: itemCount,
+        code: code,
+        waiting: names,
+      );
+
   @override
-  List<Object?> get props => [session, qrData, itemCount, code];
+  List<Object?> get props => [session, qrData, itemCount, code, waiting];
 }
 
 class Transferring extends SenderState {
@@ -304,6 +336,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// because the screen it runs behind offers no way out but force-quitting.
   static const Duration _bluetoothStartBudget = Duration(seconds: 30);
 
+  /// Feeds [BluetoothReceiverAnnounced]. Held so a second session does not
+  /// leave the first one's listener adding devices to it.
+  StreamSubscription<String>? _waitingSubscription;
+
   TransportType _selectedMode = TransportType.wifi;
   DateTime? _lastProgressUpdate;
   int _lastBytes = 0;
@@ -364,6 +400,19 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     on<TransferCompleted>(_onTransferCompleted);
     on<TransferFailed>(_onTransferFailed);
     on<TransferProgressEvent>(_onTransferProgress);
+
+    on<BluetoothReceiverAnnounced>((event, emit) {
+      final current = state;
+      if (current is! BluetoothAdvertising) return;
+      if (current.waiting.contains(event.name)) return;
+      AppLogger.info('${event.name} is waiting to be sent something',
+          tag: 'SENDER');
+      emit(current.withWaiting([...current.waiting, event.name]));
+    });
+
+    on<SendToWaitingReceiver>((event, emit) async {
+      await _activeBluetoothTransport?.beginTransfer();
+    });
     on<RelayBlocked>((event, emit) async {
       await _closeAnswerChannel();
       await _activeWebRtcTransport?.stopSharing();
@@ -610,6 +659,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           add(TransferProgressEvent(progress));
           if (progress >= 1.0) add(TransferCompleted());
         });
+
+        _waitingSubscription?.cancel();
+        _waitingSubscription = _activeBluetoothTransport!.waitingReceivers
+            .listen((name) => add(BluetoothReceiverAnnounced(name)));
 
         _statusSubscription?.cancel();
         _statusSubscription =
@@ -1133,6 +1186,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   Future<void> close() async {
     _progressSubscription?.cancel();
     _statusSubscription?.cancel();
+    _waitingSubscription?.cancel();
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;

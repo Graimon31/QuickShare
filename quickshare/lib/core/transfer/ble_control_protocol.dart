@@ -40,6 +40,33 @@ class BleControlProtocol {
 
   static String start(String token) => 'START:$token';
 
+  /// Written by a receiver that is present but not asking for anything yet.
+  ///
+  /// Bluetooth put the two roles the wrong way round for a device list: only
+  /// the sender advertises, and the receiver that finds it used to write
+  /// [start] straight away — so the transfer began before the person sending
+  /// had seen who was there. A receiver with no code to act on says this
+  /// instead and waits to be picked, which is the shape the local network
+  /// already had and the one people expect from AirDrop.
+  ///
+  /// Deliberately not a new generation. Senders through this build answer an
+  /// unrecognised control write with success and carry on waiting, so this
+  /// costs nothing on an older one — and bumping [generation] would make
+  /// every current receiver look too old to take a folder.
+  static const String helloPrefix = 'HELLO:';
+
+  static String hello(String deviceName) => '$helloPrefix$deviceName';
+
+  /// The name a HELLO announces, or null if [command] is not one.
+  static String? parseHello(String command) {
+    if (!command.startsWith(helloPrefix)) return null;
+    final name = command.substring(helloPrefix.length).trim();
+    // A row in a list needs something to draw, and a name is chosen by the
+    // far side — so it is length-capped here and treated as display text.
+    if (name.isEmpty || name.length > 64) return null;
+    return name;
+  }
+
   /// The generation [command] announces, or null if it is not a CAPS write.
   ///
   /// Anything unparseable reads as null rather than as generation 1: a command

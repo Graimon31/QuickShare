@@ -8,6 +8,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:quickshare/core/network/session_code.dart';
+import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 
 void main() {
@@ -84,6 +85,40 @@ void main() {
       expect(decoded!.token, equals('a-token'));
       expect(decoded.publicId, isEmpty,
           reason: 'absent, so the receiver falls back to the token match');
+    });
+  });
+
+  group('announcing a receiver that is only waiting', () {
+    test('a name survives the round trip', () {
+      final written = BleControlProtocol.hello("Farman's iPhone");
+      expect(BleControlProtocol.parseHello(written), equals("Farman's iPhone"));
+    });
+
+    test('the other commands are not mistaken for it', () {
+      // They share one characteristic, so a HELLO test that matched START
+      // would begin a transfer nobody asked for.
+      expect(BleControlProtocol.parseHello(BleControlProtocol.start('t')),
+          isNull);
+      expect(BleControlProtocol.parseHello(BleControlProtocol.capabilities()),
+          isNull);
+    });
+
+    test('a nameless or oversized announcement is refused', () {
+      // The name is chosen by the far side and drawn in a list.
+      expect(BleControlProtocol.parseHello('HELLO:'), isNull);
+      expect(BleControlProtocol.parseHello('HELLO:   '), isNull);
+      expect(BleControlProtocol.parseHello('HELLO:${'x' * 65}'), isNull);
+    });
+
+    test('it does not claim a new generation', () {
+      // Bumping one would make every current receiver look too old to take a
+      // folder, and an older sender answers an unrecognised write with success
+      // and carries on — so this costs nothing there.
+      expect(BleControlProtocol.generation, equals(3));
+      expect(
+        BleControlProtocol.peerCanTakeSession(fileCount: 9, peerGeneration: 3),
+        isTrue,
+      );
     });
   });
 }

@@ -842,6 +842,14 @@ class AppLocalizationsRu extends AppLocalizations {
   String get btReceiveCodePrompt => 'Введите код с устройства-отправителя';
 
   @override
+  String get btReceiveWaitingToBeChosen =>
+      'Ждём выбора на устройстве-отправителе';
+
+  @override
+  String get btReceiveWaitingDetail =>
+      'Это устройство видно отправителю. Выберите его там, чтобы начать передачу.';
+
+  @override
   String get btReceiveCodeInvalid => 'Код состоит из 10 цифр';
 
   @override

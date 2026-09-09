@@ -31,7 +31,7 @@ class BluetoothReceivePage extends StatefulWidget {
   State<BluetoothReceivePage> createState() => _BluetoothReceivePageState();
 }
 
-enum _Phase { scanning, connecting, transferring, completed, failed }
+enum _Phase { scanning, connecting, waiting, transferring, completed, failed }
 
 class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   final _transport = BluetoothReceiverTransport();
@@ -243,9 +243,14 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     final sub = _transport.progressStream.listen((p) {
       if (!mounted) return;
       setState(() {
-        _phase =
-            p.phase == 'completed' ? _Phase.completed : _Phase.transferring;
-        _fileName = p.fileName;
+        _phase = switch (p.phase) {
+          'completed' => _Phase.completed,
+          // Announced and waiting to be picked. Nothing is transferring, and
+          // showing a progress bar at zero for it reads as a stall.
+          'waiting' => _Phase.waiting,
+          _ => _Phase.transferring,
+        };
+        if (p.phase != 'waiting') _fileName = p.fileName;
         _received = p.received;
         _total = p.total;
       });
@@ -418,6 +423,13 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
               label: Text(l10n.codeReceiveReceiveButton),
             ),
           ],
+        );
+
+      case _Phase.waiting:
+        return TransferPhaseLoader(
+          phaseLabel: l10n.btReceiveWaitingToBeChosen,
+          detail: l10n.btReceiveWaitingDetail,
+          icon: Icons.bluetooth_connected_rounded,
         );
 
       case _Phase.connecting:

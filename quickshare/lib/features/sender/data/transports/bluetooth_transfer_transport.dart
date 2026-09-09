@@ -156,6 +156,30 @@ class BluetoothTransferTransport implements TransferTransport {
     );
   }
 
+  final _waitingController = StreamController<String>.broadcast();
+
+  /// Devices that have said they are here and are waiting to be picked.
+  ///
+  /// Bluetooth has the two roles the wrong way round for a list: only the
+  /// sender advertises, and a receiver that found it used to begin the
+  /// transfer itself. One that has nothing to begin with announces instead,
+  /// and arrives here.
+  Stream<String> get waitingReceivers => _waitingController.stream;
+
+  /// Starts sending to the device the person picked off that list.
+  ///
+  /// Nothing new is negotiated: the receiver connected and subscribed when it
+  /// announced itself, so this is the go-ahead that used to arrive as its own
+  /// START.
+  Future<void> beginTransfer() async {
+    if (!_usesNativeAppleBridge) return;
+    try {
+      await _method.invokeMethod('beginTransfer');
+    } on MissingPluginException {
+      // An older platform build. The receiver-led path still works.
+    }
+  }
+
   void _handleNativeEvent(dynamic event) {
     final map = Map<String, dynamic>.from(event as Map);
     switch (map['type']) {
@@ -164,6 +188,10 @@ class BluetoothTransferTransport implements TransferTransport {
         break;
       case 'centralConnected':
         _statusController.add(TransferStatus.connecting);
+        break;
+      case 'receiverAnnounced':
+        final name = map['name'] as String?;
+        if (name != null && name.isNotEmpty) _waitingController.add(name);
         break;
       case 'senderProgress':
         final sent = map['sent'] as int;

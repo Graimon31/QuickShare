@@ -837,6 +837,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get btReceiveCodePrompt => 'Enter the code from the sending device';
 
   @override
+  String get btReceiveWaitingToBeChosen =>
+      'Waiting to be picked on the sending device';
+
+  @override
+  String get btReceiveWaitingDetail =>
+      'This device is now listed on the sender. Choose it there to start the transfer.';
+
+  @override
   String get btReceiveCodeInvalid => 'The code is ten digits';
 
   @override

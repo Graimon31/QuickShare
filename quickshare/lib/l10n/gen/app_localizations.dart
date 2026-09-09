@@ -1556,6 +1556,18 @@ abstract class AppLocalizations {
   /// **'Enter the code from the sending device'**
   String get btReceiveCodePrompt;
 
+  /// No description provided for @btReceiveWaitingToBeChosen.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting to be picked on the sending device'**
+  String get btReceiveWaitingToBeChosen;
+
+  /// No description provided for @btReceiveWaitingDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'This device is now listed on the sender. Choose it there to start the transfer.'**
+  String get btReceiveWaitingDetail;
+
   /// No description provided for @btReceiveCodeInvalid.
   ///
   /// In en, this message translates to:

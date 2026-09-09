@@ -188,6 +188,14 @@ class BluetoothReceiverTransport {
         if (_completion?.isCompleted == false) _completion!.complete(path);
         break;
 
+      // Connected, announced, and waiting for the person on the other device
+      // to pick this one. Not a failure, which is how it used to be reported:
+      // there was nothing to start with, and starting was the receiver's job.
+      case 'waitingToBeChosen':
+        _progressController.add(const BluetoothReceiveProgress(
+            phase: 'waiting', fileName: '', received: 0, total: 0));
+        break;
+
       case 'receiverFailed':
         final err = map['error'] as String? ?? 'Unknown error';
         debugPrint('Bluetooth receive failed: $err');

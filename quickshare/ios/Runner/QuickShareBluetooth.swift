@@ -1,6 +1,7 @@
 import Foundation
 import Flutter
 import CoreBluetooth
+import UIKit
 
 /// iOS CoreBluetooth bridge for QuickShare's BLE transport.
 ///
@@ -32,6 +33,21 @@ private enum QuickShareBleControl {
   static let generation = 3
 
   static func capabilities() -> String { "CAPS:\(generation)" }
+
+  /// Written by a receiver that is present but not asking for anything yet,
+  /// so a sender showing a list of devices has something to put in it.
+  /// Mirrors BleControlProtocol.hello in Dart.
+  static let helloPrefix = "HELLO:"
+
+  static func hello(_ deviceName: String) -> String { "\(helloPrefix)\(deviceName)" }
+
+  static func parseHello(_ command: String?) -> String? {
+    guard let command, command.hasPrefix(helloPrefix) else { return nil }
+    let name = String(command.dropFirst(helloPrefix.count))
+      .trimmingCharacters(in: .whitespaces)
+    guard !name.isEmpty, name.count <= 64 else { return nil }
+    return name
+  }
 
   /// The generation a command announces, or nil if it is not a CAPS write.
   static func parseCapabilities(_ command: String) -> Int? {
@@ -195,6 +211,14 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
 
     case "stopAdvertising":
       stopAdvertising()
+      result(nil)
+
+    // The person sending picked a device off the list. Everything the transfer
+    // needs is already in place — the receiver connected and subscribed when
+    // it announced itself — so this is only the go-ahead that used to arrive
+    // as the receiver's own START.
+    case "beginTransfer":
+      beginSenderTransferIfReady()
       result(nil)
 
     default:
@@ -638,6 +662,14 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
         continue
       }
 
+      // A receiver saying it is here without asking for anything. The person
+      // sending picks it off the list; nothing starts until they do.
+      if let name = QuickShareBleControl.parseHello(command) {
+        peripheral.respond(to: request, withResult: .success)
+        emit(["type": "receiverAnnounced", "name": name])
+        continue
+      }
+
       if QuickShareBleControl.isStart(command, token: senderSessionToken) {
         peripheral.respond(to: request, withResult: .success)
         beginSenderTransferIfReady()
@@ -701,11 +733,18 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     // implement.
     peripheral.writeValue(Data(QuickShareBleControl.capabilities().utf8), for: control, type: writeType)
 
+    // Who this is, so the sender can list it. With a token this is a courtesy
+    // ahead of START; without one it is the whole point.
+    peripheral.writeValue(
+      Data(QuickShareBleControl.hello(UIDevice.current.name).utf8),
+      for: control, type: writeType)
+
     guard let token = expectedSessionToken, !token.isEmpty else {
-      // No token means no QR was scanned for this session — there is nothing
-      // to authorise the transfer with, and a bare START is no longer
-      // accepted. Stop here rather than write a command that will be refused.
-      emit(["type": "receiverFailed", "error": "Missing session token — scan the QR code again."])
+      // No code and no QR. This used to be reported as a failure, which was
+      // true only because the receiver had to be the one to start. It no
+      // longer does: the sender has been told this device is here and waiting
+      // to be picked.
+      emit(["type": "waitingToBeChosen"])
       return
     }
     peripheral.writeValue(Data("START:\(token)".utf8), for: control, type: writeType)

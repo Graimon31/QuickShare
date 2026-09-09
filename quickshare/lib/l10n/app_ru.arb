@@ -253,6 +253,8 @@
   "codeEnterHint": "10 цифр",
   "codeNotFound": "Рядом нет устройства с таким кодом",
   "btReceiveCodePrompt": "Введите код с устройства-отправителя",
+  "btReceiveWaitingToBeChosen": "Ждём выбора на устройстве-отправителе",
+  "btReceiveWaitingDetail": "Это устройство видно отправителю. Выберите его там, чтобы начать передачу.",
   "btReceiveCodeInvalid": "Код состоит из 10 цифр",
   "codeMalformed": "Код состоит из 10 цифр"
 }

@@ -205,6 +205,57 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                             textAlign: TextAlign.center,
                           ).animate().fadeIn(delay: 400.ms),
                           const SizedBox(height: 16),
+                          // Who is waiting, when anyone is. Over Bluetooth a
+                          // device cannot be polled for: only the sender
+                          // advertises, so nothing can be listed until a
+                          // receiver opens its own screen and says it is
+                          // there. Absent rather than empty for that reason —
+                          // an empty list here would promise a search that is
+                          // not happening.
+                          if (state.waiting.isNotEmpty) ...[
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                l10n.nearbyTitle,
+                                style: const TextStyle(
+                                  color: AppColors.textSecondary,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 0.4,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            ...state.waiting.map(
+                              (name) => Container(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                decoration: BoxDecoration(
+                                  color: AppColors.glassFillStrong,
+                                  borderRadius: BorderRadius.circular(14),
+                                  border:
+                                      Border.all(color: AppColors.glassBorder),
+                                ),
+                                child: ListTile(
+                                  leading: const Icon(Icons.devices_other_rounded,
+                                      color: AppColors.primary),
+                                  title: Text(name,
+                                      style: const TextStyle(
+                                          color: AppColors.textPrimary)),
+                                  subtitle: Text(l10n.nearbyReady,
+                                      style: const TextStyle(
+                                          color: AppColors.primary,
+                                          fontSize: 12)),
+                                  trailing: const Icon(Icons.chevron_right,
+                                      color: AppColors.textSecondary),
+                                  onTap: () => context
+                                      .read<SenderBloc>()
+                                      .add(const SendToWaitingReceiver()),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+
                           // Digits rather than a link. The two devices are in
                           // the same room — that is what Bluetooth means here
                           // — so the thing to hand over is something a person
