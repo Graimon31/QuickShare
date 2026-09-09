@@ -48,6 +48,14 @@ class NetworkInfoService {
   /// costs the transfer nothing.
   static const Duration _pluginAnswerBudget = Duration(seconds: 2);
 
+  /// Ceiling for deciding whether this machine has a usable local address.
+  ///
+  /// Deliberately larger than [_pluginAnswerBudget]: that budget bounds one
+  /// plugin call, and this bounds the whole question, which spends it and
+  /// then still walks the interface list. Setting the two equal made the
+  /// slow-plugin case answer "no network" on a machine that plainly had one.
+  static const Duration _networkVerdictBudget = Duration(seconds: 6);
+
   Future<String?> _wifiIpFromPlugin() async {
     try {
       return await _networkInfo.getWifiIP().timeout(_pluginAnswerBudget);
@@ -175,10 +183,29 @@ class NetworkInfoService {
         ip.startsWith('169.254.'); // Link-local
   }
 
+  /// Bounded, because a caller blocks on it before the user can do anything.
+  ///
+  /// This decides whether picking "local network" is allowed, and the answer
+  /// comes from a platform channel. When that channel never answered, the
+  /// question never resolved: the transport stayed on whatever was selected
+  /// before, the radio button did not move, no dialog appeared, and clicking
+  /// the mode simply did nothing. Files chosen after that went out over the
+  /// previous transport, which is not what anybody had asked for.
+  ///
+  /// Refusing on a timeout is the wrong answer here rather than a hang: a
+  /// machine with no usable address is exactly the case this reports, and a
+  /// caller that gets false shows the person why.
   Future<bool> isConnectedToWifi() async {
     try {
-      final ip = await getLocalIpAddress();
+      final ip = await getLocalIpAddress().timeout(_networkVerdictBudget);
       return ip != null && ip.isNotEmpty;
+    } on TimeoutException {
+      AppLogger.warning(
+          'The local address lookup did not answer within '
+          '${_networkVerdictBudget.inSeconds}s — treating this network as '
+          'unusable rather than waiting on it',
+          tag: 'NET');
+      return false;
     } catch (e) {
       return false;
     }

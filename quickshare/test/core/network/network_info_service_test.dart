@@ -37,4 +37,23 @@ void main() {
       expect(InternetAddress.tryParse(ip), isNotNull);
     }
   });
+
+  test('deciding whether this network is usable always answers', () async {
+    // What gates picking "local network" as the transport. Unbounded, it did
+    // not merely delay the answer — it withheld it: the mode never changed,
+    // the radio button never moved, no dialog appeared, and clicking the mode
+    // did nothing at all. Files chosen afterwards went out over whichever
+    // transport had been selected before, which on one occasion was Bluetooth,
+    // and that session then hung with nothing in the journal to say so.
+    NetworkInfoPlatform.instance = _SilentNetworkInfo();
+    addTearDown(() => NetworkInfoPlatform.instance = MethodChannelNetworkInfo());
+
+    final sw = Stopwatch()..start();
+    final usable = await NetworkInfoService()
+        .isConnectedToWifi()
+        .timeout(const Duration(seconds: 10));
+
+    expect(sw.elapsed, lessThan(const Duration(seconds: 8)));
+    expect(usable, isA<bool>(), reason: 'an answer, either way, is the point');
+  });
 }

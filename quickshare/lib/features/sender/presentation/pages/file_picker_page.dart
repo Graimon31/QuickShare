@@ -11,6 +11,7 @@ import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/core/media/media_library.dart';
 import 'package:quickshare/core/storage/folder_picker.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/utils/byte_format.dart';
 import 'package:quickshare/features/sender/presentation/pages/media_picker_page.dart';
 import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
@@ -29,6 +30,10 @@ class FilePickerPage extends StatefulWidget {
 
 class _FilePickerPageState extends State<FilePickerPage> {
   TransportType _selectedMode = TransportType.wifi;
+
+  /// True while a mode's preconditions are being decided, so the controls
+  /// cannot be clicked into a half-finished change.
+  bool _modeChangeInFlight = false;
   bool _selectionInFlight = false;
 
   @override
@@ -118,10 +123,33 @@ class _FilePickerPageState extends State<FilePickerPage> {
   /// the moment the files are already chosen: the direct link is what makes
   /// this mode fast, and it needs the Wi-Fi radio awake — not a network, just
   /// the radio.
+  ///
+  /// A refusal leaves the previous mode selected, which is only safe as long
+  /// as it is obvious. It was not: the check behind it can take a moment, and
+  /// while it ran the radio button stayed where it was with nothing on screen
+  /// to say why. Somebody who picked Bluetooth, changed their mind, clicked
+  /// "local network" and saw nothing move went on to choose files believing
+  /// the change had taken — and sent them over Bluetooth.
+  ///
+  /// So the refusal is recorded, and the selection is marked as busy while it
+  /// is decided, which is what stops a second click landing in the middle of
+  /// the first one's dialog.
   Future<void> _selectMode(TransportType type) async {
-    if (_selectionInFlight) return;
-    final allowed = await TransportPreconditions.ensure(context, type);
-    if (!allowed || !mounted) return;
+    if (_selectionInFlight || _modeChangeInFlight) return;
+    setState(() => _modeChangeInFlight = true);
+    final bool allowed;
+    try {
+      allowed = await TransportPreconditions.ensure(context, type);
+    } finally {
+      if (mounted) setState(() => _modeChangeInFlight = false);
+    }
+    if (!mounted) return;
+    if (!allowed) {
+      AppLogger.info(
+          'Staying on ${_selectedMode.name}: ${type.name} is not usable here',
+          tag: 'SENDER');
+      return;
+    }
     setState(() => _selectedMode = type);
     if (type == TransportType.bluetooth) {
       await const WifiSpeedPrompt().ask(context);

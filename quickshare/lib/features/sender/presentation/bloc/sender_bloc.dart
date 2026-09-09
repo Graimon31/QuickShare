@@ -294,6 +294,13 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// only how it is described while it goes.
   FileMetadata? _sessionDisplay;
   String? _sessionFolderName;
+  /// How long raising a Bluetooth advertisement may take before the session
+  /// is called failed.
+  ///
+  /// Generous, because a radio waking up is genuinely slow — and finite,
+  /// because the screen it runs behind offers no way out but force-quitting.
+  static const Duration _bluetoothStartBudget = Duration(seconds: 30);
+
   TransportType _selectedMode = TransportType.wifi;
   DateTime? _lastProgressUpdate;
   int _lastBytes = 0;
@@ -585,6 +592,12 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
     if (mode == TransportType.bluetooth) {
       try {
+        // Said out loud, because the screen underneath cannot say it: every
+        // transport shows the same "indexing" spinner, so a Bluetooth session
+        // that never finishes starting looks exactly like a local-network one
+        // stuck on a folder. Half an hour went into telling those apart from
+        // a journal that recorded neither.
+        AppLogger.info('Starting a Bluetooth session', tag: 'SENDER');
         _activeBluetoothTransport = BluetoothTransferTransport();
         await _activeBluetoothTransport!.initialize();
 
@@ -609,13 +622,19 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         });
 
         final token = const Uuid().v4();
+        // Bounded, because there is no way out of the screen this runs
+        // behind except killing the app. Raising an advertisement is a radio
+        // operation with no deadline of its own, and when it did not come
+        // back the session simply never started — no error, no timeout, the
+        // spinner turning until the app was force-quit.
         await _activeBluetoothTransport!
-            .startSharing(file, token, files: _sessionFiles ?? [file]);
+            .startSharing(file, token, files: _sessionFiles ?? [file])
+            .timeout(_bluetoothStartBudget);
         // Awaited on purpose: the fast path subscribes to the repository's
         // progress stream, and that subscription must exist before the QR
         // shows, or the first progress events fall on the floor. It is cheap
         // now that indexing no longer hashes inline.
-        await _offerBluetoothFastPath(token);
+        await _offerBluetoothFastPath(token).timeout(_bluetoothStartBudget);
         emit(BluetoothAdvertising(
           _makeDummySession(_sessionDisplay ?? file),
           qrData: BluetoothQrPayload(token: token).encode(),
