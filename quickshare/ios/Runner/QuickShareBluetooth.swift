@@ -70,6 +70,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   private var centralManager: CBCentralManager?
   private var discovered: [String: CBPeripheral] = [:]
   private var expectedSessionToken: String?
+  private var expectedPublicId: String?
   private var pendingStartScan = false
   private var targetPeripheral: CBPeripheral?
   private var remoteControl: CBCharacteristic?
@@ -155,7 +156,8 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     switch call.method {
     case "startScanning":
       let args = call.arguments as? [String: Any]
-      startScanning(sessionToken: args?["sessionToken"] as? String)
+      startScanning(sessionToken: args?["sessionToken"] as? String,
+                    publicId: args?["publicId"] as? String)
       result(nil)
 
     case "stopScanning":
@@ -186,7 +188,9 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
         result(FlutterError(code: "BAD_ARGS", message: "files or filePath/fileName/fileSize required", details: nil))
         return
       }
-      startAdvertising(items: items, sessionToken: args["sessionToken"] as? String)
+      startAdvertising(items: items,
+                       sessionToken: args["sessionToken"] as? String,
+                       publicId: args["publicId"] as? String)
       result(nil)
 
     case "stopAdvertising":
@@ -198,9 +202,10 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     }
   }
 
-  private func startScanning(sessionToken: String?) {
+  private func startScanning(sessionToken: String?, publicId: String? = nil) {
     discovered.removeAll()
     expectedSessionToken = sessionToken
+    expectedPublicId = publicId
     let manager = centralManager ?? CBCentralManager(delegate: self, queue: nil)
     centralManager = manager
     if manager.state == .poweredOn {
@@ -287,7 +292,9 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     )]
   }
 
-  private func startAdvertising(items: [QuickShareSenderItem], sessionToken: String?) {
+  private func startAdvertising(items: [QuickShareSenderItem],
+                                sessionToken: String?,
+                                publicId: String? = nil) {
     stopAdvertising()
     senderItems = items
     senderItemIndex = 0
@@ -330,7 +337,17 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     let service = CBMutableService(type: QuickShareBluetoothIDs.service, primary: true)
     service.characteristics = [control, metadataCharacteristic, data]
     pendingServiceToAdd = service
-    pendingDeviceName = sessionToken.map { "QuickShare-\(String($0.prefix(8)))" } ?? "QuickShare"
+    // The public half of the session code when there is one: a receiver who
+    // was read the digits derives the same value and picks this device out of
+    // several, without the code itself ever going over the air. Falling back
+    // to a slice of the token is what every earlier build did, and it puts
+    // eight characters of the session's secret in a packet anyone in range
+    // can read.
+    if let publicId, !publicId.isEmpty {
+      pendingDeviceName = "QuickShare-\(publicId)"
+    } else {
+      pendingDeviceName = sessionToken.map { "QuickShare-\(String($0.prefix(8)))" } ?? "QuickShare"
+    }
     peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
   }
 
@@ -534,10 +551,17 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
 
   public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
     let name = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? "Unknown device"
-    if let expectedSessionToken,
-       !name.contains(String(expectedSessionToken.prefix(8))) &&
-       name.hasPrefix("QuickShare-") {
-      return
+    // What the sender advertises is the session's public identifier, derived
+    // from the code and carrying nothing secret. Earlier builds advertised the
+    // first eight characters of the token instead, so that match stays as the
+    // fallback — dropping it would make this build unable to see them.
+    if name.hasPrefix("QuickShare-") {
+      if let expectedPublicId, !expectedPublicId.isEmpty {
+        if !name.contains(expectedPublicId) { return }
+      } else if let expectedSessionToken,
+                !name.contains(String(expectedSessionToken.prefix(8))) {
+        return
+      }
     }
     let id = peripheral.identifier.uuidString
     if discovered[id] == nil {

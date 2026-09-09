@@ -834,5 +834,11 @@ class AppLocalizationsEn extends AppLocalizations {
   String get codeNotFound => 'No device nearby is offering that code';
 
   @override
+  String get btReceiveCodePrompt => 'Enter the code from the sending device';
+
+  @override
+  String get btReceiveCodeInvalid => 'The code is ten digits';
+
+  @override
   String get codeMalformed => 'A code is 10 digits';
 }

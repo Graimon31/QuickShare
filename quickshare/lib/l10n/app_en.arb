@@ -395,5 +395,7 @@
   "codeEnterPrompt": "Enter the code from the sender",
   "codeEnterHint": "10 digits",
   "codeNotFound": "No device nearby is offering that code",
+  "btReceiveCodePrompt": "Enter the code from the sending device",
+  "btReceiveCodeInvalid": "The code is ten digits",
   "codeMalformed": "A code is 10 digits"
 }

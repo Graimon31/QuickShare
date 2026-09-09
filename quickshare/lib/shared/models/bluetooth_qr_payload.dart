@@ -10,12 +10,21 @@ class BluetoothQrPayload {
 
   final String token;
 
-  const BluetoothQrPayload({required this.token});
+  /// The public half of the session code, when the session has one.
+  ///
+  /// What the sender puts in its advertised name, so the receiver can pick it
+  /// out of several without the token ever going over the air. Empty for a
+  /// session from an older build, which advertised a slice of the token
+  /// instead — the receiver falls back to matching on that.
+  final String publicId;
+
+  const BluetoothQrPayload({required this.token, this.publicId = ''});
 
   String encode() {
     final json = jsonEncode(<String, dynamic>{
       'v': 1,
       'token': token,
+      if (publicId.isNotEmpty) 'cid': publicId,
       'service': serviceUuid,
     });
     return '$prefix${base64Url.encode(utf8.encode(json))}';
@@ -33,7 +42,11 @@ class BluetoothQrPayload {
       }
       final token = json['token'];
       if (token is! String || token.isEmpty || token.length > 128) return null;
-      return BluetoothQrPayload(token: token);
+      final cid = json['cid'];
+      return BluetoothQrPayload(
+        token: token,
+        publicId: cid is String && cid.length <= 32 ? cid : '',
+      );
     } catch (_) {
       return null;
     }

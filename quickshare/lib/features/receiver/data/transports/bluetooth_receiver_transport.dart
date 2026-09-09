@@ -98,7 +98,7 @@ class BluetoothReceiverTransport {
   // Native CoreBluetooth implementation (iOS / macOS)
   // -------------------------------------------------------------------------
 
-  Future<void> startScanning({String? sessionToken}) async {
+  Future<void> startScanning({String? sessionToken, String? publicId}) async {
     _eventSub ??= _events.receiveBroadcastStream().listen(
           _handleEvent,
           onError: (Object e) =>
@@ -107,6 +107,10 @@ class BluetoothReceiverTransport {
     try {
       await _method.invokeMethod('startScanning', {
         if (sessionToken != null) 'sessionToken': sessionToken,
+        // What the sender actually advertises. Matching on the token's first
+        // characters is what earlier builds did, and it only worked because
+        // the sender was broadcasting part of its own secret.
+        if (publicId != null && publicId.isNotEmpty) 'publicId': publicId,
       });
     } on MissingPluginException {
       throw Exception('Bluetooth is unavailable in this build.');

@@ -839,5 +839,11 @@ class AppLocalizationsRu extends AppLocalizations {
   String get codeNotFound => 'Рядом нет устройства с таким кодом';
 
   @override
+  String get btReceiveCodePrompt => 'Введите код с устройства-отправителя';
+
+  @override
+  String get btReceiveCodeInvalid => 'Код состоит из 10 цифр';
+
+  @override
   String get codeMalformed => 'Код состоит из 10 цифр';
 }

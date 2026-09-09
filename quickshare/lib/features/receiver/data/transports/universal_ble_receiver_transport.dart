@@ -118,8 +118,9 @@ class UniversalBleReceiverTransport {
   ///
   /// If [sessionToken] is provided, only peripherals advertising
   /// `QuickShare-<token-prefix>` will be forwarded via [devices].
-  Future<void> startScanning({String? sessionToken}) async {
+  Future<void> startScanning({String? sessionToken, String? publicId}) async {
     _sessionToken = sessionToken;
+    _publicId = publicId;
 
     await UniversalBle.requestPermissions(withAndroidFineLocation: false);
 
@@ -136,11 +137,20 @@ class UniversalBleReceiverTransport {
     AppLogger.info('UniversalBleReceiver: scan started', tag: 'BLE_RECEIVER');
   }
 
+  /// The session's public identifier, which is what the sender advertises.
+  String? _publicId;
+
   bool _filterDevice(BleDevice device) {
+    final name = device.name ?? '';
+    final publicId = _publicId;
+    if (publicId != null && publicId.isNotEmpty) {
+      // The name carries this and nothing secret. A sender too old to publish
+      // it still answers to the token match below.
+      return name.contains('QuickShare-$publicId') || name.contains('QuickShare');
+    }
     if (_sessionToken == null) return true;
     final prefix =
         _sessionToken!.substring(0, _sessionToken!.length.clamp(0, 8));
-    final name = device.name ?? '';
     return name.contains('QuickShare-$prefix') || name.contains('QuickShare');
   }
 

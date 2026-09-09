@@ -209,7 +209,8 @@ class _QRScanPageState extends State<QRScanPage>
 
     final bluetoothPayload = BluetoothQrPayload.tryDecode(rawValue);
     if (bluetoothPayload != null) {
-      unawaited(_openBluetoothAfterSuccess(bluetoothPayload.token));
+      unawaited(_openBluetoothAfterSuccess(
+          bluetoothPayload.token, bluetoothPayload.publicId));
       return;
     }
 
@@ -218,11 +219,17 @@ class _QRScanPageState extends State<QRScanPage>
     context.read<ReceiverBloc>().add(QRCodeScanned(rawValue));
   }
 
-  Future<void> _openBluetoothAfterSuccess(String token) async {
+  Future<void> _openBluetoothAfterSuccess(String token, String publicId) async {
     await Future<void>.delayed(AppMotion.scanSuccess);
     if (!mounted || _isClosing) return;
+    // The identifier travels beside the token because it is what the sender
+    // puts in its advertised name — the token is never broadcast, so matching
+    // on it alone stopped finding anything.
+    final cid = publicId.isEmpty
+        ? ''
+        : '&cid=${Uri.encodeQueryComponent(publicId)}';
     _navigateAfterCameraRelease(
-      '/receive/bluetooth?token=${Uri.encodeQueryComponent(token)}',
+      '/receive/bluetooth?token=${Uri.encodeQueryComponent(token)}$cid',
     );
   }
 

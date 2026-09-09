@@ -191,8 +191,16 @@ class BluetoothTransferTransport implements TransferTransport {
   /// has to be flattened into an archive to travel over Bluetooth.
   /// Advertises the session over BLE. Not part of [TransferTransport]: this
   /// transport's UX is device discovery, not a shareable code.
+  /// [publicId] is what goes out over the air, when there is one.
+  ///
+  /// Derived from the session's digits and not reversible, so a receiver who
+  /// was read the code can pick this device out of several without the code
+  /// itself being broadcast. Advertising a slice of [token] instead — which is
+  /// what happens when this is absent, and what every earlier build did — puts
+  /// the first eight characters of the session's secret in a packet anyone in
+  /// radio range can read.
   Future<String> startSharing(FileMetadata file, String token,
-      {List<FileMetadata>? files}) async {
+      {List<FileMetadata>? files, String publicId = ''}) async {
     final session = (files == null || files.isEmpty) ? [file] : files;
     _totalBytes = session.fold<int>(0, (sum, f) => sum + f.size);
     lastFailureReason = null;
@@ -217,6 +225,7 @@ class BluetoothTransferTransport implements TransferTransport {
           'fileSize': file.size,
           'mimeType': file.mimeType,
           'sessionToken': token,
+          if (publicId.isNotEmpty) 'publicId': publicId,
         });
       } on PlatformException catch (e) {
         throw Exception('Failed to start Bluetooth advertising: ${e.message}');
@@ -257,12 +266,12 @@ class BluetoothTransferTransport implements TransferTransport {
       return file.name;
     }
 
-    await _startUniversalAdvertising(session, token);
+    await _startUniversalAdvertising(session, token, publicId);
     return file.name;
   }
 
   Future<void> _startUniversalAdvertising(
-      List<FileMetadata> session, String token) async {
+      List<FileMetadata> session, String token, String publicId) async {
     await UniversalBle.requestPermissions(withAndroidFineLocation: false);
     final capabilities = await UniversalBlePeripheral.getCapabilities();
     if (!capabilities.supportsPeripheralMode) {
@@ -318,7 +327,9 @@ class BluetoothTransferTransport implements TransferTransport {
     final isWindows = defaultTargetPlatform == TargetPlatform.windows;
     await UniversalBlePeripheral.startAdvertising(
       services: [_serviceUuid],
-      localName: isWindows ? null : 'QuickShare-${token.substring(0, 8)}',
+      localName: isWindows
+          ? null
+          : 'QuickShare-${publicId.isNotEmpty ? publicId : token.substring(0, 8)}',
       platformConfig: PeripheralPlatformConfig(
         android: PeripheralAndroidOptions(
           addServicesInScanResponse: false,

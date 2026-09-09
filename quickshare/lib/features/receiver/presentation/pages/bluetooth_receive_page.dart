@@ -8,6 +8,7 @@ import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/features/receiver/data/client/isolated_qhtp_receiver.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
+import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_transport.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
@@ -20,7 +21,11 @@ import 'package:quickshare/core/utils/byte_format.dart';
 class BluetoothReceivePage extends StatefulWidget {
   final String? sessionToken;
 
-  const BluetoothReceivePage({super.key, this.sessionToken});
+  /// The public half of the sender's session code, from the QR. What the
+  /// sender advertises, and therefore what a scan can match on.
+  final String? publicId;
+
+  const BluetoothReceivePage({super.key, this.sessionToken, this.publicId});
 
   @override
   State<BluetoothReceivePage> createState() => _BluetoothReceivePageState();
@@ -40,6 +45,17 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   String? _error;
   bool _autoConnectAttempted = false;
 
+  /// Set when the person typed the code instead of scanning the QR. Both
+  /// arrive at the same two values, which is the point of deriving them from
+  /// the digits rather than sending them.
+  String? _typedToken;
+  String? _typedPublicId;
+  final _codeField = TextEditingController();
+  String? _codeError;
+
+  String? get _token => _typedToken ?? widget.sessionToken;
+  String? get _publicId => _typedPublicId ?? widget.publicId;
+
   @override
   void initState() {
     super.initState();
@@ -48,7 +64,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       if (!_devices.any((e) => e.id == d.id)) {
         setState(() => _devices.add(d));
       }
-      if (widget.sessionToken != null && !_autoConnectAttempted) {
+      if (_token != null && !_autoConnectAttempted) {
         _autoConnectAttempted = true;
         _connect(d);
       }
@@ -154,6 +170,29 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     );
   }
 
+  /// Takes the ten digits and looks for the device advertising them.
+  ///
+  /// The same two values the QR would have handed over — the token that
+  /// authorises the transfer and the identifier the sender advertises — are
+  /// both derived from the digits here, so nothing about the session has to
+  /// travel between the devices for a typed code to work.
+  Future<void> _useTypedCode() async {
+    final l10n = AppLocalizations.of(context);
+    final code = SessionCode.parse(_codeField.text);
+    if (code == null) {
+      setState(() => _codeError = l10n.btReceiveCodeInvalid);
+      return;
+    }
+    setState(() {
+      _codeError = null;
+      _typedToken = code.sessionToken;
+      _typedPublicId = code.publicId;
+    });
+    await _transport.stopScanning();
+    if (!mounted) return;
+    await _startScan();
+  }
+
   Future<void> _startScan() async {
     setState(() {
       _phase = _Phase.scanning;
@@ -162,7 +201,8 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       _autoConnectAttempted = false;
     });
     try {
-      await _transport.startScanning(sessionToken: widget.sessionToken);
+      await _transport.startScanning(
+          sessionToken: _token, publicId: _publicId);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -226,6 +266,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
 
   @override
   void dispose() {
+    _codeField.dispose();
     _transport.cancel();
     _transport.dispose();
     super.dispose();
@@ -274,7 +315,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              widget.sessionToken == null
+              _token == null
                   ? l10n.btReceiveLookingNearby
                   : l10n.btReceiveLookingQr,
               style: theme.textTheme.titleMedium?.copyWith(
@@ -309,6 +350,46 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
                   ),
                 ),
               ),
+
+            // Digits, for the case the list cannot solve on its own: several
+            // devices in range look alike, and a camera is not always pointed
+            // at the QR. The code names one of them without anything about the
+            // session travelling between the two.
+            const SizedBox(height: 24),
+            Text(
+              l10n.nearbyOrPaste,
+              style: const TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.4,
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _codeField,
+              keyboardType: TextInputType.number,
+              style: const TextStyle(
+                  color: AppColors.textPrimary, letterSpacing: 2),
+              decoration: InputDecoration(
+                hintText: l10n.btReceiveCodePrompt,
+                hintStyle: const TextStyle(color: AppColors.textSecondary),
+                errorText: _codeError,
+                filled: true,
+                fillColor: AppColors.glassFillStrong,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  borderSide: const BorderSide(color: AppColors.glassBorder),
+                ),
+              ),
+              onSubmitted: (_) => _useTypedCode(),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.icon(
+              onPressed: _useTypedCode,
+              icon: const Icon(Icons.download_rounded),
+              label: Text(l10n.codeReceiveReceiveButton),
+            ),
           ],
         );
 

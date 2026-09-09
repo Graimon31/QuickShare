@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
-import 'package:uuid/uuid.dart';
 
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
@@ -188,10 +187,14 @@ class BluetoothAdvertising extends SenderState {
   /// being flattened into an archive to fit this channel.
   final int itemCount;
 
+  /// The short numeric code for this session, for a receiver with no camera
+  /// pointed at the QR. Its public half is what this device advertises.
+  final SessionCode? code;
+
   const BluetoothAdvertising(this.session,
-      {required this.qrData, this.itemCount = 1});
+      {required this.qrData, this.itemCount = 1, this.code});
   @override
-  List<Object?> get props => [session, qrData, itemCount];
+  List<Object?> get props => [session, qrData, itemCount, code];
 }
 
 class Transferring extends SenderState {
@@ -621,14 +624,22 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           }
         });
 
-        final token = const Uuid().v4();
+        // One code decides the session, exactly as on the local network: the
+        // token that authorises the transfer and the public identifier that
+        // goes out over the air are both derived from the same ten digits, so
+        // somebody who was read them can take the transfer without a QR code
+        // and without anything else travelling between the two devices.
+        final sessionCode = SessionCode.generate();
+        final token = sessionCode.sessionToken;
         // Bounded, because there is no way out of the screen this runs
         // behind except killing the app. Raising an advertisement is a radio
         // operation with no deadline of its own, and when it did not come
         // back the session simply never started — no error, no timeout, the
         // spinner turning until the app was force-quit.
         await _activeBluetoothTransport!
-            .startSharing(file, token, files: _sessionFiles ?? [file])
+            .startSharing(file, token,
+                files: _sessionFiles ?? [file],
+                publicId: sessionCode.publicId)
             .timeout(_bluetoothStartBudget);
         // Awaited on purpose: the fast path subscribes to the repository's
         // progress stream, and that subscription must exist before the QR
@@ -637,8 +648,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         await _offerBluetoothFastPath(token).timeout(_bluetoothStartBudget);
         emit(BluetoothAdvertising(
           _makeDummySession(_sessionDisplay ?? file),
-          qrData: BluetoothQrPayload(token: token).encode(),
+          qrData: BluetoothQrPayload(
+                  token: token, publicId: sessionCode.publicId)
+              .encode(),
           itemCount: (_sessionFiles ?? [file]).length,
+          code: sessionCode,
         ));
       } catch (e) {
         debugPrint('Bluetooth init error: $e');

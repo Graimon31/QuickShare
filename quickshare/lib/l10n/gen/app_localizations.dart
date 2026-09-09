@@ -1550,6 +1550,18 @@ abstract class AppLocalizations {
   /// **'No device nearby is offering that code'**
   String get codeNotFound;
 
+  /// No description provided for @btReceiveCodePrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the code from the sending device'**
+  String get btReceiveCodePrompt;
+
+  /// No description provided for @btReceiveCodeInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'The code is ten digits'**
+  String get btReceiveCodeInvalid;
+
   /// No description provided for @codeMalformed.
   ///
   /// In en, this message translates to:

@@ -205,13 +205,27 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                             textAlign: TextAlign.center,
                           ).animate().fadeIn(delay: 400.ms),
                           const SizedBox(height: 16),
-                          CopyValueRow(
-                            icon: Icons.link,
-                            label: l10n.qrDisplayShareLinkLabel,
-                            value: shareLink,
-                            copiedMessage: l10n.qrDisplayLinkCopied,
-                            copyTooltip: l10n.commonCopy,
-                          ),
+                          // Digits rather than a link. The two devices are in
+                          // the same room — that is what Bluetooth means here
+                          // — so the thing to hand over is something a person
+                          // can read out, not a URL that needs a messenger
+                          // open on both ends to travel.
+                          if (state.code != null)
+                            CopyValueRow(
+                              icon: Icons.pin_rounded,
+                              label: l10n.codeLabel,
+                              value: state.code!.display,
+                              copiedMessage: l10n.qrDisplayLinkCopied,
+                              copyTooltip: l10n.commonCopy,
+                            )
+                          else
+                            CopyValueRow(
+                              icon: Icons.link,
+                              label: l10n.qrDisplayShareLinkLabel,
+                              value: shareLink,
+                              copiedMessage: l10n.qrDisplayLinkCopied,
+                              copyTooltip: l10n.commonCopy,
+                            ),
                           const SizedBox(height: 12),
                           Text(
                             l10n.qrDisplaySessionExpires(

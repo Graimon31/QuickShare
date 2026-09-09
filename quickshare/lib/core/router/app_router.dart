@@ -93,6 +93,7 @@ class AppRouter {
           state,
           BluetoothReceivePage(
             sessionToken: state.uri.queryParameters['token'],
+            publicId: state.uri.queryParameters['cid'],
           ),
           sharedAxis: true,
         ),
