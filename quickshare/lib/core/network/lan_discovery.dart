@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:nsd/nsd.dart' as nsd;
 
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -255,8 +256,40 @@ class LanDiscoveryService {
   final StreamController<List<DiscoveredPeer>> _peersController =
       StreamController<List<DiscoveredPeer>>.broadcast();
 
-  LanDiscoveryService({String? serviceType})
-      : type = serviceType ?? LanDiscoveryService.serviceType;
+  /// How long a device has to accept a connection before it is not counted as
+  /// answering. A listening socket on the same network answers in about a
+  /// millisecond; this is the budget for a lost packet, not for a slow device.
+  static const Duration reachabilityBudget = Duration(seconds: 1);
+
+  /// Missed answers before a device leaves the list.
+  ///
+  /// More than one because Wi-Fi drops packets, and a device blinking out of
+  /// the list and back is worse than one that lingers a couple of seconds.
+  static const int strikesBeforeGone = 2;
+
+  /// Consecutive probes a device has failed, by id.
+  final Map<String, int> _strikes = {};
+
+  /// Asks whether anything is listening. Injected by tests; the real one opens
+  /// a socket and closes it again.
+  final Future<bool> Function(InternetAddress address, int port) _answersOn;
+
+  LanDiscoveryService({
+    String? serviceType,
+    Future<bool> Function(InternetAddress address, int port)? answersOn,
+  })  : type = serviceType ?? LanDiscoveryService.serviceType,
+        _answersOn = answersOn ?? _opensASocket;
+
+  static Future<bool> _opensASocket(InternetAddress address, int port) async {
+    try {
+      final socket =
+          await Socket.connect(address, port, timeout: reachabilityBudget);
+      socket.destroy();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// Bounds one call into the platform's responder, with a timer this service
   /// can cancel.
@@ -441,9 +474,26 @@ class LanDiscoveryService {
     final services = List<nsd.Service>.of(discovery.services);
     final resolved = await Future.wait(services.map(_reread));
 
-    for (final peer in resolved) {
-      if (peer == null) continue;
-      if (peer.id == _self?.id) continue;
+    final candidates = resolved
+        .whereType<DiscoveredPeer>()
+        .where((p) => p.id != _self?.id)
+        .toList();
+
+    // Being announced is not the same as being there, and the gap between the
+    // two is not small: a record outlives the app that published it by the
+    // best part of an hour, and an app that is force-quit or suspended never
+    // gets to say goodbye at all. The list was showing a phone whose app had
+    // been closed for minutes — and, because each launch announces a fresh
+    // identifier, sometimes showing it twice from two different launches.
+    //
+    // So each one is asked. A device that answers on the port it published is
+    // there; a device that does not is a leftover record, whatever the
+    // responder still believes.
+    final answered = await Future.wait(candidates.map(stillThere));
+
+    for (var i = 0; i < candidates.length; i++) {
+      if (!answered[i]) continue;
+      final peer = candidates[i];
 
       seen.add(peer.id);
       final existing = _peers[peer.id];
@@ -478,6 +528,37 @@ class LanDiscoveryService {
     if (changed) _emit();
   }
 
+  /// Whether [peer] answers where it said it could be reached.
+  ///
+  /// A device that publishes no port to be reached on cannot be asked, so it
+  /// is taken at its word rather than dropped — that is an older build or one
+  /// that is only browsing, not a stale record.
+  ///
+  /// A single missed answer is not enough to remove it: [strikesBeforeGone]
+  /// consecutive ones are, because a device flickering out of the list and
+  /// back on one lost packet is worse than one that lingers a second longer.
+  @visibleForTesting
+  Future<bool> stillThere(DiscoveredPeer peer) async {
+    final port = peer.invitePort > 0 ? peer.invitePort : peer.port;
+    if (port <= 0) return true;
+
+    if (await _answersOn(peer.address, port)) {
+      _strikes.remove(peer.id);
+      return true;
+    }
+
+    final missed = (_strikes[peer.id] ?? 0) + 1;
+    _strikes[peer.id] = missed;
+    if (missed < strikesBeforeGone) return true;
+
+    if (_peers.containsKey(peer.id)) {
+      AppLogger.info(
+          '${peer.name} stopped answering on :$port — dropping it from the list',
+          tag: 'DISCOVERY');
+    }
+    return false;
+  }
+
   /// Asks the platform for one service's current record.
   ///
   /// Falls back to what the browser already handed us when the responder will
@@ -503,6 +584,7 @@ class LanDiscoveryService {
     _cancelPendingTimeouts();
     _reconcile?.cancel();
     _reconcile = null;
+    _strikes.clear();
 
     final discovery = _discovery;
     _discovery = null;
