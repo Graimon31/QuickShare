@@ -109,6 +109,15 @@ class _QRScanPageState extends State<QRScanPage>
 
   void _openCodeEntry() => _navigateAfterCameraRelease('/receive/code');
 
+  /// Opening this is what makes this device visible over Bluetooth.
+  ///
+  /// There is no way around the tap: only the sender advertises, so a phone
+  /// sitting on the home screen cannot be found however long the other side
+  /// looks. Somebody who opened the app and waited to appear was waiting for
+  /// something that could not happen.
+  void _openBluetoothReceive() =>
+      _navigateAfterCameraRelease('/receive/bluetooth');
+
   void _navigateAfterCameraRelease(String location, {Object? extra}) {
     if (_isClosing) return;
 
@@ -337,6 +346,18 @@ class _QRScanPageState extends State<QRScanPage>
                         onPressed: _openCodeEntry,
                         icon: const Icon(Icons.keyboard, color: Colors.white),
                         label: Text(l10n.qrScanEnterCode),
+                      ),
+                      const SizedBox(height: 10),
+                      TextButton.icon(
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20)),
+                        ),
+                        onPressed: _openBluetoothReceive,
+                        icon: const Icon(Icons.bluetooth_rounded,
+                            color: Colors.white),
+                        label: Text(l10n.qrScanBluetoothReceive),
                       ),
                     ],
                   ),

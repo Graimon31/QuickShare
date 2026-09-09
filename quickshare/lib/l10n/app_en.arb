@@ -396,6 +396,7 @@
   "codeEnterHint": "10 digits",
   "codeNotFound": "No device nearby is offering that code",
   "btReceiveCodePrompt": "Enter the code from the sending device",
+  "qrScanBluetoothReceive": "Receive over Bluetooth",
   "btReceiveWaitingToBeChosen": "Waiting to be picked on the sending device",
   "btReceiveWaitingDetail": "This device is now listed on the sender. Choose it there to start the transfer.",
   "btReceiveCodeInvalid": "The code is ten digits",

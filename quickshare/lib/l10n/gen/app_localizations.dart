@@ -1556,6 +1556,12 @@ abstract class AppLocalizations {
   /// **'Enter the code from the sending device'**
   String get btReceiveCodePrompt;
 
+  /// No description provided for @qrScanBluetoothReceive.
+  ///
+  /// In en, this message translates to:
+  /// **'Receive over Bluetooth'**
+  String get qrScanBluetoothReceive;
+
   /// No description provided for @btReceiveWaitingToBeChosen.
   ///
   /// In en, this message translates to:

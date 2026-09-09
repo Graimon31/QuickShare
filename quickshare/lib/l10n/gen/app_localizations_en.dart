@@ -837,6 +837,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get btReceiveCodePrompt => 'Enter the code from the sending device';
 
   @override
+  String get qrScanBluetoothReceive => 'Receive over Bluetooth';
+
+  @override
   String get btReceiveWaitingToBeChosen =>
       'Waiting to be picked on the sending device';
 

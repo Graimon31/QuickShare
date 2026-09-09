@@ -842,6 +842,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get btReceiveCodePrompt => 'Введите код с устройства-отправителя';
 
   @override
+  String get qrScanBluetoothReceive => 'Получить по Bluetooth';
+
+  @override
   String get btReceiveWaitingToBeChosen =>
       'Ждём выбора на устройстве-отправителе';
 

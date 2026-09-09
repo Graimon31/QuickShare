@@ -70,7 +70,12 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       if (!_devices.any((e) => e.id == d.id)) {
         setState(() => _devices.add(d));
       }
-      if (_token != null && !_autoConnectAttempted) {
+      // Connected without waiting to be tapped, whether or not there is a
+      // token. With one this starts the transfer, as it always did. Without
+      // one it announces this device to that sender and waits — which is the
+      // only way it can appear on the sending screen at all, since over this
+      // radio a device that has not spoken cannot be polled for.
+      if (!_autoConnectAttempted) {
         _autoConnectAttempted = true;
         _connect(d);
       }
