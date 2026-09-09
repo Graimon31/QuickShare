@@ -347,18 +347,6 @@ class _QRScanPageState extends State<QRScanPage>
                         icon: const Icon(Icons.keyboard, color: Colors.white),
                         label: Text(l10n.qrScanEnterCode),
                       ),
-                      const SizedBox(height: 10),
-                      TextButton.icon(
-                        style: TextButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20)),
-                        ),
-                        onPressed: _openBluetoothReceive,
-                        icon: const Icon(Icons.bluetooth_rounded,
-                            color: Colors.white),
-                        label: Text(l10n.qrScanBluetoothReceive),
-                      ),
                     ],
                   ),
                 ),
@@ -391,6 +379,20 @@ class _QRScanPageState extends State<QRScanPage>
                         ),
                         const SizedBox(height: 12),
                       ],
+                      TextButton.icon(
+                        style: TextButton.styleFrom(
+                          backgroundColor:
+                              AppColors.voidBg.withValues(alpha: 0.72),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20)),
+                        ),
+                        onPressed: _openBluetoothReceive,
+                        icon: const Icon(Icons.bluetooth_rounded,
+                            color: Colors.white),
+                        label: Text(l10n.qrScanBluetoothReceive),
+                      ),
+                      const SizedBox(height: 12),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [
