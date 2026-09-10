@@ -28,6 +28,7 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
   Timer? _timer;
   int _secondsLeft = AppConstants.sessionTimeoutSeconds;
   bool _expired = false;
+  String? _connectingDevice;
 
   @override
   void initState() {
@@ -53,6 +54,7 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
   void _refreshSession() {
     setState(() {
       _expired = false;
+      _connectingDevice = null;
       _secondsLeft = AppConstants.sessionTimeoutSeconds;
     });
     _startTimer();
@@ -229,31 +231,51 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                             ),
                             const SizedBox(height: 10),
                             ...state.waiting.map(
-                              (name) => Container(
-                                margin: const EdgeInsets.only(bottom: 8),
-                                decoration: BoxDecoration(
-                                  color: AppColors.glassFillStrong,
-                                  borderRadius: BorderRadius.circular(14),
-                                  border:
-                                      Border.all(color: AppColors.glassBorder),
-                                ),
-                                child: ListTile(
-                                  leading: const Icon(Icons.devices_other_rounded,
-                                      color: AppColors.primary),
-                                  title: Text(name,
-                                      style: const TextStyle(
-                                          color: AppColors.textPrimary)),
-                                  subtitle: Text(l10n.nearbyReady,
-                                      style: const TextStyle(
-                                          color: AppColors.primary,
-                                          fontSize: 12)),
-                                  trailing: const Icon(Icons.chevron_right,
-                                      color: AppColors.textSecondary),
-                                  onTap: () => context
-                                      .read<SenderBloc>()
-                                      .add(const SendToWaitingReceiver()),
-                                ),
-                              ),
+                              (name) {
+                                final isConnecting = _connectingDevice == name;
+                                return Container(
+                                  margin: const EdgeInsets.only(bottom: 8),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.glassFillStrong,
+                                    borderRadius: BorderRadius.circular(14),
+                                    border:
+                                        Border.all(color: AppColors.glassBorder),
+                                  ),
+                                  child: ListTile(
+                                    leading: const Icon(Icons.devices_other_rounded,
+                                        color: AppColors.primary),
+                                    title: Text(name,
+                                        style: const TextStyle(
+                                            color: AppColors.textPrimary)),
+                                    subtitle: Text(
+                                        isConnecting
+                                            ? l10n.btReceiveConnecting
+                                            : l10n.nearbyReady,
+                                        style: const TextStyle(
+                                            color: AppColors.primary,
+                                            fontSize: 12)),
+                                    trailing: isConnecting
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: AppColors.primary,
+                                            ),
+                                          )
+                                        : const Icon(Icons.chevron_right,
+                                            color: AppColors.textSecondary),
+                                    onTap: isConnecting
+                                        ? null
+                                        : () {
+                                            setState(() => _connectingDevice = name);
+                                            context
+                                                .read<SenderBloc>()
+                                                .add(const SendToWaitingReceiver());
+                                          },
+                                  ),
+                                );
+                              },
                             ),
                             const SizedBox(height: 16),
                           ],

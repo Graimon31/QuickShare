@@ -13,6 +13,7 @@ import 'package:quickshare/core/utils/streaming_digest.dart';
 import 'package:quickshare/features/sender/data/server/http_range.dart';
 import 'package:quickshare/features/sender/data/indexer/file_indexer.dart';
 import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
+import 'package:quickshare/core/utils/background_hold.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 class LocalHttpServer {
@@ -31,6 +32,23 @@ class LocalHttpServer {
   QhtpManifest? _activeManifest;
   Map<String, String>? _itemIdToAbsPathMap;
   Map<String, Future<String?>>? _itemChecksums;
+
+  /// The file list, once whatever is producing it has finished.
+  ///
+  /// A QHTP session serves before it knows what is in it. Walking a
+  /// thousand-folder selection is one directory read after another and one
+  /// `stat` per file, and holding the QR code behind that made the wait
+  /// proportional to the number of files rather than to their size — a
+  /// terabyte in four files appeared at once, and forty thousand small ones
+  /// took as long as the disk needed to describe every one of them, with
+  /// nothing on screen but a spinner. The port is bound and the QR is up as
+  /// soon as the socket exists; everything that actually needs the list —
+  /// the manifest, the session summary, any file request — waits here.
+  Future<QhtpIndexerResult>? _pendingIndex;
+
+  /// Whether the session being served speaks QHTP, independent of whether
+  /// its manifest has arrived yet.
+  bool _isQhtpSession = false;
 
   /// Digests worked out while the file was going out over the wire.
   ///
@@ -228,6 +246,7 @@ class LocalHttpServer {
     // having happened. Awaiting it put a plugin call on the path between the
     // user's selection and the QR — the QHTP start below never did.
     unawaited(WakelockPlus.enable().catchError((_) {}));
+    unawaited(BackgroundHold.begin());
     _authToken = authToken;
     _sessionComplete = false;
 
@@ -311,17 +330,67 @@ class LocalHttpServer {
     required Map<String, String> itemIdToAbsPathMap,
     required String authToken,
     Map<String, Future<String?>>? checksums,
+  }) =>
+      _serveQhtpSession(
+        sessionId: manifest.sessionId,
+        index: Future.value(QhtpIndexerResult(
+          manifest: manifest,
+          itemIdToAbsPathMap: itemIdToAbsPathMap,
+        )),
+        authToken: authToken,
+        checksums: checksums,
+      );
+
+  /// Serves a session whose selection is still being walked.
+  ///
+  /// Returns as soon as the port is bound, which is everything the QR code
+  /// needs: an address, a port, a token and a certificate. [index] is the
+  /// walk still running; the handlers that need it wait on it, so the first
+  /// byte still leaves only once the manifest is real. [sessionId] is known
+  /// up front because the caller mints it, not the indexer.
+  ///
+  /// Nothing here starts the walk or owns its errors: an index that throws
+  /// makes every request that needs it answer 500, and the caller is
+  /// expected to be watching the same future and to end the session.
+  Future<int> startQhtpSessionWhileIndexing({
+    required String sessionId,
+    required Future<QhtpIndexerResult> index,
+    required String authToken,
+  }) =>
+      _serveQhtpSession(
+          sessionId: sessionId, index: index, authToken: authToken);
+
+  Future<int> _serveQhtpSession({
+    required String sessionId,
+    required Future<QhtpIndexerResult> index,
+    required String authToken,
+    Map<String, Future<String?>>? checksums,
   }) async {
     if (_server != null) {
       await stop();
     }
     WakelockPlus.enable();
+    unawaited(BackgroundHold.begin());
     _authToken = authToken;
     _sessionComplete = false;
-    _activeManifest = manifest;
-    _itemIdToAbsPathMap = itemIdToAbsPathMap;
+    _isQhtpSession = true;
+    _activeManifest = null;
+    _itemIdToAbsPathMap = null;
+    _pendingIndex = index;
     _qhtpBytesSent = 0;
     _itemChecksums = checksums;
+
+    // Published the moment the walk lands, so everything that reads the
+    // manifest synchronously — the idle timeout, a merged digest — sees it
+    // without going through the future again. The identity check keeps a
+    // walk that outlived its session from arming the one that replaced it.
+    unawaited(index.then((result) {
+      if (!identical(_pendingIndex, index)) return;
+      _activeManifest = result.manifest;
+      _itemIdToAbsPathMap = result.itemIdToAbsPathMap;
+    }, onError: (Object _) {
+      // The caller owns this failure; here it only means no manifest.
+    }));
     if (checksums != null) {
       for (final entry in checksums.entries) {
         // Hashing is best-effort: an item whose digest never arrives is
@@ -348,13 +417,19 @@ class LocalHttpServer {
     });
 
     // 2. GET /v2/session (Auth required)
-    router.get('/v2/session', (Request request) {
+    //
+    // Waits for the walk. The receiver asks this to fill in "how much am I
+    // about to accept", and a summary of nothing would be worse than a
+    // summary that takes a moment: the counts are the whole answer.
+    router.get('/v2/session', (Request request) async {
+      final indexed = await _indexOrNull(index);
+      if (indexed == null) return _indexUnavailable();
       return Response.ok(
         jsonEncode({
-          'sessionId': manifest.sessionId,
+          'sessionId': indexed.manifest.sessionId,
           'state': 'READY',
-          'itemCount': manifest.itemCount,
-          'totalBytes': manifest.totalBytes,
+          'itemCount': indexed.manifest.itemCount,
+          'totalBytes': indexed.manifest.totalBytes,
           'protocolVersion': 1,
           'supportsRange': true,
           'supportsNdjsonManifest': false,
@@ -369,7 +444,9 @@ class LocalHttpServer {
       // hashing has barely started when the receiver asks. Holding this
       // answer until hashing completed used to put the whole session's
       // SHA-256 run between the QR scan and the first byte transferred.
-      final active = _activeManifest ?? manifest;
+      final indexed = await _indexOrNull(index);
+      if (indexed == null) return _indexUnavailable();
+      final active = _activeManifest ?? indexed.manifest;
       return Response.ok(
         jsonEncode(active.toJson()),
         headers: {'Content-Type': 'application/json; charset=utf-8'},
@@ -380,6 +457,12 @@ class LocalHttpServer {
     router.get('/v2/files/<id>', (Request request, String id) async {
       _startTimeoutTimer(); // Reset idle timer on authed request
       _recordClientAddress(request);
+
+      // The first request usually arrives while the walk is still running:
+      // the receiver scanned a QR that existed before the file list did.
+      final indexed = await _indexOrNull(index);
+      if (indexed == null) return _indexUnavailable();
+      final manifest = indexed.manifest;
 
       final absPath = _itemIdToAbsPathMap?[id];
       if (absPath == null) {
@@ -474,7 +557,9 @@ class LocalHttpServer {
       // background hashing still has its future. What is left is an item that
       // never streamed in one piece, a resumed download served from a Range
       // request, and only that one is read off the disk now.
-      final active = _activeManifest ?? manifest;
+      final indexed = await _indexOrNull(index);
+      if (indexed == null) return _indexUnavailable();
+      final active = _activeManifest ?? indexed.manifest;
       for (final item in active.items) {
         if (item.id == id && item.sha256 != null && item.sha256!.isNotEmpty) {
           return Response.ok(
@@ -528,6 +613,29 @@ class LocalHttpServer {
 
     return _bindServer(router);
   }
+
+  /// The walk's result, or null if it failed.
+  ///
+  /// Failure is the caller's to report — it knows which folder was
+  /// unreadable and has a screen to say so on. All this needs from it is
+  /// that there is no list, so the request cannot be answered.
+  Future<QhtpIndexerResult?> _indexOrNull(
+      Future<QhtpIndexerResult> index) async {
+    try {
+      return await index;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Response _indexUnavailable() => Response(
+        500,
+        body: jsonEncode({
+          'error': 'The selection could not be read',
+          'code': 'INDEX_FAILED',
+        }),
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+      );
 
   Future<int> _bindServer(Router router) async {
     final handler = const Pipeline()
@@ -645,7 +753,11 @@ class LocalHttpServer {
 
   void _startTimeoutTimer() {
     _timeoutTimer?.cancel();
-    final timeoutSecs = _activeManifest != null
+    // Keyed off the kind of session, not off whether its manifest has
+    // landed: a QHTP session serves before it is indexed, and reading the
+    // manifest's absence as "this is a legacy session" gave a still-walking
+    // selection the shorter timeout.
+    final timeoutSecs = _isQhtpSession
         ? AppConstants.qhtpSessionTimeoutSeconds
         : AppConstants.sessionTimeoutSeconds;
     _timeoutTimer = Timer(Duration(seconds: timeoutSecs), () {
@@ -711,12 +823,15 @@ class LocalHttpServer {
     // by stopping the old one, and releasing a wakelock is not something a
     // transfer should be able to queue behind.
     unawaited(WakelockPlus.disable().catchError((_) {}));
+    unawaited(BackgroundHold.end());
     _timeoutTimer?.cancel();
     _authToken = null;
     _sessionComplete = false;
     _tls = null;
     _activeManifest = null;
     _itemIdToAbsPathMap = null;
+    _pendingIndex = null;
+    _isQhtpSession = false;
     _itemChecksums = null;
     _streamedDigests.clear();
     _lazyDigests.clear();

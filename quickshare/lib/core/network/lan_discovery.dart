@@ -87,6 +87,7 @@ class DiscoveryAnnouncement {
   final String id;
   final String name;
   final String platform;
+  final String ipAddress;
   final int port;
   final String tlsFingerprint;
   final int invitePort;
@@ -99,6 +100,7 @@ class DiscoveryAnnouncement {
     required this.id,
     required this.name,
     required this.platform,
+    this.ipAddress = '',
     this.port = 0,
     this.tlsFingerprint = '',
     this.invitePort = 0,
@@ -119,6 +121,7 @@ class DiscoveryAnnouncement {
         'id': _bytes(id),
         'n': _bytes(name),
         'os': _bytes(platform),
+        if (ipAddress.isNotEmpty) 'a': _bytes(ipAddress),
         if (port > 0) 'p': _bytes('$port'),
         if (tlsFingerprint.isNotEmpty) 'tf': _bytes(tlsFingerprint),
         if (invitePort > 0) 'ip': _bytes('$invitePort'),
@@ -159,17 +162,33 @@ class DiscoveryAnnouncement {
     if (name == null || name.isEmpty) return null;
     if (platform == null || platform.isEmpty) return null;
 
-    // Without an address there is nothing to connect to, however well-formed
-    // the rest of the record is. `firstWhere` with a fallback is not enough
-    // here: an empty list makes the fallback itself throw, and a resolve that
-    // came back with no addresses at all is an ordinary event rather than an
-    // error worth unwinding the stack for.
-    final addresses = service.addresses;
-    if (addresses == null || addresses.isEmpty) return null;
-    final address = addresses.firstWhere(
-      (a) => a.type == InternetAddressType.IPv4,
-      orElse: () => addresses.first,
-    );
+    // Prefer IP address published directly in TXT record (key 'a').
+    // On iOS and macOS, nsd omits service.addresses and getaddrinfo fails for .local mDNS names.
+    InternetAddress? address;
+    final txtIp = _text(txt, 'a');
+    if (txtIp != null && txtIp.isNotEmpty) {
+      final parsed = InternetAddress.tryParse(txtIp);
+      if (parsed != null && !parsed.isLoopback) {
+        address = parsed;
+      }
+    }
+
+    if (address == null) {
+      final addresses = service.addresses;
+      if (addresses == null || addresses.isEmpty) return null;
+      final nonLoopbackIpv4 = addresses.where(
+        (a) => a.type == InternetAddressType.IPv4 && !a.isLoopback,
+      ).toList();
+      address = nonLoopbackIpv4.isNotEmpty
+          ? nonLoopbackIpv4.first
+          : addresses.firstWhere(
+              (a) => !a.isLoopback,
+              orElse: () => addresses.firstWhere(
+                (a) => a.type == InternetAddressType.IPv4,
+                orElse: () => addresses.first,
+              ),
+            );
+    }
 
     return DiscoveredPeer(
       id: id,
@@ -259,13 +278,13 @@ class LanDiscoveryService {
   /// How long a device has to accept a connection before it is not counted as
   /// answering. A listening socket on the same network answers in about a
   /// millisecond; this is the budget for a lost packet, not for a slow device.
-  static const Duration reachabilityBudget = Duration(seconds: 1);
+  static const Duration reachabilityBudget = Duration(milliseconds: 2500);
 
   /// Missed answers before a device leaves the list.
   ///
   /// More than one because Wi-Fi drops packets, and a device blinking out of
   /// the list and back is worse than one that lingers a couple of seconds.
-  static const int strikesBeforeGone = 2;
+  static const int strikesBeforeGone = 8;
 
   /// Consecutive probes a device has failed, by id.
   final Map<String, int> _strikes = {};
@@ -323,6 +342,9 @@ class LanDiscoveryService {
   List<DiscoveredPeer> get current => List.unmodifiable(_peers.values);
 
   bool get isRunning => _discovery != null;
+
+  /// Triggers an immediate reconcile pass to refresh the peer list.
+  Future<void> refresh() => _reconcileNow();
 
   /// Starts browsing, and announces [self] until [stop].
   ///
@@ -386,11 +408,18 @@ class LanDiscoveryService {
         ? self.invitePort
         : (self.port > 0 ? self.port : 1);
 
+    final suffix = self.id.length >= 6 ? self.id.substring(0, 6) : self.id;
+    final maxBaseLen = 63 - 1 - suffix.length;
+    final baseName = self.name.length > maxBaseLen
+        ? self.name.substring(0, maxBaseLen)
+        : self.name;
+    final wireName = suffix.isNotEmpty ? '$baseName-$suffix' : baseName;
+
     try {
       _registration = await _bounded(
         nsd.register(
           nsd.Service(
-            name: self.name,
+            name: wireName,
             type: type,
             port: advertisedPort,
             txt: self.toTxt(),
@@ -502,6 +531,11 @@ class LanDiscoveryService {
           existing.invitePort != peer.invitePort ||
           existing.sessionPublicId != peer.sessionPublicId ||
           existing.address != peer.address) {
+        if (existing == null) {
+          AppLogger.info(
+              'Discovered peer: "${peer.name}" (${peer.platform}) at ${peer.address.address}:${peer.port > 0 ? peer.port : peer.invitePort}',
+              tag: 'DISCOVERY');
+        }
         // Worth a line: a device that never turns up here as serving is the
         // whole difference between a code that matches and one that reports
         // nothing nearby, and that is not visible from either end afterwards.
@@ -521,7 +555,10 @@ class LanDiscoveryService {
     // missed while a resolve was in flight.
     final gone = _peers.keys.where((id) => !seen.contains(id)).toList();
     for (final id in gone) {
-      _peers.remove(id);
+      final gonePeer = _peers.remove(id);
+      if (gonePeer != null) {
+        AppLogger.info('Peer left: "${gonePeer.name}"', tag: 'DISCOVERY');
+      }
       changed = true;
     }
 
@@ -539,10 +576,19 @@ class LanDiscoveryService {
   /// back on one lost packet is worse than one that lingers a second longer.
   @visibleForTesting
   Future<bool> stillThere(DiscoveredPeer peer) async {
-    final port = peer.invitePort > 0 ? peer.invitePort : peer.port;
+    final port = peer.port > 0 ? peer.port : peer.invitePort;
     if (port <= 0) return true;
+    if (peer.address.isLoopback) return false;
 
-    if (await _answersOn(peer.address, port)) {
+    bool reachable = false;
+    if (peer.port > 0 && await _answersOn(peer.address, peer.port)) {
+      reachable = true;
+    } else if (peer.invitePort > 0 &&
+        await _answersOn(peer.address, peer.invitePort)) {
+      reachable = true;
+    }
+
+    if (reachable) {
       _strikes.remove(peer.id);
       return true;
     }
@@ -566,9 +612,56 @@ class LanDiscoveryService {
   /// record than dropped off the screen because one resolve timed out.
   Future<DiscoveredPeer?> _reread(nsd.Service service) async {
     try {
-      final peer = DiscoveryAnnouncement.peerFrom(
-        await _bounded(nsd.resolve(service), 'resolve timed out'),
-      );
+      var resolved = await _bounded(nsd.resolve(service), 'resolve timed out');
+      final mergedTxt = resolved.txt ?? service.txt;
+      final port = (resolved.port != null && resolved.port! > 0)
+          ? resolved.port
+          : service.port;
+      final host = resolved.host ?? service.host;
+
+      if (resolved.addresses == null || resolved.addresses!.isEmpty) {
+        final txtIp = DiscoveryAnnouncement._text(mergedTxt, 'a');
+        if (txtIp != null && txtIp.isNotEmpty) {
+          final parsed = InternetAddress.tryParse(txtIp);
+          if (parsed != null && !parsed.isLoopback) {
+            resolved = nsd.Service(
+              name: resolved.name,
+              type: resolved.type,
+              host: host,
+              port: port,
+              txt: mergedTxt,
+              addresses: [parsed],
+            );
+          }
+        } else {
+          if (host != null && host.isNotEmpty) {
+            try {
+              final lookedUp = await InternetAddress.lookup(
+                host,
+                type: InternetAddressType.IPv4,
+              );
+              resolved = nsd.Service(
+                name: resolved.name,
+                type: resolved.type,
+                host: host,
+                port: port,
+                txt: mergedTxt,
+                addresses: lookedUp,
+              );
+            } catch (_) {}
+          }
+        }
+      } else if (resolved.txt == null && service.txt != null) {
+        resolved = nsd.Service(
+          name: resolved.name,
+          type: resolved.type,
+          host: host,
+          port: port,
+          txt: service.txt,
+          addresses: resolved.addresses,
+        );
+      }
+      final peer = DiscoveryAnnouncement.peerFrom(resolved);
       if (peer != null) return peer;
     } catch (_) {
       // Gone again, or the responder is busy.

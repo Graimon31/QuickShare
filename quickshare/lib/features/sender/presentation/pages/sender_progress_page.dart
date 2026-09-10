@@ -139,6 +139,16 @@ class SenderProgressPage extends StatelessWidget {
                         l10n.senderProgressSending,
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
+                      const SizedBox(height: 16),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          l10n.downloadWakelockWarning,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12),
+                        ),
+                      ),
                       const SizedBox(height: 32),
                       OutlinedButton.icon(
                         onPressed: () => _showCancelDialog(context),

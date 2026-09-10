@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:network_info_plus_platform_interface/network_info_plus_platform_interface.dart';
 
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -57,6 +58,12 @@ class NetworkInfoService {
   static const Duration _networkVerdictBudget = Duration(seconds: 6);
 
   Future<String?> _wifiIpFromPlugin() async {
+    if (Platform.environment.containsKey('FLUTTER_TEST') &&
+        NetworkInfoPlatform.instance.runtimeType
+            .toString()
+            .contains('MethodChannel')) {
+      return null;
+    }
     try {
       return await _networkInfo.getWifiIP().timeout(_pluginAnswerBudget);
     } on TimeoutException {

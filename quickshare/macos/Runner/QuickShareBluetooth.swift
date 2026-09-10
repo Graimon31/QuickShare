@@ -167,6 +167,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     /// lands, or the receiver files them under the previous file.
     private var pendingMetadataJSON: Data?
     private var subscribedToData = false
+    private var subscribedToMetadata = false
     private var subscribedCentral: CBCentral?
     private var transferStarted = false
     private var sendSessionToken: String?
@@ -383,6 +384,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         transferStarted = false
         sendSessionToken = sessionToken
         subscribedToData = false
+        subscribedToMetadata = false
         pendingMetadataJSON = nil
         sendPeerGeneration = nil
         sendFileHandle = nil
@@ -447,6 +449,8 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         metadataChar = nil
         dataChar = nil
         pendingMetadataJSON = nil
+        subscribedToData = false
+        subscribedToMetadata = false
         sendItems = []
         sendItemIndex = 0
         sendItemBytesSent = 0
@@ -520,8 +524,8 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     }
 
     private func pumpSendQueue() {
-        // Generation 4 and up gets the Wi-Fi link, never the file over BLE.
-        guard !sendUsesDirectLink else { return }
+        guard let generation = sendPeerGeneration,
+              generation < BTControl.generation else { return }
         guard let manager = peripheralManager,
               let dataChar = dataChar,
               let metaChar = metadataChar else { return }
@@ -718,11 +722,23 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
     }
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
+        subscribedCentral = central
+        if characteristic.uuid == BTServiceIDs.metadata {
+            subscribedToMetadata = true
+        }
         if characteristic.uuid == BTServiceIDs.data {
             subscribedToData = true
-            subscribedCentral = central
         }
         emit(["type": "centralConnected"])
+    }
+
+    public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
+        if characteristic.uuid == BTServiceIDs.metadata {
+            subscribedToMetadata = false
+        }
+        if characteristic.uuid == BTServiceIDs.data {
+            subscribedToData = false
+        }
     }
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
@@ -745,6 +761,9 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
             // person sending picks it off the list; nothing starts until they
             // do.
             if let name = BTControl.parseHello(command) {
+                if sendPeerGeneration == nil {
+                    sendPeerGeneration = BTControl.generation
+                }
                 peripheral.respond(to: request, withResult: .success)
                 emit(["type": "receiverAnnounced", "name": name])
                 continue
@@ -783,17 +802,20 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
     }
 
     private func beginTransferIfReady() {
-        guard !transferStarted, subscribedToData, metadataChar != nil, pendingMetadataJSON != nil else { return }
+        guard !transferStarted, metadataChar != nil else { return }
 
         // Generation 4 is where the bytes left this radio. A peer from this
         // generation on gets the Wi-Fi link negotiated over this channel
         // instead of the file over it — Dart runs that from the receiverReady
         // event. A peer below it gets told to update rather than sent the
         // file slowly.
-        transferStarted = true
-        if (sendPeerGeneration ?? 1) >= BTControl.generation {
+        let peerGen = sendPeerGeneration ?? BTControl.generation
+        if peerGen >= BTControl.generation {
+            transferStarted = true
             emit(["type": "receiverReady"])
         } else {
+            guard subscribedToData, pendingMetadataJSON != nil else { return }
+            transferStarted = true
             // The error text is English, for the log; the code is what the
             // Dart side translates for the screen.
             emit(["type": "senderFailed",
@@ -900,7 +922,8 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
             // START; neither is a failed connection. Any error lands in
             // didWriteValueFor, which this class deliberately does not
             // implement.
-            peripheral.writeValue(Data(BTControl.capabilities().utf8), for: controlChar, type: writeType)
+            let capsWriteType: CBCharacteristicWriteType = controlChar.properties.contains(.writeWithoutResponse) ? .withoutResponse : writeType
+            peripheral.writeValue(Data(BTControl.capabilities().utf8), for: controlChar, type: capsWriteType)
 
             // Who this is, so the sender can list it. With a token this is a
             // courtesy ahead of START; without one it is the whole point.

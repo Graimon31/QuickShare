@@ -81,6 +81,31 @@ class RestartSession extends SenderEvent {}
 
 class TransferCompleted extends SenderEvent {}
 
+/// The walk behind a session that is already being served has got further.
+///
+/// An event rather than a direct `emit` because the walk outlives the
+/// handler that started it: since the QR stopped waiting for the file list,
+/// the last of these arrives long after `StartQhtpSend` returned and the
+/// emitter it would have used is closed.
+///
+/// [generation] is the session this belongs to. A walk that was still
+/// running when the user cancelled and picked something else would otherwise
+/// redraw the screen of the session that replaced it.
+class IndexProgressed extends SenderEvent {
+  final int items;
+  final int bytes;
+
+  /// The walk finished and these are the real totals, not a running count.
+  final bool complete;
+  final int generation;
+
+  const IndexProgressed(this.items, this.bytes,
+      {required this.generation, this.complete = false});
+
+  @override
+  List<Object?> get props => [items, bytes, complete, generation];
+}
+
 class TransferFailed extends SenderEvent {
   /// English, technical: what goes in the log and in the diagnostics block
   /// somebody copies for help.
@@ -183,6 +208,14 @@ class QRReady extends SenderState {
   final String? folderName;
   final int totalBytes;
 
+  /// The selection is still being walked, so [itemCount] and [totalBytes]
+  /// are not the answer yet — they are zero, or a running count.
+  ///
+  /// The QR itself is complete and scannable from the first frame: it holds
+  /// an address, a port, a token and a certificate, none of which is in the
+  /// selection. Only what the screen says about the size is provisional.
+  final bool indexing;
+
   /// The short numeric code for this session, on the transports where one is
   /// offered.
   ///
@@ -200,12 +233,30 @@ class QRReady extends SenderState {
     this.folderName,
     this.totalBytes = 0,
     this.code,
+    this.indexing = false,
   });
+
+  /// The same session, once the walk behind it has said how much there is.
+  QRReady withTotals(
+          {required int itemCount,
+          required int totalBytes,
+          required bool indexing}) =>
+      QRReady(
+        qrData,
+        session,
+        mode,
+        webLinkUrl: webLinkUrl,
+        itemCount: itemCount,
+        folderName: folderName,
+        totalBytes: totalBytes,
+        code: code,
+        indexing: indexing,
+      );
 
   @override
   List<Object?> get props =>
       [qrData, session, mode, webLinkUrl, itemCount, totalBytes, folderName,
-       code];
+       code, indexing];
 }
 
 /// Bluetooth is advertising and waiting for a receiver that scanned [qrData].
@@ -240,6 +291,14 @@ class BluetoothAdvertising extends SenderState {
         itemCount: itemCount,
         code: code,
         waiting: names,
+      );
+
+  BluetoothAdvertising withItemCount(int count) => BluetoothAdvertising(
+        session,
+        qrData: qrData,
+        itemCount: count,
+        code: code,
+        waiting: waiting,
       );
 
   @override
@@ -347,6 +406,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   List<FileMetadata>? _sessionFiles;
 
+  /// DD-25: the folder walk for internet/Bluetooth. ICE gathering and the
+  /// advertisement do not wait on it; the first byte does.
+  Future<List<FileMetadata>>? _selectionReady;
+
   /// What the sender's own screens call this session, and the folder name
   /// behind it when the session is a folder. Not what is sent — the list is —
   /// only how it is described while it goes.
@@ -420,6 +483,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// answer is no longer wanted.
   int _sessionGeneration = 0;
 
+  /// How many bytes the session turned out to hold, on the paths that start
+  /// serving before the selection has been walked.
+  ///
+  /// Null on a session whose size was known when it started — the Bluetooth
+  /// and internet paths still flatten the selection up front, and there
+  /// [_sessionFiles] is the answer.
+  int? _indexedSessionBytes;
+
   AnswerChannel? _answerChannel;
   StreamSubscription<Uint8List>? _answerSubscription;
 
@@ -459,6 +530,33 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     on<SendToWaitingReceiver>((event, emit) async {
       await _activeBluetoothTransport?.beginTransfer();
     });
+    on<IndexProgressed>((event, emit) async {
+      // A walk belonging to a session the user has already left.
+      if (event.generation != _sessionGeneration) return;
+      // The journal reports how much a session moved, and a session that
+      // started before its selection was described had no size to report
+      // until now.
+      if (event.complete) _indexedSessionBytes = event.bytes;
+
+      final current = state;
+      if (current is ServerStarting) {
+        emit(ServerStarting(
+            indexedItems: event.items, indexedBytes: event.bytes));
+        return;
+      }
+      if (current is QRReady) {
+        emit(current.withTotals(
+          itemCount: event.items,
+          totalBytes: event.bytes,
+          indexing: !event.complete,
+        ));
+        return;
+      }
+      if (current is BluetoothAdvertising && event.complete) {
+        emit(current.withItemCount(event.items));
+      }
+    });
+
     on<NoPathFound>((event, emit) async {
       // The state existed and the screen was already listening for it; the
       // only thing missing was anyone emitting it, so an ICE collapse
@@ -671,8 +769,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _noPathSubscription = _activeWebRtcTransport!.noUsablePath
             .listen((_) => add(const NoPathFound()));
 
-        await _activeWebRtcTransport!
-            .startSharingServerless(file, files: _sessionFiles ?? [file]);
+        await _activeWebRtcTransport!.startSharingServerless(
+          file,
+          files: _sessionFiles,
+          filesReady: _selectionReady,
+        );
 
         final offerSdp = await _activeWebRtcTransport!.createLocalOfferSdp();
         if (offerSdp == null || offerSdp.isEmpty) {
@@ -696,6 +797,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           itemCount: session.length,
           totalBytes: session.fold<int>(0, (sum, f) => sum + f.size),
           folderName: _sessionFolderName,
+          indexing: _sessionFiles == null,
         ));
       } catch (e) {
         debugPrint('WebRTC init error: $e');
@@ -822,6 +924,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _sessionLocalAddress = null;
     _sessionDisplay = null;
     _sessionFolderName = null;
+    _indexedSessionBytes = null;
     final mode = event.mode ?? _selectedMode;
     if (mode == TransportType.internet || mode == TransportType.bluetooth) {
       if (event.paths.isEmpty) {
@@ -830,52 +933,70 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         return;
       }
 
-      // Nothing is bundled any more, on any channel.
+      // The walk is not on the way to the QR.
       //
-      // A folder is a tree, and every route out of this app now carries one:
-      // the DataChannel manifest and QHTP always could, and the Bluetooth
-      // bridge was taught to. Each file travels with the relative path it has
-      // to keep, so the folder is rebuilt on the far side rather than handed
-      // over as an archive to unpack — photos land in a gallery, a project
-      // folder arrives as a project folder.
-      //
-      // The zip that used to stand here was never about structure anyway. It
-      // was about turning a tree into one object of a known size because the
-      // channel could not express anything else, and it charged for that: a
-      // full deflate pass before the first byte could leave, and a .zip at
-      // the other end whatever the recipient actually wanted. Walking the
-      // selection costs directory reads and no payload pass at all.
+      // ICE gathering and a Bluetooth advertisement need a name, not a
+      // listing. Waiting for `stat` of every inode made a 1 TB folder of
+      // four files appear at once and forty thousand small ones sit on a
+      // spinner. The listing still has to exist before a byte moves — the
+      // DataChannel and the hotspot server both wait on [_selectionReady].
       emit(const ServerStarting());
-      final List<FileMetadata> files;
-      try {
-        files = await expandSelection(event.paths);
-      } catch (e) {
-        // Empty folders, unreadable ones, selections past the size and depth
-        // ceilings — all of which used to surface as "failed to archive".
-        if (!abandoned()) {
+      final placeholder = selectionPlaceholder(event.paths);
+      _currentFile = placeholder;
+      _sessionDisplay = placeholder;
+      _sessionFolderName = event.paths.length == 1 ? placeholder.name : null;
+      _sessionFiles = null;
+      final pending = expandSelection(event.paths);
+      _selectionReady = pending;
+      unawaited(pending.then((files) {
+        if (abandoned() || isClosed) return;
+        _sessionFiles = files;
+        _sessionFolderName = commonRootFolder(files);
+        _sessionDisplay = _sessionFolderName == null
+            ? files.first
+            : FileMetadata(
+                name: _sessionFolderName!,
+                path: event.paths.first,
+                size: files.fold<int>(0, (sum, f) => sum + f.size),
+                mimeType: 'inode/directory',
+              );
+        _currentFile = files.first;
+        add(IndexProgressed(
+          files.length,
+          files.fold<int>(0, (sum, f) => sum + f.size),
+          generation: generation,
+          complete: true,
+        ));
+      }, onError: (Object e) {
+        if (abandoned() || isClosed) return;
+        add(TransferFailed('Could not read the selection: $e',
+            code: FailureCode.selectionUnreadable));
+      }));
+      if (mode == TransportType.bluetooth) {
+        try {
+          final files = await pending;
+          if (abandoned() || isClosed) return;
+          _sessionFiles = files;
+          _sessionFolderName = commonRootFolder(files);
+          _sessionDisplay = _sessionFolderName == null
+              ? files.first
+              : FileMetadata(
+                  name: _sessionFolderName!,
+                  path: event.paths.first,
+                  size: files.fold<int>(0, (sum, f) => sum + f.size),
+                  mimeType: 'inode/directory',
+                );
+          _currentFile = files.first;
+          await _startSendingInternal(files.first, mode, emit);
+        } catch (e) {
+          if (abandoned() || isClosed) return;
           emit(SenderError('Could not read the selection: $e',
               code: FailureCode.selectionUnreadable));
         }
         return;
       }
 
-      if (abandoned()) return;
-      _sessionFiles = files;
-      // The first item is what a single-file session is entirely made of, and
-      // what the transports lead with. Leaving the previous send's list in
-      // place once made the next transfer offer a manifest of files it was
-      // not sending, so both are always set here.
-      _currentFile = files.first;
-      _sessionFolderName = commonRootFolder(files);
-      _sessionDisplay = _sessionFolderName == null
-          ? files.first
-          : FileMetadata(
-              name: _sessionFolderName!,
-              path: event.paths.first,
-              size: files.fold<int>(0, (sum, f) => sum + f.size),
-              mimeType: 'inode/directory',
-            );
-      await _startSendingInternal(files.first, mode, emit);
+      await _startSendingInternal(placeholder, mode, emit);
       return;
     }
 
@@ -890,12 +1011,26 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     final result = await repository.startQhtpTransfer(
       event.paths,
       authToken: sessionCode.sessionToken,
+      // Events, not `emit`. The walk no longer runs inside this handler's
+      // await — the QR goes up first and the walk finishes behind it — so
+      // by the time the last of these arrives this emitter is closed.
       onIndexProgress: (items, bytes) {
-        // Safe to emit from here: the walk runs inside this handler's await,
-        // so the emitter is still open. The generation check keeps a
-        // cancelled session from redrawing the screen it just left.
-        if (abandoned() || isClosed) return;
-        emit(ServerStarting(indexedItems: items, indexedBytes: bytes));
+        if (isClosed) return;
+        add(IndexProgressed(items, bytes, generation: generation));
+      },
+      onIndexed: (items, bytes) {
+        if (isClosed) return;
+        add(IndexProgressed(items, bytes,
+            generation: generation, complete: true));
+      },
+      onIndexFailed: (error) {
+        if (isClosed) return;
+        // The session is serving a file list that does not exist. Ending it
+        // is the only honest outcome, and this is the same reason the
+        // Bluetooth and internet paths report from `expandSelection`.
+        if (generation != _sessionGeneration) return;
+        add(TransferFailed('Could not read the selection: $error',
+            code: FailureCode.selectionUnreadable));
       },
     );
     await result.fold(
@@ -932,6 +1067,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
               code: sessionCode,
               itemCount: session.itemCount,
               totalBytes: session.fileMetadata.size,
+              // Zero on both counts until the walk behind this lands, and
+              // it says so rather than showing "1 item, 0 bytes" as a fact.
+              indexing: true,
             ));
           },
         );
@@ -974,6 +1112,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     final started = await repository.startQhtpTransfer(
       paths,
       authToken: code.sessionToken,
+      // This screen already knows the counts — `expandSelection` walked the
+      // same selection before the radio started advertising — so only the
+      // two facts it does not have are wired up: the real size for the
+      // journal, and a walk that turns out to be unreadable.
+      onIndexed: (_, bytes) {
+        if (!isClosed) _indexedSessionBytes = bytes;
+      },
+      onIndexFailed: (error) {
+        if (isClosed) return;
+        add(TransferFailed('Could not read the selection: $error',
+            code: FailureCode.selectionUnreadable));
+      },
     );
     // `Either` here is the project's own and not sealed, so flow analysis
     // cannot see that one of the two branches always assigns.
@@ -1107,7 +1257,19 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       return;
     }
 
-    final result = await repository.startQhtpTransfer(paths);
+    final generation = _sessionGeneration;
+    _indexedSessionBytes = null;
+    final result = await repository.startQhtpTransfer(
+      paths,
+      onIndexed: (_, bytes) {
+        if (!isClosed) _indexedSessionBytes = bytes;
+      },
+      onIndexFailed: (error) {
+        if (isClosed || generation != _sessionGeneration) return;
+        add(TransferFailed('Could not read the selection: $error',
+            code: FailureCode.selectionUnreadable));
+      },
+    );
     await result.fold(
       (failure) async {
         await hotspot.stopHosting();
@@ -1274,7 +1436,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // just as good a number and it is the one that was missing.
     final bytes = (_sessionFiles != null && _sessionFiles!.isNotEmpty)
         ? _sessionFiles!.fold<int>(0, (sum, f) => sum + f.size)
-        : (_currentFile?.size ?? 0);
+        : (_indexedSessionBytes ?? _currentFile?.size ?? 0);
 
     await _diagnostics.record(TransferReport(
       at: started,

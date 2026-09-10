@@ -686,6 +686,17 @@ class AppLocalizationsEn extends AppLocalizations {
   String get codeReceiveTryAnother => 'Try another code';
 
   @override
+  String get codeReceiveNotFoundLan =>
+      'Sender with this code was not found on your local network. Make sure both devices are on the same Wi-Fi network.';
+
+  @override
+  String get codeReceiveTryBluetooth => 'Search over Bluetooth';
+
+  @override
+  String get codeReceiveSearchingLan =>
+      'Searching for sender on local network…';
+
+  @override
   String get qrScanCameraPermission => 'Camera permission required';
 
   @override
@@ -974,4 +985,7 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get errorSessionWithoutCertificate =>
       'The transfer started without a certificate, so the other device has nothing to trust. Try again.';
+
+  @override
+  String get qrDisplayStillCounting => 'Still counting the files…';
 }

@@ -198,7 +198,9 @@ void main() {
     when(() => repository.transferProgress)
         .thenAnswer((_) => progress.stream);
     when(() => repository.startQhtpTransfer(any(),
-            authToken: any(named: 'authToken')))
+            authToken: any(named: 'authToken'),
+            onIndexed: any(named: 'onIndexed'),
+            onIndexFailed: any(named: 'onIndexFailed')))
         .thenAnswer((_) async => Right(TransferSession(
               id: 'direct-link',
               fileMetadata: const FileMetadata(
@@ -252,7 +254,9 @@ void main() {
     // failure before falling back on the retry.
     final captured = <String?>[];
     when(() => repository.startQhtpTransfer(any(),
-            authToken: any(named: 'authToken')))
+            authToken: any(named: 'authToken'),
+            onIndexed: any(named: 'onIndexed'),
+            onIndexFailed: any(named: 'onIndexFailed')))
         .thenAnswer((invocation) async {
       captured.add(invocation.namedArguments[#authToken] as String?);
       return const Left(NetworkFailure('not needed for this test'));

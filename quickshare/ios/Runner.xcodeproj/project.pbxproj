@@ -12,6 +12,7 @@
 		B1B2C3D4E5F60123456789AB /* PeerLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F60123456789AA /* PeerLink.swift */; };
 		B1B2C3D4E5F60123456789AD /* FolderPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1B2C3D4E5F60123456789AC /* FolderPicker.swift */; };
 		A1B2C3D4E5F60123456789BB /* HotspotBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60123456789BA /* HotspotBridge.swift */; };
+		C1B2C3D4E5F60123456789AB /* BackgroundHold.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1B2C3D4E5F60123456789AA /* BackgroundHold.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
 		78A318202AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage in Frameworks */ = {isa = PBXBuildFile; productRef = 78A3181F2AECB46A00862997 /* FlutterGeneratedPluginSwiftPackage */; };
@@ -47,6 +48,7 @@
 		B1B2C3D4E5F60123456789AA /* PeerLink.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PeerLink.swift; sourceTree = "<group>"; };
 		B1B2C3D4E5F60123456789AC /* FolderPicker.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = FolderPicker.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60123456789BA /* HotspotBridge.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = HotspotBridge.swift; sourceTree = "<group>"; };
+		C1B2C3D4E5F60123456789AA /* BackgroundHold.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = BackgroundHold.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60123456789BC /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
 		78E0A7A72DC9AD7400C4905E /* FlutterGeneratedPluginSwiftPackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = FlutterGeneratedPluginSwiftPackage; path = Flutter/ephemeral/Packages/FlutterGeneratedPluginSwiftPackage; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
@@ -137,6 +139,7 @@
 				B1B2C3D4E5F60123456789AA /* PeerLink.swift */,
 				B1B2C3D4E5F60123456789AC /* FolderPicker.swift */,
 				A1B2C3D4E5F60123456789BA /* HotspotBridge.swift */,
+				C1B2C3D4E5F60123456789AA /* BackgroundHold.swift */,
 				A1B2C3D4E5F60123456789BC /* Runner.entitlements */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 			);
@@ -322,6 +325,7 @@
 				B1B2C3D4E5F60123456789AB /* PeerLink.swift in Sources */,
 				B1B2C3D4E5F60123456789AD /* FolderPicker.swift in Sources */,
 				A1B2C3D4E5F60123456789BB /* HotspotBridge.swift in Sources */,
+				C1B2C3D4E5F60123456789AB /* BackgroundHold.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

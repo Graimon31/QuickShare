@@ -1,5 +1,9 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 
+import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// Fetches short-lived TURN credentials from the DirectDrop Worker
@@ -12,10 +16,25 @@ import 'package:quickshare/core/utils/app_logger.dart';
 class TurnCredentialService {
   final String baseUrl;
   final Dio _dio;
+  final String clientSecret;
 
-  TurnCredentialService({required String baseUrl, Dio? dio})
-      : baseUrl = _stripTrailingSlash(baseUrl),
-        _dio = dio ?? Dio();
+  TurnCredentialService({
+    required String baseUrl,
+    Dio? dio,
+    String? clientSecret,
+  })  : baseUrl = _stripTrailingSlash(baseUrl),
+        _dio = dio ?? Dio(),
+        clientSecret =
+            clientSecret ?? AppConstants.turnClientSecret;
+
+  /// Headers that prove this request came from the app, not a random curl.
+  static Map<String, String> signedHeaders(String secret, {DateTime? now}) {
+    final ts =
+        ((now ?? DateTime.now().toUtc()).millisecondsSinceEpoch ~/ 1000)
+            .toString();
+    final mac = Hmac(sha256, utf8.encode(secret)).convert(utf8.encode(ts));
+    return {'X-DD-Ts': ts, 'X-DD-Mac': mac.toString()};
+  }
 
   static String _stripTrailingSlash(String url) =>
       url.endsWith('/') ? url.substring(0, url.length - 1) : url;
@@ -37,7 +56,14 @@ class TurnCredentialService {
   /// as "credentials last 30 min" and fall back to a fixed timer.
   Future<({List<Map<String, dynamic>> servers, DateTime? expiresAt})>
       fetchIceServersWithExpiry() async {
-    final response = await _dio.post<Map<String, dynamic>>('$baseUrl/turn');
+    if (clientSecret.trim().isEmpty) {
+      throw StateError(
+          'no TURN client secret; not calling /turn unauthenticated');
+    }
+    final response = await _dio.post<Map<String, dynamic>>(
+      '$baseUrl/turn',
+      options: Options(headers: signedHeaders(clientSecret)),
+    );
     final data = response.data;
     if (data == null) {
       throw StateError('empty response from $baseUrl/turn');

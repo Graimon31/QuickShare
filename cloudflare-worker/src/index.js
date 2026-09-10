@@ -22,17 +22,71 @@ function withCors(response) {
   return response;
 }
 
-function json(body, init) {
-  return withCors(
-    new Response(JSON.stringify(body), {
-      ...init,
-      headers: { 'Content-Type': 'application/json', ...(init && init.headers) },
-    }),
+/// HMAC-SHA256 hex of [message] under [secret].
+async function hmacSha256Hex(secret, message) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
   );
+  const sig = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(message),
+  );
+  return [...new Uint8Array(sig)]
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
-function text(body, status) {
-  return withCors(new Response(body, { status }));
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  let out = 0;
+  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return out === 0;
+}
+
+/// DD-02: /turn mints live TURN credentials. A browser page with CORS *
+/// used to be enough to drain the project's Cloudflare Calls quota. The
+/// client signs the unix timestamp with TURN_CLIENT_SECRET; a missing
+/// secret is a misconfigured deploy, not an open endpoint.
+const TURN_AUTH_WINDOW_SECONDS = 300;
+
+async function authorizeTurn(request, env) {
+  const secret = env.TURN_CLIENT_SECRET;
+  if (!secret) {
+    return text('turn client secret is not configured', 503, { cors: false });
+  }
+  const ts = request.headers.get('X-DD-Ts');
+  const mac = request.headers.get('X-DD-Mac');
+  if (!ts || !mac) return text('unauthorized', 401, { cors: false });
+  const t = Number(ts);
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(t) || Math.abs(now - t) > TURN_AUTH_WINDOW_SECONDS) {
+    return text('unauthorized', 401, { cors: false });
+  }
+  const expected = await hmacSha256Hex(secret, ts);
+  if (!timingSafeEqual(expected, mac.toLowerCase())) {
+    return text('unauthorized', 401, { cors: false });
+  }
+  return null;
+}
+
+function json(body, init = {}) {
+  const { cors = true, ...rest } = init;
+  const response = new Response(JSON.stringify(body), {
+    ...rest,
+    headers: { 'Content-Type': 'application/json', ...(rest.headers) },
+  });
+  return cors ? withCors(response) : response;
+}
+
+function text(body, status, { cors = true } = {}) {
+  const response = new Response(body, { status });
+  return cors ? withCors(response) : response;
 }
 
 /// Summarises an unexpected upstream payload without echoing its values.
@@ -230,7 +284,7 @@ async function handleTurn(env) {
         cloudflare: describe(cloudflare),
         metered: describe(metered),
       },
-      { status: 502 },
+      { status: 502, cors: false },
     );
   }
 
@@ -245,7 +299,7 @@ async function handleTurn(env) {
     .map((r) => r.reason.message);
   if (skipped.length) body.skipped = skipped;
 
-  return json(body);
+  return json(body, { cors: false });
 }
 
 async function handleRoomPost(request, env, roomId) {
@@ -285,6 +339,8 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/turn') {
+      const denied = await authorizeTurn(request, env);
+      if (denied) return denied;
       return handleTurn(env);
     }
 

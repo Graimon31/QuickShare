@@ -49,7 +49,17 @@ secrets, with no code change and no redeploy.
    npx wrangler secret put CF_TURN_API_TOKEN
    npx wrangler secret put METERED_SUBDOMAIN
    npx wrangler secret put METERED_API_KEY
+   npx wrangler secret put TURN_CLIENT_SECRET
    ```
+
+   `TURN_CLIENT_SECRET` is required for `POST /turn`. The Flutter app must
+   be built with the same value:
+
+   ```bash
+   flutter build ios --dart-define=QUICKSHARE_TURN_SECRET=<same secret>
+   ```
+
+   Without it the Worker returns 401/503 and the app falls back to STUN-only.
 
 6. Deploy:
 

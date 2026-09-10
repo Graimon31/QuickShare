@@ -10,6 +10,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/network/app_presence.dart';
+import 'package:quickshare/core/network/lan_discovery.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
@@ -32,7 +33,10 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
   /// discoverable is not a property of standing on this page, and the typed
   /// code is matched against the same list the panel draws.
   String? _inputError;
+  SessionCode? _failedCode;
   bool _isSubmitting = false;
+
+  final FocusNode _focusNode = FocusNode();
 
   @override
   void initState() {
@@ -46,6 +50,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
 
   @override
   void dispose() {
+    _focusNode.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -54,6 +59,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     setState(() {
       _controller.clear();
       _inputError = null;
+      _failedCode = null;
       _isSubmitting = false;
     });
   }
@@ -69,6 +75,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     setState(() {
       _isSubmitting = true;
       _inputError = null;
+      _failedCode = null;
     });
 
     // Ten digits mean a device in this room rather than a link from somewhere
@@ -102,23 +109,40 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
   /// session token, which authenticates the fetch — so matching one against
   /// the network is enough to open a session that nobody else can.
   Future<void> _startFromCode(SessionCode code) async {
-    final match = (AppPresence.instance.presence?.current ?? const [])
+    final l10n = AppLocalizations.of(context);
+    DiscoveredPeer? match = (AppPresence.instance.presence?.current ?? const [])
         .where((peer) => peer.sessionPublicId == code.publicId)
         .firstOrNull;
 
+    if (match == null && AppPresence.instance.presence != null) {
+      final presence = AppPresence.instance.presence!;
+      unawaited(presence.refresh());
+
+      try {
+        match = await presence.peers
+            .map((peers) => peers
+                .where((peer) => peer.sessionPublicId == code.publicId)
+                .firstOrNull)
+            .where((peer) => peer != null)
+            .first
+            .timeout(const Duration(seconds: 4));
+      } catch (_) {
+        // Timed out waiting for LAN discovery
+      }
+
+      match ??= presence.current
+          .where((peer) => peer.sessionPublicId == code.publicId)
+          .firstOrNull;
+    }
+
+    if (!mounted) return;
+
     if (match == null) {
-      // Nothing on this network is offering it — but a Bluetooth sender never
-      // would be. The same digits derive the same identifier there, and the
-      // sender puts it in what it advertises over the radio instead, so the
-      // code is worth trying on the other transport before reporting it as
-      // not found. Somebody holding ten digits does not know, and should not
-      // have to know, which radio the sender happened to pick.
-      setState(() => _isSubmitting = false);
-      context.go(
-        '/receive/bluetooth'
-        '?token=${Uri.encodeQueryComponent(code.sessionToken)}'
-        '&cid=${Uri.encodeQueryComponent(code.publicId)}',
-      );
+      setState(() {
+        _isSubmitting = false;
+        _failedCode = code;
+        _inputError = l10n.codeReceiveNotFoundLan;
+      });
       return;
     }
 
@@ -196,7 +220,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
         // one of them asks.
         NearbyDevicesPanel(
           presence: AppPresence.instance.presence,
-          onSelected: (_) {},
+          onSelected: (peer) => _onPeerSelected(peer, l10n),
         ),
         const SizedBox(height: 24),
         Text(
@@ -234,6 +258,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
               ),
               child: TextField(
                 controller: _controller,
+                focusNode: _focusNode,
                 autofocus: true,
                 maxLines: 3,
                 minLines: 1,
@@ -278,9 +303,21 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
             Expanded(
               child: ElevatedButton.icon(
                 onPressed: _isSubmitting ? null : _submit,
-                icon: const Icon(Icons.download_rounded,
-                    size: 18, color: Colors.white),
-                label: Text(l10n.codeReceiveReceiveButton,
+                icon: _isSubmitting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.download_rounded,
+                        size: 18, color: Colors.white),
+                label: Text(
+                    _isSubmitting
+                        ? l10n.codeReceiveSearchingLan
+                        : l10n.codeReceiveReceiveButton,
                     style: GoogleFonts.inter(
                         color: Colors.white, fontWeight: FontWeight.w600)),
                 style: ElevatedButton.styleFrom(
@@ -298,6 +335,33 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
           const SizedBox(height: 16),
           Text(_inputError!,
               style: GoogleFonts.inter(color: AppColors.error, fontSize: 14)),
+          if (_failedCode != null) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () {
+                final code = _failedCode!;
+                context.go(
+                  '/receive/bluetooth'
+                  '?token=${Uri.encodeQueryComponent(code.sessionToken)}'
+                  '&cid=${Uri.encodeQueryComponent(code.publicId)}',
+                );
+              },
+              icon: const Icon(Icons.bluetooth_searching,
+                  size: 18, color: AppColors.primary),
+              label: Text(
+                l10n.codeReceiveTryBluetooth,
+                style: GoogleFonts.inter(
+                    color: AppColors.primary, fontWeight: FontWeight.w600),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: AppColors.primary),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16)),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+              ),
+            ),
+          ],
         ],
       ],
     );
@@ -435,4 +499,30 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     );
   }
 
+  void _onPeerSelected(DiscoveredPeer peer, AppLocalizations l10n) {
+    if (peer.isServing) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              '${peer.name}: ${l10n.codeReceivePastePrompt.toLowerCase()}',
+            ),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      _focusNode.requestFocus();
+    } else {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              '${peer.name} ${l10n.nearbyIdle.toLowerCase()}',
+            ),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+    }
+  }
 }

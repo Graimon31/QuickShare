@@ -66,6 +66,16 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     final l10n = AppLocalizations.of(context);
     final messenger = ScaffoldMessenger.of(context);
 
+    // An invitation is a question with two numbers in it — how many files,
+    // how big — and they are the whole basis on which the other person
+    // says yes. Asking before the walk has counted them would ask them to
+    // accept "0 items, 0 bytes". The wait is the walk's, not this button's,
+    // and it is over in the time it takes to read the screen.
+    if (state.indexing) {
+      messenger.showSnackBar(SnackBar(content: Text(l10n.qrDisplayStillCounting)));
+      return;
+    }
+
     if (!peer.acceptsInvitations) {
       // An older build, or a device that is only browsing. Its own screen
       // never showed a prompt, so waiting for one would time out.
@@ -406,6 +416,19 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                     fontSize: 15,
                                     fontWeight: FontWeight.w700,
                                     color: AppColors.primary,
+                                  ),
+                                )
+                              // The QR is complete and scannable; only the
+                              // size is not known yet. Said out loud, because
+                              // a missing size on a screen that has one a
+                              // second later reads as a glitch.
+                              else if (state.indexing)
+                                Text(
+                                  l10n.qrDisplayStillCounting,
+                                  style: GoogleFonts.inter(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                    color: AppColors.textSecondary,
                                   ),
                                 ),
                             ],

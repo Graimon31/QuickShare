@@ -137,13 +137,16 @@ class IceServers {
   /// §9) is a separate piece of work, not yet wired in.
   static Future<Map<String, dynamic>> configurationDynamic({
     String? workerBaseUrl,
+    String? turnClientSecret,
   }) async {
     final url = workerBaseUrl ?? AppConstants.workerBaseUrl;
     if (url.trim().isEmpty) return configuration();
 
     try {
-      final dynamicTurnServers =
-          await TurnCredentialService(baseUrl: url).fetchIceServers();
+      final dynamicTurnServers = await TurnCredentialService(
+        baseUrl: url,
+        clientSecret: turnClientSecret ?? AppConstants.turnClientSecret,
+      ).fetchIceServers();
 
       // The Worker hands back its own STUN entry, which overlaps the static
       // pool — `stun.cloudflare.com` is in both. A duplicate is not harmless

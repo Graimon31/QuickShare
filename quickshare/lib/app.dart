@@ -17,7 +17,8 @@ class DirectDropApp extends StatefulWidget {
   State<DirectDropApp> createState() => _DirectDropAppState();
 }
 
-class _DirectDropAppState extends State<DirectDropApp> {
+class _DirectDropAppState extends State<DirectDropApp>
+    with WidgetsBindingObserver {
   final _deepLinks = DeepLinkService();
   // App-level rather than page-level: the hotspot outlives the screen that
   // raised it — the transfer moves on to the progress route while the network
@@ -28,6 +29,7 @@ class _DirectDropAppState extends State<DirectDropApp> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // A share link opened from Finder/Mail/Messages routes straight into the
     // receive flow, whether the app was already running or launched by it.
     // The link carries the QR payload itself (`?p=`); receive/code submits it
@@ -47,7 +49,19 @@ class _DirectDropAppState extends State<DirectDropApp> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (!AppPresence.instance.isRunning) {
+        unawaited(AppPresence.instance.start());
+      } else {
+        unawaited(AppPresence.instance.refresh());
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _payloadSub?.cancel();
     _hotspotGuard.detach();
     unawaited(AppPresence.instance.stop());

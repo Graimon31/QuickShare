@@ -145,14 +145,15 @@ class SenderRepositoryImpl implements SenderRepository {
     List<String> paths, {
     String? authToken,
     void Function(int items, int bytes)? onIndexProgress,
+    void Function(int itemCount, int totalBytes)? onIndexed,
+    void Function(Object error)? onIndexFailed,
   }) async {
     try {
       _statusController.add(TransferStatus.serving);
 
-      // Every step from here to the QR happens behind one "indexing" spinner
-      // with no way out, so each one says how long it took. A session that
-      // takes twenty seconds and a session that never starts at all used to
-      // leave the same trace in the journal: none.
+      // Every step from here to the QR says how long it took. A session
+      // that takes twenty seconds and a session that never starts at all
+      // used to leave the same trace in the journal: none.
       final sw = Stopwatch()..start();
 
       // The address lookup is two syscalls behind a platform channel, and
@@ -170,33 +171,51 @@ class SenderRepositoryImpl implements SenderRepository {
       final sessionId = const Uuid().v4();
       final token = authToken ?? const Uuid().v4();
 
-      final indexResult = await indexer.buildResult(
+      // Started, not awaited.
+      //
+      // The QR code is an address, a port, a token and a certificate. None
+      // of those is in the selection, and waiting for the selection to be
+      // described before showing them made the wait proportional to the
+      // number of files rather than their size: a terabyte in four files
+      // appeared at once, forty thousand small ones took as long as the disk
+      // needed to `stat` every one of them. The walk runs behind the QR now
+      // and everything that genuinely needs it — the manifest, the session
+      // summary, the first byte of any file — waits on it inside the server.
+      //
+      // Nothing is hashed up front any more either. That was a separate
+      // wrong: four worker isolates reading the entire selection off the
+      // disk at the exact moment the transfer begins reading the same files
+      // off the same disk. The digest now falls out of sending the file —
+      // the server hashes each response as it streams it, so by the time the
+      // receiver asks, having just finished downloading that item, the
+      // answer is already there.
+      final index = indexer.buildResult(
         sessionId: sessionId,
         paths: paths,
         includeChecksums: false,
         onProgress: onIndexProgress,
       );
 
-      // Nothing is hashed up front any more.
-      //
-      // The QR still goes up on sizes alone, and the manifest still answers
-      // immediately — that part was right. What was wrong was starting four
-      // worker isolates to read the entire selection off the disk at the
-      // exact moment the transfer begins reading the same files off the same
-      // disk. On an internal SSD it was merely wasteful; on an external drive
-      // or a phone the two halved each other, and a session that should have
-      // saturated the link ran at the speed of a disk serving two full passes
-      // over everything.
-      //
-      // The digest now falls out of sending the file: the server hashes each
-      // response as it streams it, so by the time the receiver asks — having
-      // just finished downloading that item — the answer is already there,
-      // for one pass over the bytes instead of two. Only a resumed download,
-      // served from a Range request, is hashed separately, and only when it
-      // is asked for.
-      final port = await localServer.startQhtpSession(
-        manifest: indexResult.manifest,
-        itemIdToAbsPathMap: indexResult.itemIdToAbsPathMap,
+      // Both a listener, so a walk that throws before the server's handlers
+      // ask for it is not an unhandled asynchronous error, and the one
+      // channel the caller learns the real numbers on.
+      unawaited(index.then((result) {
+        AppLogger.info(
+            'Session start: indexed ${result.manifest.itemCount} item(s), '
+            '${result.manifest.totalBytes} bytes, '
+            '${sw.elapsedMilliseconds}ms after the selection was handed over',
+            tag: 'SENDER');
+        onIndexed?.call(
+            result.manifest.itemCount, result.manifest.totalBytes);
+      }, onError: (Object e) {
+        AppLogger.warning('Session start: the selection could not be read: $e',
+            tag: 'SENDER');
+        onIndexFailed?.call(e);
+      }));
+
+      final port = await localServer.startQhtpSessionWhileIndexing(
+        sessionId: sessionId,
+        index: index,
         authToken: token,
       );
       AppLogger.info(
@@ -204,26 +223,20 @@ class SenderRepositoryImpl implements SenderRepository {
           'the selection was handed over',
           tag: 'SENDER');
 
-      // Prefer the original folder/file basename so receivers can show a real
-      // name instead of a generic "N items" / Documents label.
-      String displayName;
-      if (paths.length == 1) {
-        displayName = p.basename(paths.first);
-        if (displayName.isEmpty) {
-          displayName = indexResult.manifest.itemCount == 1
-              ? indexResult.manifest.items.first.path
-              : '${indexResult.manifest.itemCount} items';
-        }
-      } else if (indexResult.manifest.itemCount == 1) {
-        displayName = indexResult.manifest.items.first.path;
-      } else {
-        displayName = '${indexResult.manifest.itemCount} items';
-      }
+      // The name comes from what the user picked, which is known without
+      // walking anything. Only the count needs the walk, and only when the
+      // selection is several things at once — where "N items" is what the
+      // screen says anyway, and it says it as soon as N exists.
+      final displayName = paths.length == 1
+          ? p.basename(paths.first)
+          : '${paths.length} items';
 
       final dummyMetadata = FileMetadata(
         name: displayName,
         path: paths.first,
-        size: indexResult.manifest.totalBytes,
+        // Zero until the walk lands. The screen hides a size it does not
+        // have rather than claiming one.
+        size: 0,
         mimeType: 'application/octet-stream',
       );
 
@@ -236,7 +249,8 @@ class SenderRepositoryImpl implements SenderRepository {
         startedAt: DateTime.now(),
         status: TransferStatus.serving,
         isQhtp: true,
-        itemCount: indexResult.manifest.itemCount,
+        // Not known yet; [onIndexed] carries the real one.
+        itemCount: 0,
       );
 
       return Right(session);

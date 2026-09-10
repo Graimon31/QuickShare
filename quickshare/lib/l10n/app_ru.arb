@@ -205,6 +205,9 @@
   "codeReceiveTransferFailed": "Передача не удалась",
   "codeReceiveSignalingError": "Сервер сигнализации недоступен ({url}). Укажите свой сервер через:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com",
   "codeReceiveTryAnother": "Попробовать другой код",
+  "codeReceiveNotFoundLan": "Отправитель с этим кодом не найден в локальной сети. Убедитесь, что оба устройства подключены к одной сети Wi-Fi.",
+  "codeReceiveTryBluetooth": "Искать по Bluetooth",
+  "codeReceiveSearchingLan": "Поиск отправителя в локальной сети…",
   "qrScanCameraPermission": "Нужен доступ к камере",
   "qrScanDetected": "QR найден — открываем передачу…",
   "qrScanCameraError": "Ошибка камеры: {code}\nПопробуйте закрыть и снова открыть Получение.",
@@ -290,5 +293,6 @@
   "errorLinkSetupFailed": "Не удалось построить прямую связь Wi-Fi. Держите устройства рядом и попробуйте ещё раз.",
   "errorLinkPeerLost": "Связь со вторым устройством пропала до того, как канал был построен. Не уходите с этого экрана и попробуйте ещё раз.",
   "errorLinkWithoutAddress": "Канал поднят, но это устройство не смогло определить свой адрес в нём.",
-  "errorSessionWithoutCertificate": "Передача началась без сертификата, и второму устройству нечему доверять. Попробуйте ещё раз."
+  "errorSessionWithoutCertificate": "Передача началась без сертификата, и второму устройству нечему доверять. Попробуйте ещё раз.",
+  "qrDisplayStillCounting": "Считаем файлы…"
 }

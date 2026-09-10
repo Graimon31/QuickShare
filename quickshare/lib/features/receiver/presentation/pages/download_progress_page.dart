@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
+import 'package:quickshare/core/utils/background_hold.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
@@ -34,10 +37,12 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
           bloc.state is Verifying) {
         _downloadStarted = true;
         WakelockPlus.enable();
+        unawaited(BackgroundHold.begin());
         return;
       }
       _downloadStarted = true;
       WakelockPlus.enable();
+      unawaited(BackgroundHold.begin());
       bloc.add(StartDownload(payload: widget.initialPayload));
     });
   }
@@ -45,6 +50,7 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
   @override
   void dispose() {
     WakelockPlus.disable();
+    unawaited(BackgroundHold.end());
     super.dispose();
   }
 
@@ -141,8 +147,10 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
                 state is Downloading ||
                 state is Verifying) {
               WakelockPlus.enable();
+              unawaited(BackgroundHold.begin());
             } else if (state is DownloadComplete) {
               WakelockPlus.disable();
+              unawaited(BackgroundHold.end());
               context.go('/receive/complete', extra: {
                 'filePath': state.filePath,
                 'fileName': state.fileName,
@@ -151,6 +159,7 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
               });
             } else if (state is ReceiverError) {
               WakelockPlus.disable();
+              unawaited(BackgroundHold.end());
               ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(content: Text(_errorMessage(l10n, state))));
               context.go('/');

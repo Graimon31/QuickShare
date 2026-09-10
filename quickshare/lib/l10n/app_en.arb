@@ -334,6 +334,9 @@
     }
   },
   "codeReceiveTryAnother": "Try another code",
+  "codeReceiveNotFoundLan": "Sender with this code was not found on your local network. Make sure both devices are on the same Wi-Fi network.",
+  "codeReceiveTryBluetooth": "Search over Bluetooth",
+  "codeReceiveSearchingLan": "Searching for sender on local network…",
   "qrScanCameraPermission": "Camera permission required",
   "qrScanDetected": "QR detected — opening transfer…",
   "qrScanCameraError": "Camera error: {code}\nTry closing and opening Receive again.",
@@ -453,5 +456,6 @@
   "errorLinkSetupFailed": "Could not set up the direct Wi-Fi link. Keep the devices next to each other and try again.",
   "errorLinkPeerLost": "Lost contact with the other device before the link was set up. Stay on this screen and try again.",
   "errorLinkWithoutAddress": "The link is up, but this device could not work out its own address on it.",
-  "errorSessionWithoutCertificate": "The transfer started without a certificate, so the other device has nothing to trust. Try again."
+  "errorSessionWithoutCertificate": "The transfer started without a certificate, so the other device has nothing to trust. Try again.",
+  "qrDisplayStillCounting": "Still counting the files…"
 }

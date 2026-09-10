@@ -9,6 +9,7 @@
 //     node --test test/
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 
 import worker from '../src/index.js';
 
@@ -56,7 +57,14 @@ const ENV = {
   CF_TURN_API_TOKEN: 'token',
   METERED_SUBDOMAIN: 'app',
   METERED_API_KEY: 'apikey',
+  TURN_CLIENT_SECRET: 's3cret',
 };
+
+function turnHeaders(secret = ENV.TURN_CLIENT_SECRET, now = Date.now()) {
+  const ts = Math.floor(now / 1000).toString();
+  const mac = createHmac('sha256', secret).update(ts).digest('hex');
+  return { 'X-DD-Ts': ts, 'X-DD-Mac': mac };
+}
 
 function stubUpstream({ cloudflare, metered }) {
   mock.method(globalThis, 'fetch', async (url) => {
@@ -75,7 +83,10 @@ function stubUpstream({ cloudflare, metered }) {
 
 async function callTurn() {
   const response = await worker.fetch(
-    new Request('https://worker.example/turn', { method: 'POST' }),
+    new Request('https://worker.example/turn', {
+      method: 'POST',
+      headers: turnHeaders(),
+    }),
     ENV,
   );
   return { status: response.status, body: await response.json() };
@@ -194,9 +205,13 @@ test('with only Cloudflare configured, Metered is skipped rather than attempted'
   const cloudflareOnly = {
     CF_TURN_KEY_ID: 'key',
     CF_TURN_API_TOKEN: 'token',
+    TURN_CLIENT_SECRET: ENV.TURN_CLIENT_SECRET,
   };
   const response = await worker.fetch(
-    new Request('https://worker.example/turn', { method: 'POST' }),
+    new Request('https://worker.example/turn', {
+      method: 'POST',
+      headers: turnHeaders(),
+    }),
     cloudflareOnly,
   );
   const body = await response.json();
@@ -207,7 +222,7 @@ test('with only Cloudflare configured, Metered is skipped rather than attempted'
   assert.match(body.skipped.join(' '), /metered is not configured/);
 });
 
-test('with nothing configured, the 502 says "skipped", not "error"', async (t) => {
+test('with no client secret configured, /turn is 503 not an open mint', async (t) => {
   t.after(() => mock.restoreAll());
   mock.method(globalThis, 'fetch', async () => {
     throw new Error('no upstream call should happen at all');
@@ -217,10 +232,27 @@ test('with nothing configured, the 502 says "skipped", not "error"', async (t) =
     new Request('https://worker.example/turn', { method: 'POST' }),
     {},
   );
-  const body = await response.json();
 
-  assert.equal(response.status, 502);
-  assert.match(body.cloudflare.skipped, /CF_TURN_KEY_ID/);
-  assert.match(body.metered.skipped, /METERED_SUBDOMAIN/);
-  assert.equal(body.cloudflare.error, undefined);
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /not configured/);
 });
+
+// DD-02: anyone could POST /turn and mint Cloudflare Calls credentials.
+test('POST /turn without a signature is refused', async () => {
+  const response = await worker.fetch(
+    new Request('https://worker.example/turn', { method: 'POST' }),
+    { ...ENV, TURN_CLIENT_SECRET: 's3cret' },
+  );
+  assert.equal(response.status, 401);
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'), null);
+});
+
+test('POST /turn with a valid signature is served and has no CORS wildcard', async (t) => {
+  t.after(() => mock.restoreAll());
+  stubUpstream({ cloudflare: CLOUDFLARE_DOCUMENTED, metered: METERED_DOCUMENTED });
+  const { status, body } = await callTurn();
+  assert.equal(status, 200);
+  assert.ok(body.cloudflare.iceServers.length > 0);
+});
+
+

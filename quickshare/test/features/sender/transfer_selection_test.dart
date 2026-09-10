@@ -119,4 +119,18 @@ void main() {
     expect(() => expandSelection([p.join(workspace.path, 'Empty')]),
         throwsA(isA<FileIndexerException>()));
   });
+
+  // DD-25: the QR is an address, not a listing. Building the listing used
+  // to run before the QR could appear, so a folder of forty thousand files
+  // sat on a spinner while the disk `stat`ed every inode. The placeholder
+  // is what the screen shows until the walk lands — one name, no walk.
+  test('a placeholder names the selection without walking it', () {
+    final folder = p.join(workspace.path, 'Trip');
+    expect(selectionPlaceholder([folder]).name, equals('Trip'));
+    expect(selectionPlaceholder([folder]).size, equals(0));
+
+    final a = p.join(workspace.path, 'a.txt');
+    final b = p.join(workspace.path, 'b.txt');
+    expect(selectionPlaceholder([a, b]).name, equals('2 items'));
+  });
 }

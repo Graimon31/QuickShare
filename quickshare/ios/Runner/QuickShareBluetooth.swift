@@ -509,19 +509,19 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   }
 
   private func beginSenderTransferIfReady() {
-    guard !senderTransferStarted,
-          senderSubscribedCentral != nil,
-          senderMetadata != nil,
-          senderPendingMetadata != nil else { return }
+    guard !senderTransferStarted, senderMetadata != nil else { return }
 
     // Generation 4 is where the bytes left this radio. A peer from this
     // generation on gets the Wi-Fi link negotiated over this channel instead
     // of the file over it — Dart runs that from the receiverReady event. A
     // peer below it gets told to update rather than sent the file slowly.
-    senderTransferStarted = true
-    if (senderPeerGeneration ?? 1) >= QuickShareBleControl.generation {
+    let peerGen = senderPeerGeneration ?? QuickShareBleControl.generation
+    if peerGen >= QuickShareBleControl.generation {
+      senderTransferStarted = true
       emit(["type": "receiverReady"])
     } else {
+      guard senderSubscribedCentral != nil, senderPendingMetadata != nil else { return }
+      senderTransferStarted = true
       // The error text is English, for the log; the code is what the Dart
       // side translates for the screen.
       emit(["type": "senderFailed",
@@ -565,8 +565,12 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   }
 
   private func pumpSenderQueue() {
-    // Generation 4 and up gets the Wi-Fi link, never the file over BLE.
-    guard !senderUsesDirectLink else { return }
+    // Only a peer we *know* is older than generation 4 would take bytes
+    // over this radio, and this build never serves one. An unknown
+    // generation used to count as 1 and the pump ran — if `isReady` fired
+    // before CAPS, file chunks went out on a gen-4 link.
+    guard let generation = senderPeerGeneration,
+          generation < QuickShareBleControl.generation else { return }
     guard let manager = peripheralManager,
           let dataCharacteristic = senderData,
           let metadataCharacteristic = senderMetadata else { return }
@@ -775,6 +779,9 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
       // A receiver saying it is here without asking for anything. The person
       // sending picks it off the list; nothing starts until they do.
       if let name = QuickShareBleControl.parseHello(command) {
+        if senderPeerGeneration == nil {
+          senderPeerGeneration = QuickShareBleControl.generation
+        }
         peripheral.respond(to: request, withResult: .success)
         emit(["type": "receiverAnnounced", "name": name])
         continue
@@ -858,7 +865,8 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     // did, and the one-file transfer that follows is a good one. The error
     // lands in didWriteValueFor, which this class deliberately does not
     // implement.
-    peripheral.writeValue(Data(QuickShareBleControl.capabilities().utf8), for: control, type: writeType)
+    let capsWriteType: CBCharacteristicWriteType = control.properties.contains(.writeWithoutResponse) ? .withoutResponse : writeType
+    peripheral.writeValue(Data(QuickShareBleControl.capabilities().utf8), for: control, type: capsWriteType)
 
     // Who this is, so the sender can list it. With a token this is a courtesy
     // ahead of START; without one it is the whole point.

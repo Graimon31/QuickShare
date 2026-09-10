@@ -1,4 +1,5 @@
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/core/utils/background_hold.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 /// Reference-counted wakelock.
@@ -35,6 +36,7 @@ class WakelockGuard {
     if (_refs == 1) {
       try {
         await WakelockPlus.enable();
+        await BackgroundHold.begin();
         AppLogger.info('WakelockGuard: wakelock enabled (refs=$_refs)',
             tag: 'WAKELOCK');
       } catch (e) {
@@ -54,6 +56,7 @@ class WakelockGuard {
     if (_refs == 0) {
       try {
         await WakelockPlus.disable();
+        await BackgroundHold.end();
         AppLogger.info('WakelockGuard: wakelock released (refs=$_refs)',
             tag: 'WAKELOCK');
       } catch (e) {

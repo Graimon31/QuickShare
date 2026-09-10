@@ -693,6 +693,16 @@ class AppLocalizationsRu extends AppLocalizations {
   String get codeReceiveTryAnother => 'Попробовать другой код';
 
   @override
+  String get codeReceiveNotFoundLan =>
+      'Отправитель с этим кодом не найден в локальной сети. Убедитесь, что оба устройства подключены к одной сети Wi-Fi.';
+
+  @override
+  String get codeReceiveTryBluetooth => 'Искать по Bluetooth';
+
+  @override
+  String get codeReceiveSearchingLan => 'Поиск отправителя в локальной сети…';
+
+  @override
   String get qrScanCameraPermission => 'Нужен доступ к камере';
 
   @override
@@ -981,4 +991,7 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get errorSessionWithoutCertificate =>
       'Передача началась без сертификата, и второму устройству нечему доверять. Попробуйте ещё раз.';
+
+  @override
+  String get qrDisplayStillCounting => 'Считаем файлы…';
 }

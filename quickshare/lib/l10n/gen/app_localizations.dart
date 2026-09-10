@@ -1268,6 +1268,24 @@ abstract class AppLocalizations {
   /// **'Try another code'**
   String get codeReceiveTryAnother;
 
+  /// No description provided for @codeReceiveNotFoundLan.
+  ///
+  /// In en, this message translates to:
+  /// **'Sender with this code was not found on your local network. Make sure both devices are on the same Wi-Fi network.'**
+  String get codeReceiveNotFoundLan;
+
+  /// No description provided for @codeReceiveTryBluetooth.
+  ///
+  /// In en, this message translates to:
+  /// **'Search over Bluetooth'**
+  String get codeReceiveTryBluetooth;
+
+  /// No description provided for @codeReceiveSearchingLan.
+  ///
+  /// In en, this message translates to:
+  /// **'Searching for sender on local network…'**
+  String get codeReceiveSearchingLan;
+
   /// No description provided for @qrScanCameraPermission.
   ///
   /// In en, this message translates to:
@@ -1783,6 +1801,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The transfer started without a certificate, so the other device has nothing to trust. Try again.'**
   String get errorSessionWithoutCertificate;
+
+  /// No description provided for @qrDisplayStillCounting.
+  ///
+  /// In en, this message translates to:
+  /// **'Still counting the files…'**
+  String get qrDisplayStillCounting;
 }
 
 class _AppLocalizationsDelegate

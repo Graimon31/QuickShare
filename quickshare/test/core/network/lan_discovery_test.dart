@@ -104,6 +104,24 @@ void main() {
       );
     });
 
+    test('an address in TXT "a" record is used when service.addresses is empty', () {
+      final txt = announcement.toTxt()..['a'] = bytes('192.168.3.100');
+      final peer = DiscoveryAnnouncement.peerFrom(
+        service(txt: txt, addresses: const []),
+      );
+      expect(peer, isNotNull);
+      expect(peer!.address.address, equals('192.168.3.100'));
+    });
+
+    test('a loopback address in TXT "a" is rejected in favor of service.addresses', () {
+      final txt = announcement.toTxt()..['a'] = bytes('127.0.0.1');
+      final peer = DiscoveryAnnouncement.peerFrom(
+        service(txt: txt, addresses: [InternetAddress('192.168.3.200')]),
+      );
+      expect(peer, isNotNull);
+      expect(peer!.address.address, equals('192.168.3.200'));
+    });
+
     test('IPv4 is preferred when a device answers on both', () {
       final peer = DiscoveryAnnouncement.peerFrom(service(addresses: [
         InternetAddress('fe80::1'),

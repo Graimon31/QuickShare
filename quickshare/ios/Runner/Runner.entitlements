@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- NEHotspotConfiguration: joining the hotspot the other device raised.
-	     Without this the call fails at runtime, not at build time. -->
+	<!-- NEHotspotConfiguration requires paid Apple Developer capability.
+	     Uncomment when building with provision profile that includes Hotspot capability.
 	<key>com.apple.developer.networking.HotspotConfiguration</key>
-	<true/>
+	<true/> -->
 </dict>
 </plist>

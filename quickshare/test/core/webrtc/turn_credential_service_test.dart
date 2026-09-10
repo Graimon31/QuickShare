@@ -54,7 +54,7 @@ void main() {
       baseUrl = 'http://127.0.0.1:${server.port}';
 
       final servers =
-          await TurnCredentialService(baseUrl: baseUrl).fetchIceServers();
+          await TurnCredentialService(baseUrl: baseUrl, clientSecret: 's3cret').fetchIceServers();
 
       expect(servers, hasLength(2));
       expect(servers[0]['username'], equals('cf-user'));
@@ -84,7 +84,7 @@ void main() {
       baseUrl = 'http://127.0.0.1:${server.port}';
 
       final servers =
-          await TurnCredentialService(baseUrl: baseUrl).fetchIceServers();
+          await TurnCredentialService(baseUrl: baseUrl, clientSecret: 's3cret').fetchIceServers();
       expect(servers, hasLength(1));
     });
 
@@ -99,9 +99,62 @@ void main() {
       baseUrl = 'http://127.0.0.1:${server.port}';
 
       expect(
-        () => TurnCredentialService(baseUrl: baseUrl).fetchIceServers(),
+        () => TurnCredentialService(baseUrl: baseUrl, clientSecret: 's3cret').fetchIceServers(),
         throwsA(anything),
       );
+    });
+
+    test('does not call /turn when no client secret is configured', () async {
+      var called = false;
+      server = await shelf_io.serve(
+        (request) {
+          called = true;
+          return Response.ok('{}');
+        },
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      baseUrl = 'http://127.0.0.1:${server.port}';
+
+      expect(
+        () => TurnCredentialService(baseUrl: baseUrl, clientSecret: '')
+            .fetchIceServers(),
+        throwsA(isA<StateError>()),
+      );
+      expect(called, isFalse);
+    });
+
+    test('signs POST /turn so the Worker can refuse a bare curl', () async {
+      String? ts;
+      String? mac;
+      server = await shelf_io.serve(
+        (request) {
+          ts = request.headers['x-dd-ts'];
+          mac = request.headers['x-dd-mac'];
+          return Response.ok(
+            jsonEncode({
+              'cloudflare': {
+                'iceServers': [
+                  {
+                    'urls': ['turns:turn.cloudflare.com:443?transport=tcp'],
+                    'username': 'u',
+                    'credential': 'c',
+                  }
+                ]
+              },
+            }),
+            headers: {'Content-Type': 'application/json'},
+          );
+        },
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      await TurnCredentialService(baseUrl: 'http://127.0.0.1:${server.port}',
+              clientSecret: 's3cret')
+          .fetchIceServers();
+      expect(ts, isNotNull);
+      expect(mac, isNotNull);
+      expect(mac, hasLength(64));
     });
   });
 
@@ -142,6 +195,7 @@ void main() {
 
       final config = await IceServers.configurationDynamic(
         workerBaseUrl: 'http://127.0.0.1:${server.port}',
+        turnClientSecret: 's3cret',
       );
 
       final urls = (config['iceServers'] as List)

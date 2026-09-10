@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:quickshare/core/network/lan_discovery.dart';
+import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/transfer/invitation_listener.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
@@ -47,6 +48,9 @@ class DevicePresence {
   List<DiscoveredPeer> get current => _discovery.current;
 
   bool get isRunning => _discovery.isRunning;
+
+  /// Triggers an immediate discovery refresh.
+  Future<void> refresh() => _discovery.refresh();
 
   static String _randomId() {
     final random = Random.secure();
@@ -145,10 +149,12 @@ class DevicePresence {
       }
     }
 
+    final localIp = await NetworkInfoService().getLocalIpAddress();
     _announcement = DiscoveryAnnouncement(
       id: _sessionId,
       name: name ?? describeThisDevice(),
       platform: Platform.operatingSystem,
+      ipAddress: localIp ?? '',
       invitePort: invitePort,
     );
     final started = await _discovery.start(_announcement!);
@@ -173,6 +179,7 @@ class DevicePresence {
       id: current.id,
       name: current.name,
       platform: current.platform,
+      ipAddress: current.ipAddress,
       port: port,
       tlsFingerprint: tlsFingerprint,
       invitePort: current.invitePort,
@@ -189,6 +196,7 @@ class DevicePresence {
       id: current.id,
       name: current.name,
       platform: current.platform,
+      ipAddress: current.ipAddress,
       invitePort: current.invitePort,
     );
     _discovery.update(_announcement!);

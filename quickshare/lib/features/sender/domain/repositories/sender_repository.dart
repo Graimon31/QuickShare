@@ -24,10 +24,27 @@ abstract class SenderRepository {
   /// [onIndexProgress] is called while the selection is being walked, with
   /// how many items and bytes have been seen so far. It exists so the screen
   /// can show that a slow folder is being read rather than a stuck one.
+  ///
+  /// Returns as soon as the server is listening, which is before the walk
+  /// has finished. The session it hands back is therefore incomplete on
+  /// purpose: `itemCount` is zero and `fileMetadata.size` is zero until
+  /// [onIndexed] says otherwise. Everything the QR code needs — address,
+  /// port, token, certificate — is real from the first moment, and the file
+  /// list is not one of those things. Walking a selection costs one
+  /// directory read after another and a `stat` per file, so waiting for it
+  /// made the QR appear after a delay proportional to how many files there
+  /// were rather than how large they were.
+  ///
+  /// [onIndexed] fires once with the real counts when the walk lands.
+  /// [onIndexFailed] fires instead if it throws — an unreadable folder, a
+  /// selection past the size or depth ceiling — and the session is then
+  /// serving something that does not exist, so the caller must end it.
   Future<Either<Failure, TransferSession>> startQhtpTransfer(
     List<String> paths, {
     String? authToken,
     void Function(int items, int bytes)? onIndexProgress,
+    void Function(int itemCount, int totalBytes)? onIndexed,
+    void Function(Object error)? onIndexFailed,
   });
 
   /// Generates the QR payload string for the given transfer session.

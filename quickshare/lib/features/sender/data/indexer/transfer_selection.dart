@@ -17,6 +17,28 @@ import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 /// files it would contain over Wi-Fi: hidden entries, `.git` and
 /// `node_modules` skipped, symlinks not followed, the same depth and size
 /// ceilings, the same deterministic order.
+/// What the sender screen shows before [expandSelection] finishes.
+///
+/// The walk is proportional to the number of files, not their size. The QR
+/// and the Bluetooth advertisement do not need the listing — they need a
+/// name — so they go up with this and the walk fills the totals in behind.
+FileMetadata selectionPlaceholder(List<String> paths) {
+  if (paths.length == 1) {
+    return FileMetadata(
+      name: p.basename(paths.first),
+      path: paths.first,
+      size: 0,
+      mimeType: 'application/octet-stream',
+    );
+  }
+  return FileMetadata(
+    name: '${paths.length} items',
+    path: paths.first,
+    size: 0,
+    mimeType: 'inode/directory',
+  );
+}
+
 Future<List<FileMetadata>> expandSelection(List<String> paths) async {
   final indexed = await FileIndexer().buildResult(
     sessionId: 'inline',

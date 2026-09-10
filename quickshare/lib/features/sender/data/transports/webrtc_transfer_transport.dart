@@ -17,6 +17,7 @@ import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/core/utils/progress_throttle.dart';
 
 /// Raised instead of starting a transfer that would run through a relay and
 /// blow past [AppConstants.maxRelayTransferBytes].
@@ -75,6 +76,10 @@ class WebRtcTransferTransport implements TransferTransport {
   /// is the real unit of work. Single-file callers still pass one item.
   List<FileMetadata>? _sessionFiles;
 
+  /// DD-25: the listing can still be walking when the QR goes up. Bytes
+  /// wait on this; ICE gathering does not.
+  Future<List<FileMetadata>>? _filesReady;
+
   final _degradationController =
       StreamController<RelayLimitExceeded>.broadcast();
 
@@ -97,6 +102,10 @@ class WebRtcTransferTransport implements TransferTransport {
   /// True once the session has begun putting bytes on the channel. After
   /// that an ICE collapse is an interruption, not an absent route.
   bool _sendingStarted = false;
+
+  /// DD-24: the send loop used to report on every 64 KB chunk. Same isolate
+  /// that writes, same flood the receiver already throttled.
+  final _progressThrottle = ProgressThrottle();
 
   /// §6 — keeps the CPU/display awake for the duration of a transfer.
   final _wakelockGuard = WakelockGuard();
@@ -160,11 +169,14 @@ class WebRtcTransferTransport implements TransferTransport {
   /// router for a port mapping with an unlimited lease that nothing ever
   /// removes. Neither is of any use once the answer travels out-of-band.
   Future<void> startSharingServerless(FileMetadata file,
-      {List<FileMetadata>? files}) async {
+      {List<FileMetadata>? files,
+      Future<List<FileMetadata>>? filesReady}) async {
     try {
-      // `files` is the real session; `file` stays in the signature because it
-      // also carries the name and size the QR/preview screens display.
-      _sessionFiles = files ?? [file];
+      // `files` is the real session when it is already known. [filesReady]
+      // is the same list still being walked — ICE gathering does not wait
+      // on it; the send loop does.
+      _sessionFiles = files ?? (filesReady == null ? [file] : null);
+      _filesReady = filesReady;
       _statusController.add(TransferStatus.connecting);
       await _wakelockGuard.acquire(); // §6
 
@@ -229,10 +241,14 @@ class WebRtcTransferTransport implements TransferTransport {
     // slow internet transfer, and it was only ever written to a log file.
     lastIcePath = path;
 
+    if (_filesReady != null) {
+      _sessionFiles = await _filesReady;
+    }
+    final session = _sessionFiles ?? [file];
+
     // The whole session, not just the first file: ten photos through a relay
     // cost ten photos' worth of somebody else's bandwidth.
-    final sessionBytes =
-        (_sessionFiles ?? [file]).fold<int>(0, (sum, f) => sum + f.size);
+    final sessionBytes = session.fold<int>(0, (sum, f) => sum + f.size);
     if (!relayLimitAllows(path, sessionBytes)) {
       final blocked =
           RelayLimitExceeded(sessionBytes, AppConstants.maxRelayTransferBytes);
@@ -255,7 +271,7 @@ class WebRtcTransferTransport implements TransferTransport {
 
     _sendingStarted = true;
     _statusController.add(TransferStatus.transferring);
-    await _sendFilesInChunks(_sessionFiles ?? [file]);
+    await _sendFilesInChunks(session);
   }
 
   Future<void> handleDirectAnswer(String sdp, String type) async {
@@ -380,7 +396,7 @@ class WebRtcTransferTransport implements TransferTransport {
             fileSent += bytesToRead;
             sessionSent += bytesToRead;
 
-            if (sessionBytes > 0) {
+            if (sessionBytes > 0 && _progressThrottle.allow()) {
               _progressController.add(sessionSent / sessionBytes);
             }
 
@@ -428,6 +444,9 @@ class WebRtcTransferTransport implements TransferTransport {
         AppLogger.error(
             'Complete-frame drain went unconfirmed; finishing anyway',
             tag: 'WEBRTC_SENDER');
+      }
+      if (_progressThrottle.allow(force: true)) {
+        _progressController.add(1.0);
       }
       _statusController.add(TransferStatus.completed);
     } on TransferStalled catch (e) {

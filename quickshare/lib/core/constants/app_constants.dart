@@ -86,6 +86,13 @@ class AppConstants {
     defaultValue: '',
   );
 
+  /// Shared with the Worker as `TURN_CLIENT_SECRET`. Signs `POST /turn`.
+  /// Empty means the app will not call `/turn` at all (STUN-only fallback).
+  static const String turnClientSecret = String.fromEnvironment(
+    'QUICKSHARE_TURN_SECRET',
+    defaultValue: '',
+  );
+
   /// Every TURN transport to offer ICE, best first.
   ///
   /// Credentials are deliberately not here: they arrive through

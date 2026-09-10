@@ -125,6 +125,9 @@ class AppPresence {
   /// Says the session is over. The device stays listed, just not as serving.
   void noLongerServing() => _presence?.noLongerServing();
 
+  /// Triggers an immediate discovery refresh across the network.
+  Future<void> refresh() async => _presence?.refresh();
+
   Future<void> stop() async {
     final presence = _presence;
     _presence = null;

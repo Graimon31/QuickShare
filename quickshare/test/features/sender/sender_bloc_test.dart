@@ -200,7 +200,9 @@ void main() {
         );
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                onIndexProgress: any(named: 'onIndexProgress')))
+                onIndexProgress: any(named: 'onIndexProgress'),
+                onIndexed: any(named: 'onIndexed'),
+                onIndexFailed: any(named: 'onIndexFailed')))
             .thenAnswer((_) async => Right(dummySession));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('quickshare://join?room=123456'));
@@ -236,7 +238,9 @@ void main() {
         );
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                onIndexProgress: any(named: 'onIndexProgress')))
+                onIndexProgress: any(named: 'onIndexProgress'),
+                onIndexed: any(named: 'onIndexed'),
+                onIndexFailed: any(named: 'onIndexFailed')))
             .thenAnswer((_) async => Right(session));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('quickshare://join?room=123456'));
@@ -311,7 +315,9 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                onIndexProgress: any(named: 'onIndexProgress')))
+                onIndexProgress: any(named: 'onIndexProgress'),
+                onIndexed: any(named: 'onIndexed'),
+                onIndexFailed: any(named: 'onIndexFailed')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('qr-payload'));
@@ -351,7 +357,9 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                onIndexProgress: any(named: 'onIndexProgress')))
+                onIndexProgress: any(named: 'onIndexProgress'),
+                onIndexed: any(named: 'onIndexed'),
+                onIndexFailed: any(named: 'onIndexFailed')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('qr-payload'));
@@ -383,7 +391,9 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                onIndexProgress: any(named: 'onIndexProgress')))
+                onIndexProgress: any(named: 'onIndexProgress'),
+                onIndexed: any(named: 'onIndexed'),
+                onIndexFailed: any(named: 'onIndexFailed')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('qr-payload'));
@@ -417,7 +427,9 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                onIndexProgress: any(named: 'onIndexProgress')))
+                onIndexProgress: any(named: 'onIndexProgress'),
+                onIndexed: any(named: 'onIndexed'),
+                onIndexFailed: any(named: 'onIndexFailed')))
             .thenAnswer((_) async => Right(wifiSession()));
         when(() => mockRepository.generateQRPayload(any()))
             .thenAnswer((_) async => const Right('qr-payload'));
