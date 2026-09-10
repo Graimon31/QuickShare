@@ -215,6 +215,12 @@ class BluetoothTransferTransport implements TransferTransport {
             // securely. Say so rather than leaving both sides waiting.
             lastFailureReason = BleControlProtocol.staleReceiverMessage;
             _statusController.add(TransferStatus.failed);
+            // And refuse the write itself. Answering success here told that
+            // receiver its transfer had begun while this side was tearing
+            // the session down behind it, so it waited on bytes that were
+            // never coming. Apple's bridges have always answered this way.
+            return PeripheralWriteRequestResult(
+                status: BleControlProtocol.attInsufficientAuthentication);
           }
         }
         return PeripheralWriteRequestResult();

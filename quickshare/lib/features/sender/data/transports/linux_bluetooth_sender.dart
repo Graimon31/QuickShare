@@ -90,22 +90,25 @@ class LinuxBluetoothSender {
         uuid: controlUuid,
         flags: const ['write', 'write-without-response'],
         onWrite: (bytes) async {
+          // Returns false to refuse the write; BlueZ turns that into an ATT
+          // error for the peer, which is the only way this side can say no.
+
           final command = utf8.decode(bytes, allowMalformed: true);
           // Always ahead of START, so it is on record before the decision
           // about what this session may send is taken.
           final generation = BleControlProtocol.parseCapabilities(command);
           if (generation != null) {
             _peerGeneration = generation;
-            return;
+            return true;
           }
           if (BleControlProtocol.parseKeyExchange(command) case final key?) {
             _onPeerKey?.call(key);
-            return;
+            return true;
           }
           if (BleControlProtocol.parseApOffer(command) case final sealed?) {
             // A receiver that raised the network itself says where — sealed.
             _onApOffer?.call(sealed);
-            return;
+            return true;
           }
           if (BleControlProtocol.isStart(command, _token)) {
             _startReceived = true;
@@ -114,7 +117,12 @@ class LinuxBluetoothSender {
             // A START without the session token — a receiver too old to pair
             // securely. Say so rather than leaving both sides waiting.
             _onStatus?.call('failed', BleControlProtocol.staleReceiverMessage);
+            // And refuse the write. Answering success told that receiver its
+            // transfer had begun while this side tore the session down behind
+            // it, so it waited on bytes that were never coming.
+            return false;
           }
+          return true;
         },
       );
       metadata = _GattCharacteristic(
@@ -352,7 +360,9 @@ class _GattService extends _GattObject {
         });
 }
 
-typedef _GattWriteHandler = Future<void> Function(List<int> value);
+/// Handles one write. False refuses it, which BlueZ answers as an ATT error
+/// for the peer; true accepts.
+typedef _GattWriteHandler = Future<bool> Function(List<int> value);
 typedef _GattNotifyHandler = Future<void> Function(bool notifying);
 
 class _GattCharacteristic extends _GattObject {
@@ -399,7 +409,16 @@ class _GattCharacteristic extends _GattObject {
         if (onWrite == null || methodCall.values.isEmpty) {
           return DBusMethodErrorResponse.unknownMethod();
         }
-        await onWrite!(methodCall.values.first.asByteArray().toList());
+        final accepted =
+            await onWrite!(methodCall.values.first.asByteArray().toList());
+        if (!accepted) {
+          // BlueZ maps this to insufficient authentication for the peer —
+          // the same answer Apple's bridges give, and the same one Android
+          // gives through its ATT status.
+          return DBusMethodErrorResponse(
+              'org.bluez.Error.NotAuthorized',
+              [const DBusString('the session token is missing or wrong')]);
+        }
         return DBusMethodSuccessResponse();
       case 'StartNotify':
         _notifying = true;

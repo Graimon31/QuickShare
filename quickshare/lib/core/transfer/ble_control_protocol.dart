@@ -188,6 +188,16 @@ class BleControlProtocol {
 
   /// Shown to the person sending when a receiver writes a `START` without the
   /// session token — see [isUnauthorizedStart].
+  /// What a refused `START` answers with at the ATT layer.
+  ///
+  /// 0x05 is insufficient authentication, and it is the honest code: the
+  /// write was understood and rejected for want of a credential, which is
+  /// exactly what happened. Apple's bridges have always answered this;
+  /// Android and Linux answered success while the session was being torn
+  /// down behind them, so a receiver too old to pair securely was told its
+  /// transfer had begun.
+  static const int attInsufficientAuthentication = 0x05;
+
   static const String staleReceiverMessage =
       'The receiving device is on an older version that cannot pair securely '
       'over Bluetooth. Update it, or send over Wi-Fi.';
