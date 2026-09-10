@@ -15,13 +15,22 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
+import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/storage/folder_picker.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/features/sender/presentation/pages/file_picker_page.dart';
+import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 class _MockSenderBloc extends MockBloc<SenderEvent, SenderState>
     implements SenderBloc {}
+
+/// The transport gate now runs before every send. It is not what these tests
+/// are about, so a network is always available.
+class _AlwaysOnNetwork extends NetworkInfoService {
+  @override
+  Future<bool> hasWifiTransportNetwork() async => true;
+}
 
 /// Stands in for the plugin on the platforms that still fall back to it.
 ///
@@ -72,7 +81,11 @@ void main() {
     registerFallbackValue(const StartQhtpSend(['/tmp/anything']));
   });
 
+  final realNetwork = TransportPreconditions.networkInfo;
+  tearDownAll(() => TransportPreconditions.networkInfo = realNetwork);
+
   setUp(() {
+    TransportPreconditions.networkInfo = _AlwaysOnNetwork();
     FilePicker.platform = _StubFilePicker();
     // The native picker stands in for the system dialog: the point of the
     // test is whether the tap reaches the handler at all.

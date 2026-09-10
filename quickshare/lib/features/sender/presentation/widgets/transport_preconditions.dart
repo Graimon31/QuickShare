@@ -18,7 +18,12 @@ import 'package:quickshare/l10n/gen/app_localizations.dart';
 /// the app cannot keep, and the session must not exist yet when the user
 /// says "no" to enabling it.
 class TransportPreconditions {
-  static final NetworkInfoService _networkInfo = NetworkInfoService();
+  /// The network probe. A field rather than a `const` so a test can answer
+  /// for a host whose real interfaces do not match the case under test.
+  @visibleForTesting
+  static NetworkInfoService networkInfo = NetworkInfoService();
+
+  static NetworkInfoService get _networkInfo => networkInfo;
 
   /// True when [type] may be selected. Otherwise the user has been told what
   /// is missing, and the caller must leave the current selection untouched.
@@ -65,16 +70,18 @@ class TransportPreconditions {
   }
 
   static Future<bool> _ensureBluetooth(BuildContext context) async {
-    bool powered;
+    AvailabilityState state;
     try {
-      final state = await UniversalBle.getBluetoothAvailabilityState();
-      powered = state == AvailabilityState.poweredOn;
+      state = await UniversalBle.getBluetoothAvailabilityState();
     } catch (_) {
-      // The radio check itself failed — fail open and let the transport
-      // report the real error, exactly as it did before this gate existed.
-      return true;
+      // The radio check threw. It used to be let through here, on the theory
+      // that the transport would surface the real error — but the point of
+      // this gate is that the session does not exist yet when it fails, and
+      // "we could not tell" is not the same as "it is on". An unknown radio
+      // is a radio that is not ready.
+      state = AvailabilityState.unknown;
     }
-    if (powered) return true;
+    if (state == AvailabilityState.poweredOn) return true;
     if (!context.mounted) return false;
     final l10n = AppLocalizations.of(context);
     final openSettings = await _askEnable(

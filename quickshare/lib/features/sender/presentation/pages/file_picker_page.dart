@@ -41,15 +41,37 @@ class _FilePickerPageState extends State<FilePickerPage> {
     super.initState();
     final paths = widget.qhtpPaths;
     if (paths != null && paths.isNotEmpty) {
+      // A drag-and-drop onto the home card. It arrives here already chosen,
+      // so it goes through the same gate a picked selection does.
       _selectionInFlight = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          context
-              .read<SenderBloc>()
-              .add(StartQhtpSend(paths, mode: _selectedMode));
-        }
+        if (mounted) _startSend(paths);
       });
     }
+  }
+
+  /// Starts a session for [paths] over the selected transport — after
+  /// checking that transport can actually run.
+  ///
+  /// Every route into a transfer passes through here. Picking a *different*
+  /// mode from the radio list runs [TransportPreconditions.ensure] too, but
+  /// three of the four ways to choose files never touch that list: a
+  /// drag-and-drop, and the file and media pickers once a mode is already
+  /// selected. Those reached `StartQhtpSend` with `TransportType.wifi` and no
+  /// check at all, so dropping a file with Wi-Fi off built a session and a QR
+  /// code for a network that was not there.
+  Future<void> _startSend(List<String> paths) async {
+    if (!mounted) return;
+    final allowed =
+        await TransportPreconditions.ensure(context, _selectedMode);
+    if (!mounted) return;
+    if (!allowed) {
+      // The gate has already told the person what is missing. Release the
+      // guard so they can try again once they have fixed it.
+      setState(() => _selectionInFlight = false);
+      return;
+    }
+    context.read<SenderBloc>().add(StartQhtpSend(paths, mode: _selectedMode));
   }
 
   /// Everything sendable, in one trip: files and folders, mixed, however
@@ -84,9 +106,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
       if (mounted) setState(() => _selectionInFlight = false);
       return;
     }
-    if (!mounted) return;
-
-    context.read<SenderBloc>().add(StartQhtpSend(paths, mode: _selectedMode));
+    await _startSend(paths);
   }
 
   /// Photos and videos, straight from the library and untouched.
@@ -106,12 +126,8 @@ class _FilePickerPageState extends State<FilePickerPage> {
       if (mounted) setState(() => _selectionInFlight = false);
       return;
     }
-    if (mounted) {
-      context.read<SenderBloc>().add(StartQhtpSend(
-            entries.map((e) => e.file.path).toList(growable: false),
-            mode: _selectedMode,
-          ));
-    }
+    await _startSend(
+        entries.map((e) => e.file.path).toList(growable: false));
   }
 
   /// Picking a mode is gated on what the mode needs: Wi-Fi on a live local
@@ -168,10 +184,8 @@ class _FilePickerPageState extends State<FilePickerPage> {
     setState(() => _selectionInFlight = true);
     final folders = await const FolderPicker()
         .pick(dialogTitle: AppLocalizations.of(context).pickerSelectFolder);
-    if (folders.isNotEmpty && mounted) {
-      context
-          .read<SenderBloc>()
-          .add(StartQhtpSend(folders, mode: _selectedMode));
+    if (folders.isNotEmpty) {
+      await _startSend(folders);
     } else if (mounted) {
       setState(() => _selectionInFlight = false);
     }
