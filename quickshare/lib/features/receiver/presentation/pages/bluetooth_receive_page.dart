@@ -81,6 +81,10 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   String? _codeError;
 
   String? get _token => _typedToken ?? widget.sessionToken;
+
+  /// True when this screen already knows which session it wants — scanned
+  /// from a QR or derived from typed digits. Connecting then means starting.
+  bool get _hasSessionInHand => (_token ?? '').isNotEmpty;
   String? get _publicId => _typedPublicId ?? widget.publicId;
 
   @override
@@ -91,12 +95,19 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       if (!_devices.any((e) => e.id == d.id)) {
         setState(() => _devices.add(d));
       }
-      // Connected without waiting to be tapped, whether or not there is a
-      // token. With one this starts the transfer, as it always did. Without
-      // one it announces this device to that sender and waits — which is the
-      // only way it can appear on the sending screen at all, since over this
-      // radio a device that has not spoken cannot be polled for.
-      if (!_autoConnectAttempted) {
+      // Announcing is automatic; accepting a transfer is not.
+      //
+      // With no session in hand this connects and says who this device is,
+      // then waits to be picked — the only way it can appear on the sending
+      // screen at all, since a device that has not spoken cannot be polled
+      // for over this radio, and no START is written either way.
+      //
+      // With a session in hand the connection writes START and the transfer
+      // begins, so it waits for the person to choose the device. It used to
+      // fire at whichever sender the scan happened to surface first, which
+      // is not the same thing as the one they meant even when they had just
+      // scanned its code.
+      if (!_autoConnectAttempted && !_hasSessionInHand) {
         _autoConnectAttempted = true;
         _connect(d);
       }

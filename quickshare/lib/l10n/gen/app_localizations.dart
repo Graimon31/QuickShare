@@ -1376,6 +1376,12 @@ abstract class AppLocalizations {
   /// **'Starting file transfer…'**
   String get previewStarting;
 
+  /// No description provided for @previewConfirmPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Accept this transfer?'**
+  String get previewConfirmPrompt;
+
   /// No description provided for @previewStartNow.
   ///
   /// In en, this message translates to:

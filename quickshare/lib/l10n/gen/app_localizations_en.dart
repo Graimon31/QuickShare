@@ -743,6 +743,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get previewStarting => 'Starting file transfer…';
 
   @override
+  String get previewConfirmPrompt => 'Accept this transfer?';
+
+  @override
   String get previewStartNow => 'Start Now';
 
   @override

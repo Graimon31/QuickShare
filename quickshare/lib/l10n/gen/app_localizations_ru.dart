@@ -748,6 +748,9 @@ class AppLocalizationsRu extends AppLocalizations {
   String get previewStarting => 'Начинаем передачу файла…';
 
   @override
+  String get previewConfirmPrompt => 'Принять эту передачу?';
+
+  @override
   String get previewStartNow => 'Начать сейчас';
 
   @override

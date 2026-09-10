@@ -366,6 +366,7 @@
   },
   "previewCalculatingSize": "Calculating size…",
   "previewStarting": "Starting file transfer…",
+  "previewConfirmPrompt": "Accept this transfer?",
   "previewStartNow": "Start Now",
   "settingsLogs": "Logs",
   "settingsLogsSubtitle": "Technical journal — copy it when reporting a transfer problem",

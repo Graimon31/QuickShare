@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -21,8 +19,6 @@ class TransferPreviewPage extends StatefulWidget {
 }
 
 class _TransferPreviewPageState extends State<TransferPreviewPage> {
-  static const _previewDuration = Duration(milliseconds: 1200);
-  Timer? _timer;
   bool _started = false;
   QRParsed? _parsed;
 
@@ -34,7 +30,6 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
       final state = context.read<ReceiverBloc>().state;
       if (state is QRParsed) {
         setState(() => _parsed = state);
-        _timer = Timer(_previewDuration, _startTransfer);
       } else {
         // No session in bloc — go back to scanner instead of crashing.
         context.go('/receive');
@@ -42,18 +37,19 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
     });
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
+  /// Waits to be asked, and this screen is the asking.
+  ///
+  /// A timer used to start the transfer a second after the screen appeared,
+  /// which made the numbers on it decoration: by the time anyone had read
+  /// what they were being sent, they were already receiving it. Pointing a
+  /// camera at a code says which device to talk to, not that whatever it
+  /// offers is wanted — every other way in asks first, and this one now does
+  /// too.
   void _startTransfer() {
     if (!mounted || _started) return;
     final parsed = _parsed;
     if (parsed == null) return;
     _started = true;
-    _timer?.cancel();
     // Kick off download first so the next page always has an in-flight job.
     context.read<ReceiverBloc>().add(
           StartDownload(payload: parsed.payload),
@@ -185,14 +181,8 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                       ),
                     ),
                     const SizedBox(height: 32),
-                    const LinearProgressIndicator(
-                      minHeight: 4,
-                      color: AppColors.primary,
-                      backgroundColor: AppColors.glassFillStrong,
-                    ),
-                    const SizedBox(height: 16),
                     Text(
-                      l10n.previewStarting,
+                      l10n.previewConfirmPrompt,
                       style: GoogleFonts.inter(
                         color: Colors.white.withValues(alpha: 0.6),
                         fontSize: 14,
@@ -204,7 +194,6 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                       children: [
                         OutlinedButton(
                           onPressed: () {
-                            _timer?.cancel();
                             context.read<ReceiverBloc>().add(CancelDownload());
                             context.go('/');
                           },
@@ -227,7 +216,7 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                           onPressed: _startTransfer,
                           icon: const Icon(Icons.download_rounded, size: 18),
                           label: Text(
-                            l10n.previewStartNow,
+                            l10n.codeReceiveReceiveButton,
                             style:
                                 GoogleFonts.inter(fontWeight: FontWeight.w600),
                           ),
