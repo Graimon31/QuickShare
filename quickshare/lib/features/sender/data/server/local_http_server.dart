@@ -18,6 +18,10 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 class LocalHttpServer {
   HttpServer? _server;
   String? _authToken;
+
+  /// True once the receiver has said the session is delivered. From then on
+  /// the token answers for nothing but a repeat of that acknowledgement.
+  bool _sessionComplete = false;
   SessionTlsIdentity? _tls;
   Timer? _timeoutTimer;
 
@@ -225,6 +229,7 @@ class LocalHttpServer {
     // user's selection and the QR — the QHTP start below never did.
     unawaited(WakelockPlus.enable().catchError((_) {}));
     _authToken = authToken;
+    _sessionComplete = false;
 
     final router = Router();
 
@@ -312,6 +317,7 @@ class LocalHttpServer {
     }
     WakelockPlus.enable();
     _authToken = authToken;
+    _sessionComplete = false;
     _activeManifest = manifest;
     _itemIdToAbsPathMap = itemIdToAbsPathMap;
     _qhtpBytesSent = 0;
@@ -503,6 +509,7 @@ class LocalHttpServer {
     router.post('/v2/session/complete', (Request request) async {
       // Authoritative completion signal, independent of byte-counted progress
       // (which can undercount across retried/resumed Range requests).
+      _sessionComplete = true;
       _progressController.add(1.0);
       return Response.ok(
         jsonEncode({'ok': true}),
@@ -562,33 +569,55 @@ class LocalHttpServer {
   Middleware _authMiddleware() {
     return (Handler innerHandler) {
       return (Request request) async {
-        // Unauthenticated by design: /info is a name-and-size preview and
-        // /v2/health is a liveness probe. The POST /webrtc/answer route that
-        // used to sit here is gone — it accepted an SDP answer from anyone on
-        // the network and handed it to the active peer connection, and the
-        // rendezvous moved to a sealed out-of-band channel long ago.
-        if (request.url.path == 'info' || request.url.path == 'v2/health') {
+        // One route is unauthenticated, and it answers nothing about the
+        // session: /v2/health says a server of this protocol is listening and
+        // stops there. /info used to sit here too, and it is a name and a
+        // size — so anyone on the network who guessed a port in 8000–9000
+        // learned what was being sent and to whom, with no code and no QR.
+        // Its one caller has always sent the token, so requiring it costs
+        // nothing.
+        //
+        // The POST /webrtc/answer route that used to be exempt is gone: it
+        // accepted an SDP answer from anyone on the network and handed it to
+        // the active peer connection, and the rendezvous moved to a sealed
+        // out-of-band channel long ago.
+        if (request.url.path == 'v2/health') {
           return innerHandler(request);
         }
 
+        // One answer for a missing credential and a wrong one.
+        //
+        // They used to differ — 401 against 403 — which told anybody probing
+        // the port which of the two they had got, and there is nothing here
+        // that needs telling them apart. A retry of the completion call is
+        // the exception below rather than a third answer.
+        Response refuse() => Response(
+              401,
+              body: jsonEncode(
+                  {'error': 'unauthorized', 'code': 'AUTH_REQUIRED'}),
+              headers: {'Content-Type': 'application/json; charset=utf-8'},
+            );
+
         final authHeader = request.headers['authorization'];
         if (authHeader == null || !authHeader.startsWith('Bearer ')) {
-          return Response(
-            401,
-            body:
-                jsonEncode({'error': 'unauthorized', 'code': 'AUTH_REQUIRED'}),
-            headers: {'Content-Type': 'application/json; charset=utf-8'},
-          );
+          return refuse();
         }
 
         final token = authHeader.substring(7);
         // Constant-time token comparison
-        if (!_constantTimeEquals(token, _authToken ?? '')) {
-          return Response(
-            403,
-            body: jsonEncode({'error': 'forbidden', 'code': 'AUTH_INVALID'}),
-            headers: {'Content-Type': 'application/json; charset=utf-8'},
-          );
+        if (!_constantTimeEquals(token, _authToken ?? '')) return refuse();
+
+        // A finished session's token opens nothing further. The server lives
+        // on for a moment after the last byte — long enough to be asked
+        // again, by the receiver or by anyone who watched it work — and the
+        // token was good for all of it.
+        //
+        // The completion call itself is exempt, and idempotent: the receiver
+        // retries it when the answer is lost, and turning a delivered
+        // transfer into an error over a repeated acknowledgement would be a
+        // worse bug than the one this closes.
+        if (_sessionComplete && request.url.path != 'v2/session/complete') {
+          return refuse();
         }
 
         // Reset idle timeout on any valid authenticated request
@@ -610,6 +639,7 @@ class LocalHttpServer {
 
   void _invalidateToken() {
     _authToken = null;
+    _sessionComplete = false;
     stop();
   }
 
@@ -683,6 +713,7 @@ class LocalHttpServer {
     unawaited(WakelockPlus.disable().catchError((_) {}));
     _timeoutTimer?.cancel();
     _authToken = null;
+    _sessionComplete = false;
     _tls = null;
     _activeManifest = null;
     _itemIdToAbsPathMap = null;
