@@ -113,17 +113,14 @@ void main() {
     test('it does not claim a new generation', () {
       // A HELLO is not a CAPS write: it must not make the receiver look
       // newer than it is. Generation 4 is the direct-link rendezvous — the
-      // bump that took folders off the radio entirely.
+      // bump that took the file off the radio entirely.
       expect(BleControlProtocol.generation, equals(4));
+      expect(BleControlProtocol.peerSupportsDirectLink(4), isTrue);
       expect(
-        BleControlProtocol.peerCanTakeSession(fileCount: 9, peerGeneration: 4),
-        isTrue,
-      );
-      expect(
-        BleControlProtocol.peerCanTakeSession(fileCount: 9, peerGeneration: 3),
+        BleControlProtocol.peerSupportsDirectLink(3),
         isFalse,
-        reason: 'a generation-3 receiver ends the transfer at the first '
-            'file and reports success',
+        reason: 'a generation-3 receiver knows only how to be sent the file '
+            'over the radio, which is no longer a path this build takes',
       );
     });
   });

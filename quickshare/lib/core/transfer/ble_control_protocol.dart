@@ -136,29 +136,6 @@ class BleControlProtocol {
     return int.tryParse(command.substring(5).trim());
   }
 
-  /// Whether a peer that announced [peerGeneration] can take a session of
-  /// [fileCount] files.
-  ///
-  /// A missing announcement counts as the old generation. That is the safe
-  /// direction and the only honest one: every build through v1.0.10 sent
-  /// nothing here, so silence is what an old receiver sounds like.
-  ///
-  /// One file is sent to anyone. That shape never changed, and refusing it
-  /// would break the ordinary case to protect the new one.
-  static bool peerCanTakeSession({
-    required int fileCount,
-    required int? peerGeneration,
-  }) =>
-      fileCount <= 1 || (peerGeneration ?? 1) >= generation;
-
-  /// What to tell the person sending when [peerCanTakeSession] says no.
-  ///
-  /// Names the thing they can do about it. "Bluetooth transfer failed" sends
-  /// somebody hunting a radio problem that is not there.
-  static const String sessionRefusedMessage =
-      'The receiving device is on an older version that can only accept one '
-      'file over Bluetooth. Update it, or send over Wi-Fi.';
-
   /// Whether a peer can take part in a session at all.
   ///
   /// Generation 4 is where the bytes left this radio: a peer below it only
@@ -166,6 +143,14 @@ class BleControlProtocol {
   /// takes — so the session does not begin, whatever it could once have
   /// carried. The person sending gets [directLinkRequiredMessage] instead of
   /// a transfer that crawls.
+  ///
+  /// This replaced a softer rule, deliberately. That one refused a folder to
+  /// an older peer — which would have taken the first file and reported the
+  /// whole thing done — while still sending it a single file over the radio.
+  /// One file was worth keeping when the radio was the road; it is not worth
+  /// keeping a second delivery mechanism for, and the one it used publishes
+  /// what arrives without checking its length. An older build is an older
+  /// build of this same app, and the fix for it is to update it.
   static bool peerSupportsDirectLink(int? peerGeneration) =>
       (peerGeneration ?? 1) >= generation;
 

@@ -33,55 +33,43 @@ void main() {
     });
   });
 
-  group('what a peer may be sent', () {
-    test('a peer that announced this generation takes the whole list', () {
-      expect(
-          BleControlProtocol.peerCanTakeSession(
-              fileCount: 412, peerGeneration: 4),
-          isTrue);
-    });
-
-    test('silence means an old build, and a list is refused', () {
-      // Every build through v1.0.10 wrote nothing here, so silence is exactly
-      // what an old receiver sounds like. Guessing the other way is what
-      // delivered one photo out of a folder and called it a success.
-      expect(
-          BleControlProtocol.peerCanTakeSession(
-              fileCount: 412, peerGeneration: null),
-          isFalse);
-      expect(
-          BleControlProtocol.peerCanTakeSession(
-              fileCount: 2, peerGeneration: 1),
-          isFalse);
-      // A generation-3 peer understood lists, but not the direct link that
-      // now carries them.
-      expect(
-          BleControlProtocol.peerCanTakeSession(
-              fileCount: 2, peerGeneration: 3),
-          isFalse);
-    });
-
-    test('one file goes to anyone', () {
-      // The shape that always worked. Refusing it to protect the new case
-      // would break the ordinary one.
-      expect(
-          BleControlProtocol.peerCanTakeSession(
-              fileCount: 1, peerGeneration: null),
-          isTrue);
+  group('who may be sent to at all', () {
+    // DD-10, decided: generation 4 takes the file off this radio, and a peer
+    // that only knows the radio is told to update rather than served slowly
+    // down a second delivery path that publishes what arrives without
+    // checking its length. The softer rule this replaced — no folder to an
+    // old peer, but one file to anyone — is gone with it.
+    test('a peer that announced this generation is sent to', () {
+      expect(BleControlProtocol.peerSupportsDirectLink(4), isTrue);
     });
 
     test('a newer peer is not refused for being newer', () {
-      expect(
-          BleControlProtocol.peerCanTakeSession(
-              fileCount: 9, peerGeneration: 7),
-          isTrue);
+      expect(BleControlProtocol.peerSupportsDirectLink(7), isTrue);
+    });
+
+    test('silence means an old build, and old builds are refused', () {
+      // Every build through v1.0.10 wrote nothing here, so silence is exactly
+      // what an old receiver sounds like. Guessing the other way is what
+      // delivered one photo out of a folder and called it a success.
+      expect(BleControlProtocol.peerSupportsDirectLink(null), isFalse);
+      expect(BleControlProtocol.peerSupportsDirectLink(1), isFalse);
+    });
+
+    test('a generation-3 peer understood lists, but not the link', () {
+      expect(BleControlProtocol.peerSupportsDirectLink(3), isFalse);
+    });
+
+    test('one file is refused too, which is the breaking part', () {
+      // Named out loud because it is the decision, not an oversight: the
+      // shape that always worked no longer works with an old peer.
+      expect(BleControlProtocol.peerSupportsDirectLink(1), isFalse);
     });
 
     test('the refusal says what to do about it', () {
       // "Bluetooth transfer failed" sends somebody hunting a radio problem
       // that is not there.
-      expect(BleControlProtocol.sessionRefusedMessage, contains('Update'));
-      expect(BleControlProtocol.sessionRefusedMessage, contains('Wi-Fi'));
+      expect(BleControlProtocol.directLinkRequiredMessage, contains('Update'));
+      expect(BleControlProtocol.directLinkRequiredMessage, contains('Wi-Fi'));
     });
   });
 
