@@ -112,12 +112,23 @@ Future<IcePathKind> selectedPathKind(RTCPeerConnection connection) async {
 
 /// Whether a session of [sessionBytes] may proceed over [path].
 ///
-/// Only a relayed path is capped. A direct or peer-to-peer route costs nobody
-/// anything, and an unknown one is given the benefit of the doubt — refusing a
-/// transfer because a statistic was missing would be worse than the risk.
+/// A confirmed direct or peer-to-peer route costs nobody anything and passes
+/// whatever its size. Everything else is held to the relay cap:
+///
+///  * a relayed path, because the bytes cross a stranger's TURN server at
+///    their expense — and gigabytes of it silently is the one thing the
+///    product says it will not do;
+///  * an *unknown* path, because it cannot be told apart from a relayed one.
+///    `getStats()` came back empty, or threw, or named a candidate with no
+///    type — and "we could not confirm this is free" is not "this is free".
+///    Under the cap it proceeds; a large session over an unconfirmed path
+///    stops and offers the local network instead, which is exactly what a
+///    confirmed relay does.
 bool relayLimitAllows(IcePathKind path, int sessionBytes, {int? limitBytes}) {
   final limit = limitBytes ?? AppConstants.maxRelayTransferBytes;
-  if (path != IcePathKind.relayed) return true;
+  final capped =
+      path == IcePathKind.relayed || path == IcePathKind.unknown;
+  if (!capped) return true;
   if (limit <= 0) return true;
   return sessionBytes <= limit;
 }

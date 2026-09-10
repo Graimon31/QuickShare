@@ -237,7 +237,10 @@ class WebRtcTransferTransport implements TransferTransport {
       final blocked =
           RelayLimitExceeded(sessionBytes, AppConstants.maxRelayTransferBytes);
       AppLogger.warning(
-          'Refusing to start: $blocked. Not a single byte was sent.',
+          path == IcePathKind.unknown
+              ? 'Refusing to start: the path could not be confirmed as direct '
+                  'and the session is over the relay cap. Not a byte was sent.'
+              : 'Refusing to start: $blocked. Not a single byte was sent.',
           tag: 'WEBRTC_SENDER');
       if (!_degradationController.isClosed) {
         _degradationController.add(blocked);

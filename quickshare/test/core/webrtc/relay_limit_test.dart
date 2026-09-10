@@ -40,12 +40,43 @@ void main() {
       );
     });
 
-    test('an unknown path gets the benefit of the doubt', () {
-      // Refusing a transfer because a WebRTC statistic was missing would be
-      // worse than the bandwidth it might cost.
+    test('an unknown path is capped like a relayed one', () {
+      // DD-06. `getStats()` came back empty, threw, or named a candidate with
+      // no type. "We could not confirm this is free" is not "this is free",
+      // and gigabytes across a stranger's TURN by default is the one thing
+      // the product says it will not do.
       expect(
         relayLimitAllows(IcePathKind.unknown, 900 * oneMb,
             limitBytes: 50 * oneMb),
+        isFalse,
+      );
+    });
+
+    test('an unknown path under the cap still proceeds', () {
+      // The cap is the whole judgement — a small session over a path that
+      // might be direct is not worth blocking.
+      expect(
+        relayLimitAllows(IcePathKind.unknown, 10 * oneMb,
+            limitBytes: 50 * oneMb),
+        isTrue,
+      );
+    });
+
+    test('a confirmed direct path passes whatever an unknown one would fail',
+        () {
+      // The distinction the fix turns on: confirmed free vs unconfirmed.
+      const huge = 900 * oneMb;
+      expect(
+          relayLimitAllows(IcePathKind.direct, huge, limitBytes: 50 * oneMb),
+          isTrue);
+      expect(
+          relayLimitAllows(IcePathKind.unknown, huge, limitBytes: 50 * oneMb),
+          isFalse);
+    });
+
+    test('a zero limit disables the cap for an unknown path too', () {
+      expect(
+        relayLimitAllows(IcePathKind.unknown, 900 * oneMb, limitBytes: 0),
         isTrue,
       );
     });
