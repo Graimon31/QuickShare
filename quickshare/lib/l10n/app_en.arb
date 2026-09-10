@@ -406,5 +406,52 @@
   "btReceiveWaitingToBeChosen": "Waiting to be picked on the sending device",
   "btReceiveWaitingDetail": "This device is now listed on the sender. Choose it there to start the transfer.",
   "btReceiveCodeInvalid": "The code is ten digits",
-  "codeMalformed": "A code is 10 digits"
+  "codeMalformed": "A code is 10 digits",
+  "routeDirectWifiLink": "Direct Wi-Fi link",
+  "routeLocalNetwork": "Local network",
+  "routeInternetDirect": "Internet (direct, same network)",
+  "routeInternetPeerToPeer": "Internet (peer to peer)",
+  "routeInternetRelayed": "Internet (relayed)",
+  "routeBluetooth": "Bluetooth",
+  "routeUnknown": "Unknown route",
+  "settingsTransferSent": "Sent {size} in {seconds}s",
+  "@settingsTransferSent": {
+    "placeholders": {
+      "size": {
+        "type": "String"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "settingsTransferReceived": "Received {size} in {seconds}s",
+  "@settingsTransferReceived": {
+    "placeholders": {
+      "size": {
+        "type": "String"
+      },
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "errorTransferFailedUnexpectedly": "The transfer stopped before it finished, and the connection did not say why. Try again, and if it keeps happening put both devices on the same network.",
+  "errorBluetoothStartFailed": "Could not start sharing over Bluetooth.",
+  "errorBluetoothTransferFailed": "The Bluetooth transfer stopped before it finished.",
+  "errorInternetStartFailed": "Could not start the transfer over the internet.",
+  "errorNothingSelected": "Nothing is selected to send.",
+  "errorSelectionUnreadable": "Could not read what you selected.",
+  "errorNetworkCreateFailed": "Could not create a network on this device.",
+  "errorNetworkWithoutAddress": "The network came up but never got an address, so there is nothing to point the other device at.",
+  "errorNothingToRestart": "There is nothing left to restart — choose the files again.",
+  "errorReceiverTooOldForDirectLink": "The receiving device is on an older version that can only receive over Bluetooth. Update it, and the transfer moves to a direct Wi-Fi link.",
+  "errorReceiverTooOldToPair": "The receiving device is on an older version that cannot pair securely over Bluetooth. Update it, or send over Wi-Fi.",
+  "errorCancelledHere": "You cancelled the transfer.",
+  "errorLinkWifiOff": "Wi-Fi is turned off. The transfer builds a direct Wi-Fi link between the devices, so it cannot start without it.",
+  "errorLinkPeerSilentAtSetup": "The other device did not answer the setup for a private link. Make sure it is running the current version and try again.",
+  "errorLinkSetupFailed": "Could not set up the direct Wi-Fi link. Keep the devices next to each other and try again.",
+  "errorLinkPeerLost": "Lost contact with the other device before the link was set up. Stay on this screen and try again.",
+  "errorLinkWithoutAddress": "The link is up, but this device could not work out its own address on it.",
+  "errorSessionWithoutCertificate": "The transfer started without a certificate, so the other device has nothing to trust. Try again."
 }

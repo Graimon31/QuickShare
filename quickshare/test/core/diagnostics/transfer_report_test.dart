@@ -22,11 +22,12 @@ void main() {
   });
 
   TransferReport report({
-    String role = 'sent',
-    String route = 'Direct Wi-Fi link',
+    TransferRole role = TransferRole.sent,
+    TransferRoute route = TransferRoute.directWifiLink,
     int bytes = 64 * 1000 * 1000,
     int seconds = 8,
     String failure = '',
+    String? failureCode,
   }) =>
       TransferReport(
         at: DateTime(2026, 8, 24, 19, 30),
@@ -35,6 +36,7 @@ void main() {
         bytes: bytes,
         took: Duration(seconds: seconds),
         failure: failure,
+        failureCode: failureCode,
       );
 
   test('speed is derived rather than stored', () {
@@ -48,7 +50,7 @@ void main() {
   });
 
   test('the summary carries the one fact that explains the speed', () {
-    final text = report(route: 'Internet (relayed)').summary;
+    final text = report(route: TransferRoute.internetRelayed).summary;
     expect(text, contains('Internet (relayed)'),
         reason: 'a relayed session and a direct one differ by an order of '
             'magnitude and look identical on screen');
@@ -63,19 +65,19 @@ void main() {
   });
 
   test('reports survive a restart', () async {
-    await diagnostics.record(report(route: 'Bluetooth'));
+    await diagnostics.record(report(route: TransferRoute.bluetooth));
     final reloaded = await TransferDiagnostics(overrideDir: () => root).recent();
-    expect(reloaded.single.route, equals('Bluetooth'));
+    expect(reloaded.single.route, equals(TransferRoute.bluetooth));
   });
 
   test('the newest is first and the list does not grow forever', () async {
     for (var i = 0; i < 8; i++) {
-      await diagnostics.record(report(route: 'route $i'));
+      await diagnostics.record(report(bytes: i));
     }
     final kept = await diagnostics.recent();
     expect(kept, hasLength(5), reason: 'enough to see a pattern, few enough '
         'that nobody scrolls');
-    expect(kept.first.route, equals('route 7'));
+    expect(kept.first.bytes, equals(7));
   });
 
   test('unreadable diagnostics are not an error worth surfacing', () async {

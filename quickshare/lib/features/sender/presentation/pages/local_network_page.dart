@@ -4,6 +4,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 /// Walks the sender through handing a network to the other device.
@@ -53,7 +54,9 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
             return _ready(context, l10n, state);
           }
           if (state is SenderError) {
-            return _failed(context, l10n, state.message);
+            return _failed(context, l10n,
+                localizedFailure(l10n,
+                    code: state.code, fallback: state.message));
           }
           // Transferring / complete are handled by the progress route.
           return _Busy(message: l10n.localNetWorking);

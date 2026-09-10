@@ -10,6 +10,7 @@ import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/copy_value_row.dart';
 import 'package:quickshare/shared/widgets/session_expired_panel.dart';
@@ -99,8 +100,9 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
               // but then the expired panel owns the screen.
               if (!_expired) context.go('/send');
             } else if (state is SenderError) {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(SnackBar(content: Text(state.message)));
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(localizedFailure(AppLocalizations.of(context),
+                      code: state.code, fallback: state.message))));
               context.go('/send');
             }
           },

@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/media/media_library.dart';
 import 'package:quickshare/core/storage/folder_picker.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
@@ -250,7 +251,10 @@ class _FilePickerPageState extends State<FilePickerPage> {
             _selectionInFlight = false;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text(state.message),
+                content: Text(localizedFailure(
+                    AppLocalizations.of(context),
+                    code: state.code,
+                    fallback: state.message)),
                 backgroundColor: AppColors.error,
                 behavior: SnackBarBehavior.floating,
               ),

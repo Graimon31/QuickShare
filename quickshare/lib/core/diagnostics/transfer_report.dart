@@ -7,6 +7,63 @@ import 'package:path_provider/path_provider.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/utils/byte_format.dart';
 
+/// Which way the bytes went.
+///
+/// A value, not a sentence. The journal is read on screen in whatever
+/// language the app is set to, and a phrase composed by the bloc that
+/// recorded the transfer can only ever be in one of them — which is how a
+/// Russian settings screen ended up listing "Local network" five times.
+/// [label] is the English the *diagnostics* keep saying: the log line and
+/// the block somebody copies to ask for help, whose reader is not
+/// necessarily using this app in this language.
+enum TransferRoute {
+  directWifiLink('directWifiLink', 'Direct Wi-Fi link'),
+  localNetwork('localNetwork', 'Local network'),
+  internetDirect('internetDirect', 'Internet (direct, same network)'),
+  internetPeerToPeer('internetPeerToPeer', 'Internet (peer to peer)'),
+  internetRelayed('internetRelayed', 'Internet (relayed)'),
+  bluetooth('bluetooth', 'Bluetooth'),
+  unknown('unknown', 'Unknown');
+
+  const TransferRoute(this.wire, this.label);
+
+  /// What goes in `transfers.json`, stable across releases.
+  final String wire;
+
+  /// English, always. See the class comment.
+  final String label;
+
+  /// Journals written before this was an enum stored [label] itself, and
+  /// there is one on every device that has ever completed a transfer.
+  /// Reading those back as [unknown] would blank the history for the exact
+  /// people who have one, so both spellings are accepted.
+  static TransferRoute fromJson(String? value) {
+    if (value == null || value.isEmpty) return TransferRoute.unknown;
+    for (final route in values) {
+      if (route.wire == value || route.label == value) return route;
+    }
+    return TransferRoute.unknown;
+  }
+}
+
+/// Which end of the transfer this device was. Same reasoning as
+/// [TransferRoute]: a value on disk, a translation on screen, English in the
+/// diagnostics.
+enum TransferRole {
+  sent('sent', 'sent'),
+  received('received', 'received');
+
+  const TransferRole(this.wire, this.label);
+
+  final String wire;
+  final String label;
+
+  static TransferRole fromJson(String? value) =>
+      value == TransferRole.received.wire
+          ? TransferRole.received
+          : TransferRole.sent;
+}
+
 /// What happened on one transfer, in terms a person can read out loud.
 ///
 /// Everything here was already being written to the log, and the log is the
@@ -17,19 +74,25 @@ import 'package:quickshare/core/utils/byte_format.dart';
 class TransferReport {
   final DateTime at;
 
-  /// 'sent' or 'received'.
-  final String role;
+  /// Which end this device was.
+  final TransferRole role;
 
-  /// How it travelled, in the app's own terms: 'Direct Wi-Fi link',
-  /// 'Local network', 'Internet (peer to peer)', 'Internet (relayed)',
-  /// 'Bluetooth'.
-  final String route;
+  /// How it travelled.
+  final TransferRoute route;
 
   final int bytes;
   final Duration took;
 
-  /// Empty when it finished; the reason when it did not.
+  /// Empty when it finished; the reason, in English, when it did not.
+  ///
+  /// This is the diagnostics' copy — what [summary] and the log line carry.
+  /// The screen shows [failureCode] translated where there is one, and only
+  /// falls back to this when the reason was a caught exception's own text.
   final String failure;
+
+  /// A `FailureCode` for the reason in [failure], where the app authored it
+  /// rather than caught it. Null on a transfer that finished.
+  final String? failureCode;
 
   /// This device's own address for the session, if known — what a QR or a
   /// direct-link offer named, whether or not anything ended up using it.
@@ -49,11 +112,12 @@ class TransferReport {
     required this.bytes,
     required this.took,
     this.failure = '',
+    this.failureCode,
     this.localAddress,
     this.peerAddress,
   });
 
-  bool get succeeded => failure.isEmpty;
+  bool get succeeded => failure.isEmpty && failureCode == null;
 
   /// Bytes per second, or null when the transfer was too brief to divide by.
   double? get bytesPerSecond {
@@ -64,22 +128,24 @@ class TransferReport {
 
   Map<String, dynamic> toJson() => {
         'at': at.toIso8601String(),
-        'role': role,
-        'route': route,
+        'role': role.wire,
+        'route': route.wire,
         'bytes': bytes,
         'ms': took.inMilliseconds,
         'failure': failure,
+        if (failureCode != null) 'failureCode': failureCode,
         if (localAddress != null) 'localAddress': localAddress,
         if (peerAddress != null) 'peerAddress': peerAddress,
       };
 
   static TransferReport fromJson(Map<String, dynamic> json) => TransferReport(
         at: DateTime.tryParse(json['at'] as String? ?? '') ?? DateTime.now(),
-        role: json['role'] as String? ?? '',
-        route: json['route'] as String? ?? '',
+        role: TransferRole.fromJson(json['role'] as String?),
+        route: TransferRoute.fromJson(json['route'] as String?),
         bytes: json['bytes'] as int? ?? 0,
         took: Duration(milliseconds: json['ms'] as int? ?? 0),
         failure: json['failure'] as String? ?? '',
+        failureCode: json['failureCode'] as String?,
         localAddress: json['localAddress'] as String?,
         peerAddress: json['peerAddress'] as String?,
       );
@@ -92,11 +158,17 @@ class TransferReport {
   }
 
   /// One block of text to hand to somebody who is helping.
+  ///
+  /// Stays English while the screen above it does not. Whoever is being
+  /// asked for help is being handed a paste from a stranger's machine, and a
+  /// route label they cannot read is one more thing to translate before the
+  /// question can be answered.
   String get summary {
     final buffer = StringBuffer()
-      ..writeln('DirectDrop — ${succeeded ? role : '$role, failed'}')
+      ..writeln(
+          'DirectDrop — ${succeeded ? role.label : '${role.label}, failed'}')
       ..writeln('When:  ${at.toLocal()}')
-      ..writeln('Route: $route')
+      ..writeln('Route: ${route.label}')
       ..writeln('Size:  ${formatBytes(bytes)}')
       ..writeln('Took:  ${took.inSeconds}s')
       ..writeln('Speed: ${formatRate(bytesPerSecond)}');
@@ -158,8 +230,9 @@ class TransferDiagnostics {
         if (report.peerAddress != null) 'peer ${report.peerAddress}',
       ].join(', ');
       AppLogger.info(
-          '${report.succeeded ? 'OK' : 'FAILED'}: ${report.role} '
-          '${TransferReport.formatBytes(report.bytes)} over ${report.route} '
+          '${report.succeeded ? 'OK' : 'FAILED'}: ${report.role.label} '
+          '${TransferReport.formatBytes(report.bytes)} over '
+          '${report.route.label} '
           'at ${TransferReport.formatRate(report.bytesPerSecond)}'
           '${addr.isEmpty ? '' : ' ($addr)'}'
           '${report.succeeded ? '' : ' — ${report.failure}'}',

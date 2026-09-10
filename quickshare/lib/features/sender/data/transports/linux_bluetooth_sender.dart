@@ -3,11 +3,15 @@ import 'dart:convert';
 
 import 'package:dbus/dbus.dart';
 
+import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 
 typedef LinuxBluetoothProgress = void Function(int sent, int total);
-typedef LinuxBluetoothStatus = void Function(String status, [String? error]);
+/// [error] is English and technical; [code] is the same fact as a
+/// `FailureCode`, where this bridge decided it rather than caught it.
+typedef LinuxBluetoothStatus = void Function(String status,
+    [String? error, String? code]);
 typedef LinuxBluetoothApOffer = void Function(String sealed);
 typedef LinuxBluetoothPeerKey = void Function(String publicKey);
 
@@ -116,7 +120,8 @@ class LinuxBluetoothSender {
           } else if (BleControlProtocol.isUnauthorizedStart(command, _token)) {
             // A START without the session token — a receiver too old to pair
             // securely. Say so rather than leaving both sides waiting.
-            _onStatus?.call('failed', BleControlProtocol.staleReceiverMessage);
+            _onStatus?.call('failed', BleControlProtocol.staleReceiverMessage,
+                FailureCode.receiverTooOldToPair);
             // And refuse the write. Answering success told that receiver its
             // transfer had begun while this side tore the session down behind
             // it, so it waited on bytes that were never coming.
@@ -249,7 +254,8 @@ class LinuxBluetoothSender {
     }
     _transferStarted = true;
     if (!BleControlProtocol.peerSupportsDirectLink(_peerGeneration)) {
-      _onStatus?.call('failed', BleControlProtocol.directLinkRequiredMessage);
+      _onStatus?.call('failed', BleControlProtocol.directLinkRequiredMessage,
+          FailureCode.receiverTooOldForDirectLink);
       return;
     }
     _onStatus?.call('ready');

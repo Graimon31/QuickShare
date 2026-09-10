@@ -522,8 +522,11 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     if (senderPeerGeneration ?? 1) >= QuickShareBleControl.generation {
       emit(["type": "receiverReady"])
     } else {
+      // The error text is English, for the log; the code is what the Dart
+      // side translates for the screen.
       emit(["type": "senderFailed",
-            "error": QuickShareBleControl.directLinkRequiredMessage])
+            "error": QuickShareBleControl.directLinkRequiredMessage,
+            "code": "receiverTooOldForDirectLink"])
     }
   }
 
@@ -800,7 +803,9 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
         // securely. Refuse the write and say why, rather than leaving both
         // sides waiting on a transfer that will never begin.
         peripheral.respond(to: request, withResult: .insufficientAuthentication)
-        emit(["type": "senderFailed", "error": QuickShareBleControl.staleReceiverMessage])
+        emit(["type": "senderFailed",
+              "error": QuickShareBleControl.staleReceiverMessage,
+              "code": "receiverTooOldToPair"])
       } else {
         peripheral.respond(to: request, withResult: .requestNotSupported)
       }

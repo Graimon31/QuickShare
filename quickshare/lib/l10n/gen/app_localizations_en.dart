@@ -874,4 +874,104 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get codeMalformed => 'A code is 10 digits';
+
+  @override
+  String get routeDirectWifiLink => 'Direct Wi-Fi link';
+
+  @override
+  String get routeLocalNetwork => 'Local network';
+
+  @override
+  String get routeInternetDirect => 'Internet (direct, same network)';
+
+  @override
+  String get routeInternetPeerToPeer => 'Internet (peer to peer)';
+
+  @override
+  String get routeInternetRelayed => 'Internet (relayed)';
+
+  @override
+  String get routeBluetooth => 'Bluetooth';
+
+  @override
+  String get routeUnknown => 'Unknown route';
+
+  @override
+  String settingsTransferSent(String size, int seconds) {
+    return 'Sent $size in ${seconds}s';
+  }
+
+  @override
+  String settingsTransferReceived(String size, int seconds) {
+    return 'Received $size in ${seconds}s';
+  }
+
+  @override
+  String get errorTransferFailedUnexpectedly =>
+      'The transfer stopped before it finished, and the connection did not say why. Try again, and if it keeps happening put both devices on the same network.';
+
+  @override
+  String get errorBluetoothStartFailed =>
+      'Could not start sharing over Bluetooth.';
+
+  @override
+  String get errorBluetoothTransferFailed =>
+      'The Bluetooth transfer stopped before it finished.';
+
+  @override
+  String get errorInternetStartFailed =>
+      'Could not start the transfer over the internet.';
+
+  @override
+  String get errorNothingSelected => 'Nothing is selected to send.';
+
+  @override
+  String get errorSelectionUnreadable => 'Could not read what you selected.';
+
+  @override
+  String get errorNetworkCreateFailed =>
+      'Could not create a network on this device.';
+
+  @override
+  String get errorNetworkWithoutAddress =>
+      'The network came up but never got an address, so there is nothing to point the other device at.';
+
+  @override
+  String get errorNothingToRestart =>
+      'There is nothing left to restart — choose the files again.';
+
+  @override
+  String get errorReceiverTooOldForDirectLink =>
+      'The receiving device is on an older version that can only receive over Bluetooth. Update it, and the transfer moves to a direct Wi-Fi link.';
+
+  @override
+  String get errorReceiverTooOldToPair =>
+      'The receiving device is on an older version that cannot pair securely over Bluetooth. Update it, or send over Wi-Fi.';
+
+  @override
+  String get errorCancelledHere => 'You cancelled the transfer.';
+
+  @override
+  String get errorLinkWifiOff =>
+      'Wi-Fi is turned off. The transfer builds a direct Wi-Fi link between the devices, so it cannot start without it.';
+
+  @override
+  String get errorLinkPeerSilentAtSetup =>
+      'The other device did not answer the setup for a private link. Make sure it is running the current version and try again.';
+
+  @override
+  String get errorLinkSetupFailed =>
+      'Could not set up the direct Wi-Fi link. Keep the devices next to each other and try again.';
+
+  @override
+  String get errorLinkPeerLost =>
+      'Lost contact with the other device before the link was set up. Stay on this screen and try again.';
+
+  @override
+  String get errorLinkWithoutAddress =>
+      'The link is up, but this device could not work out its own address on it.';
+
+  @override
+  String get errorSessionWithoutCertificate =>
+      'The transfer started without a certificate, so the other device has nothing to trust. Try again.';
 }

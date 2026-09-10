@@ -221,7 +221,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   /// screen rather than in a log file on somebody else's machine.
   final TransferDiagnostics _diagnostics = const TransferDiagnostics();
   DateTime? _startedAt;
-  String _route = '';
+  TransferRoute _route = TransferRoute.unknown;
 
   /// `host:port` this device actually opened the QHTP connection to —
   /// loopback when the direct link took it, the sender's LAN address from
@@ -355,7 +355,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         }
 
         _startedAt = DateTime.now();
-        _route = 'Local network';
+        _route = TransferRoute.localNetwork;
         _connectedTo = '${payload.ip}:${payload.port}';
         if (transferAttempt != _transferAttempt) return;
 
@@ -426,7 +426,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         if (transferAttempt != _transferAttempt) return;
         result.fold(
           (failure) {
-            unawaited(_report(0, failure: failure.message));
+            unawaited(
+                _report(0, failure: failure.message, code: failure.code));
             add(DownloadFailed(failure.message, code: failure.code));
           },
           (result) {
@@ -527,17 +528,18 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   }
 
   /// Files away what just happened, for the settings screen to show.
-  Future<void> _report(int bytes, {String failure = ''}) async {
+  Future<void> _report(int bytes, {String failure = '', String? code}) async {
     final started = _startedAt;
     if (started == null) return;
     _startedAt = null;
     await _diagnostics.record(TransferReport(
       at: started,
-      role: 'received',
-      route: _route.isEmpty ? 'Unknown' : _route,
+      role: TransferRole.received,
+      route: _route,
       bytes: bytes,
       took: DateTime.now().difference(started),
       failure: failure,
+      failureCode: code,
       peerAddress: _connectedTo,
     ));
     _connectedTo = null;

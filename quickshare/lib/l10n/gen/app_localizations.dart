@@ -1621,6 +1621,168 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'A code is 10 digits'**
   String get codeMalformed;
+
+  /// No description provided for @routeDirectWifiLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Direct Wi-Fi link'**
+  String get routeDirectWifiLink;
+
+  /// No description provided for @routeLocalNetwork.
+  ///
+  /// In en, this message translates to:
+  /// **'Local network'**
+  String get routeLocalNetwork;
+
+  /// No description provided for @routeInternetDirect.
+  ///
+  /// In en, this message translates to:
+  /// **'Internet (direct, same network)'**
+  String get routeInternetDirect;
+
+  /// No description provided for @routeInternetPeerToPeer.
+  ///
+  /// In en, this message translates to:
+  /// **'Internet (peer to peer)'**
+  String get routeInternetPeerToPeer;
+
+  /// No description provided for @routeInternetRelayed.
+  ///
+  /// In en, this message translates to:
+  /// **'Internet (relayed)'**
+  String get routeInternetRelayed;
+
+  /// No description provided for @routeBluetooth.
+  ///
+  /// In en, this message translates to:
+  /// **'Bluetooth'**
+  String get routeBluetooth;
+
+  /// No description provided for @routeUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown route'**
+  String get routeUnknown;
+
+  /// No description provided for @settingsTransferSent.
+  ///
+  /// In en, this message translates to:
+  /// **'Sent {size} in {seconds}s'**
+  String settingsTransferSent(String size, int seconds);
+
+  /// No description provided for @settingsTransferReceived.
+  ///
+  /// In en, this message translates to:
+  /// **'Received {size} in {seconds}s'**
+  String settingsTransferReceived(String size, int seconds);
+
+  /// No description provided for @errorTransferFailedUnexpectedly.
+  ///
+  /// In en, this message translates to:
+  /// **'The transfer stopped before it finished, and the connection did not say why. Try again, and if it keeps happening put both devices on the same network.'**
+  String get errorTransferFailedUnexpectedly;
+
+  /// No description provided for @errorBluetoothStartFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not start sharing over Bluetooth.'**
+  String get errorBluetoothStartFailed;
+
+  /// No description provided for @errorBluetoothTransferFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'The Bluetooth transfer stopped before it finished.'**
+  String get errorBluetoothTransferFailed;
+
+  /// No description provided for @errorInternetStartFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not start the transfer over the internet.'**
+  String get errorInternetStartFailed;
+
+  /// No description provided for @errorNothingSelected.
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing is selected to send.'**
+  String get errorNothingSelected;
+
+  /// No description provided for @errorSelectionUnreadable.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not read what you selected.'**
+  String get errorSelectionUnreadable;
+
+  /// No description provided for @errorNetworkCreateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not create a network on this device.'**
+  String get errorNetworkCreateFailed;
+
+  /// No description provided for @errorNetworkWithoutAddress.
+  ///
+  /// In en, this message translates to:
+  /// **'The network came up but never got an address, so there is nothing to point the other device at.'**
+  String get errorNetworkWithoutAddress;
+
+  /// No description provided for @errorNothingToRestart.
+  ///
+  /// In en, this message translates to:
+  /// **'There is nothing left to restart — choose the files again.'**
+  String get errorNothingToRestart;
+
+  /// No description provided for @errorReceiverTooOldForDirectLink.
+  ///
+  /// In en, this message translates to:
+  /// **'The receiving device is on an older version that can only receive over Bluetooth. Update it, and the transfer moves to a direct Wi-Fi link.'**
+  String get errorReceiverTooOldForDirectLink;
+
+  /// No description provided for @errorReceiverTooOldToPair.
+  ///
+  /// In en, this message translates to:
+  /// **'The receiving device is on an older version that cannot pair securely over Bluetooth. Update it, or send over Wi-Fi.'**
+  String get errorReceiverTooOldToPair;
+
+  /// No description provided for @errorCancelledHere.
+  ///
+  /// In en, this message translates to:
+  /// **'You cancelled the transfer.'**
+  String get errorCancelledHere;
+
+  /// No description provided for @errorLinkWifiOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Wi-Fi is turned off. The transfer builds a direct Wi-Fi link between the devices, so it cannot start without it.'**
+  String get errorLinkWifiOff;
+
+  /// No description provided for @errorLinkPeerSilentAtSetup.
+  ///
+  /// In en, this message translates to:
+  /// **'The other device did not answer the setup for a private link. Make sure it is running the current version and try again.'**
+  String get errorLinkPeerSilentAtSetup;
+
+  /// No description provided for @errorLinkSetupFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not set up the direct Wi-Fi link. Keep the devices next to each other and try again.'**
+  String get errorLinkSetupFailed;
+
+  /// No description provided for @errorLinkPeerLost.
+  ///
+  /// In en, this message translates to:
+  /// **'Lost contact with the other device before the link was set up. Stay on this screen and try again.'**
+  String get errorLinkPeerLost;
+
+  /// No description provided for @errorLinkWithoutAddress.
+  ///
+  /// In en, this message translates to:
+  /// **'The link is up, but this device could not work out its own address on it.'**
+  String get errorLinkWithoutAddress;
+
+  /// No description provided for @errorSessionWithoutCertificate.
+  ///
+  /// In en, this message translates to:
+  /// **'The transfer started without a certificate, so the other device has nothing to trust. Try again.'**
+  String get errorSessionWithoutCertificate;
 }
 
 class _AppLocalizationsDelegate

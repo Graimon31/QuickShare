@@ -94,6 +94,45 @@ void main() {
       expect: () => [isA<SenderError>()],
     );
 
+    // DD-17. The screen shows the code, not the sentence: a message composed
+    // here is English forever, whatever the interface is set to afterwards.
+    blocTest<SenderBloc, SenderState>(
+      'a send with nothing chosen names the reason as a code',
+      build: () => SenderBloc(repository: mockRepository),
+      act: (bloc) => bloc.add(const StartQhtpSend([],
+          mode: TransportType.bluetooth)),
+      expect: () => [
+        isA<SenderError>().having(
+            (s) => s.code, 'code', FailureCode.nothingSelected),
+      ],
+    );
+
+    blocTest<SenderBloc, SenderState>(
+      'a restart with nothing left to restart names its own reason',
+      build: () => SenderBloc(repository: mockRepository),
+      act: (bloc) => bloc.add(RestartSession()),
+      expect: () => [
+        isA<SenderError>().having(
+            (s) => s.code, 'code', FailureCode.nothingToRestart),
+      ],
+    );
+
+    blocTest<SenderBloc, SenderState>(
+      'a domain failure hands its code straight through',
+      build: () {
+        when(() => mockRepository.pickFile()).thenAnswer((_) async =>
+            const Left(FileFailure('DioException: closed',
+                code: FailureCode.senderUnreachable)));
+        return SenderBloc(repository: mockRepository);
+      },
+      act: (bloc) => bloc.add(PickFile()),
+      expect: () => [
+        isA<SenderError>()
+            .having((s) => s.code, 'code', FailureCode.senderUnreachable)
+            .having((s) => s.message, 'message', 'DioException: closed'),
+      ],
+    );
+
     blocTest<SenderBloc, SenderState>(
       'emits [FileSelected] when pickFile succeeds',
       build: () {
@@ -294,7 +333,7 @@ void main() {
         final report = recorded.first;
         expect(report.succeeded, isTrue);
         expect(report.bytes, 123456789);
-        expect(report.route, 'Local network',
+        expect(report.route, TransferRoute.localNetwork,
             reason: 'a real (non-loopback) client address means the plain '
                 'network carried it, not the direct link');
         expect(report.peerAddress, '192.168.1.77');
@@ -365,7 +404,7 @@ void main() {
       },
       verify: (_) async {
         final report = (await diagnostics.recent()).first;
-        expect(report.route, 'Direct Wi-Fi link');
+        expect(report.route, TransferRoute.directWifiLink);
       },
     );
 

@@ -12,6 +12,7 @@ import 'package:quickshare/features/sender/data/transports/webrtc_transfer_trans
 import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
 import 'package:quickshare/features/sender/data/indexer/transfer_selection.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
+import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/direct_link_driver.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
@@ -81,10 +82,17 @@ class RestartSession extends SenderEvent {}
 class TransferCompleted extends SenderEvent {}
 
 class TransferFailed extends SenderEvent {
+  /// English, technical: what goes in the log and in the diagnostics block
+  /// somebody copies for help.
   final String error;
-  const TransferFailed(this.error);
+
+  /// See [FailureCode]. Null where [error] is a caught exception's own text
+  /// and there is nothing to translate.
+  final String? code;
+
+  const TransferFailed(this.error, {this.code});
   @override
-  List<Object?> get props => [error];
+  List<Object?> get props => [error, code];
 }
 
 class RelayBlocked extends SenderEvent {
@@ -299,10 +307,16 @@ class LocalNetworkReady extends SenderState {
 }
 
 class SenderError extends SenderState {
+  /// English, technical. The screen shows [code] translated where there is
+  /// one, and only falls back to this — see `localizedFailure`.
   final String message;
-  const SenderError(this.message);
+
+  /// See [FailureCode].
+  final String? code;
+
+  const SenderError(this.message, {this.code});
   @override
-  List<Object?> get props => [message];
+  List<Object?> get props => [message, code];
 }
 
 // BLoC
@@ -475,7 +489,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
     _statusSubscription = repository.statusStream.listen((status) {
       if (status == TransferStatus.failed) {
-        add(const TransferFailed('Transfer failed unexpectedly'));
+        add(const TransferFailed('Transfer failed unexpectedly',
+            code: FailureCode.transferFailedUnexpectedly));
       }
     });
   }
@@ -557,7 +572,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   Future<void> _onPickFile(PickFile event, Emitter<SenderState> emit) async {
     final result = await repository.pickFile();
     result.fold(
-      (failure) => emit(SenderError(failure.message)),
+      (failure) => emit(SenderError(failure.message, code: failure.code)),
       (file) {
         _currentFile = file;
         emit(FileSelected(file));
@@ -568,7 +583,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   Future<void> _onPickMedia(PickMedia event, Emitter<SenderState> emit) async {
     final result = await repository.pickMedia();
     result.fold(
-      (failure) => emit(SenderError(failure.message)),
+      (failure) => emit(SenderError(failure.message, code: failure.code)),
       (file) {
         _currentFile = file;
         emit(FileSelected(file));
@@ -615,7 +630,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _statusSubscription?.cancel();
     _statusSubscription = repository.statusStream.listen((status) {
       if (status == TransferStatus.failed) {
-        add(const TransferFailed('Transfer failed unexpectedly'));
+        add(const TransferFailed('Transfer failed unexpectedly',
+            code: FailureCode.transferFailedUnexpectedly));
       }
     });
   }
@@ -639,7 +655,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _statusSubscription =
             _activeWebRtcTransport!.statusStream.listen((status) {
           if (status == TransferStatus.failed) {
-            add(const TransferFailed('Transfer failed unexpectedly'));
+            add(const TransferFailed('Transfer failed unexpectedly',
+            code: FailureCode.transferFailedUnexpectedly));
           } else if (status == TransferStatus.completed) {
             add(TransferCompleted());
           }
@@ -686,7 +703,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         await _activeWebRtcTransport?.stopSharing();
         _activeWebRtcTransport = null;
         _subscribeToWifiProgress();
-        emit(SenderError('Failed to start internet transfer: $e'));
+        emit(SenderError('Failed to start internet transfer: $e',
+            code: FailureCode.internetStartFailed));
       }
       return;
     }
@@ -721,8 +739,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
             // old to take a folder — and that reason is the only part the
             // person sending can act on. It used to end in a debugPrint while
             // the screen said "failed unexpectedly".
-            add(TransferFailed(_activeBluetoothTransport?.lastFailureReason ??
-                'Bluetooth transfer failed unexpectedly'));
+            add(TransferFailed(
+                _activeBluetoothTransport?.lastFailureReason ??
+                    'Bluetooth transfer failed unexpectedly',
+                code: _activeBluetoothTransport?.lastFailureCode ??
+                    FailureCode.bluetoothTransferFailed));
           }
         });
 
@@ -768,7 +789,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         await _activeBluetoothTransport?.stopSharing();
         _activeBluetoothTransport = null;
         _subscribeToWifiProgress();
-        emit(SenderError('Failed to start Bluetooth sharing: $e'));
+        emit(SenderError('Failed to start Bluetooth sharing: $e',
+            code: FailureCode.bluetoothStartFailed));
       }
       return;
     }
@@ -777,11 +799,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     final result = await repository.startServer(file);
 
     await result.fold(
-      (failure) async => emit(SenderError(failure.message)),
+      (failure) async => emit(SenderError(failure.message, code: failure.code)),
       (session) async {
         final qrResult = await repository.generateQRPayload(session);
         qrResult.fold(
-          (failure) => emit(SenderError(failure.message)),
+          (failure) => emit(SenderError(failure.message, code: failure.code)),
           (qrData) {
             emit(QRReady(qrData, session, mode));
           },
@@ -803,7 +825,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     final mode = event.mode ?? _selectedMode;
     if (mode == TransportType.internet || mode == TransportType.bluetooth) {
       if (event.paths.isEmpty) {
-        emit(const SenderError('No files or folders selected.'));
+        emit(const SenderError('No files or folders selected.',
+            code: FailureCode.nothingSelected));
         return;
       }
 
@@ -829,7 +852,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       } catch (e) {
         // Empty folders, unreadable ones, selections past the size and depth
         // ceilings — all of which used to surface as "failed to archive".
-        if (!abandoned()) emit(SenderError('Could not read the selection: $e'));
+        if (!abandoned()) {
+          emit(SenderError('Could not read the selection: $e',
+              code: FailureCode.selectionUnreadable));
+        }
         return;
       }
 
@@ -874,7 +900,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     );
     await result.fold(
       (failure) async {
-        if (!abandoned()) emit(SenderError(failure.message));
+        if (!abandoned()) emit(SenderError(failure.message, code: failure.code));
       },
       (session) async {
         // Cancelled while the selection was being indexed. The server is
@@ -893,7 +919,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           return;
         }
         qrResult.fold(
-          (failure) => emit(SenderError(failure.message)),
+          (failure) => emit(SenderError(failure.message, code: failure.code)),
           (qrData) {
             // The totals travel with the state, not just inside the QR. An
             // invitation is built from these fields, and leaving them at zero
@@ -953,7 +979,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // cannot see that one of the two branches always assigns.
     final session = started.fold<TransferSession?>((_) => null, (s) => s);
     if (session == null) {
-      add(TransferFailed(started.fold((f) => f.message, (_) => '')));
+      add(TransferFailed(started.fold((f) => f.message, (_) => ''),
+          code: started.fold((f) => f.code, (_) => null)));
       return;
     }
 
@@ -978,7 +1005,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       await repository.stopServer(force: true);
       add(const TransferFailed(
           'The session started without a certificate, so the other device '
-          'has nothing to trust. Try again.'));
+          'has nothing to trust. Try again.',
+          code: FailureCode.sessionWithoutCertificate));
       return;
     }
 
@@ -1006,11 +1034,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     }
 
     switch (outcome) {
-      case DirectLinkUnavailable(message: final message):
+      case DirectLinkUnavailable(message: final message, code: final code):
         AppLogger.info('Bluetooth direct link unavailable: $message',
             tag: 'SENDER');
         await repository.stopServer(force: true);
-        add(TransferFailed(message));
+        add(TransferFailed(message, code: code));
 
       case DirectLinkOverPeerLink():
         // The link already forwards to this session's port, so the address
@@ -1026,7 +1054,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           await repository.stopServer(force: true);
           add(const TransferFailed(
               'The link is up, but this device could not work out its '
-              'own address on it.'));
+              'own address on it.',
+              code: FailureCode.linkWithoutAddress));
           return;
         }
         await serveAt(ip);
@@ -1048,7 +1077,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     final paths = _currentPaths ??
         (_currentFile != null ? [_currentFile!.path] : const <String>[]);
     if (paths.isEmpty) {
-      emit(const SenderError('Nothing is selected to send.'));
+      emit(const SenderError('Nothing is selected to send.',
+          code: FailureCode.nothingSelected));
       return;
     }
 
@@ -1063,7 +1093,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     try {
       credentials = await hotspot.startHosting();
     } on HotspotException catch (e) {
-      emit(SenderError('Could not create a network: $e'));
+      emit(SenderError('Could not create a network: $e',
+          code: FailureCode.networkCreateFailed));
       return;
     }
 
@@ -1071,7 +1102,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       await hotspot.stopHosting();
       emit(const SenderError(
           'The network came up but never got an address, so there is nothing '
-          'to point the other device at.'));
+          'to point the other device at.',
+          code: FailureCode.networkWithoutAddress));
       return;
     }
 
@@ -1079,7 +1111,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await result.fold(
       (failure) async {
         await hotspot.stopHosting();
-        emit(SenderError(failure.message));
+        emit(SenderError(failure.message, code: failure.code));
       },
       (session) async {
         _currentFile = session.fileMetadata;
@@ -1090,7 +1122,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         await qrResult.fold(
           (failure) async {
             await hotspot.stopHosting();
-            emit(SenderError(failure.message));
+            emit(SenderError(failure.message, code: failure.code));
           },
           (transferQr) async {
             AppLogger.info(
@@ -1120,7 +1152,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // Anything still setting a session up is now setting up a session
     // nobody wants; see [_sessionGeneration].
     _sessionGeneration++;
-    await _reportSend(failure: 'Cancelled');
+    await _reportSend(failure: 'Cancelled', code: FailureCode.cancelledHere);
     // The HTTP server goes down first, forced, and before either network
     // path that carries it: a receiver mid-download is inside a socket read
     // right now, and force-closing that socket while the hotspot or peer
@@ -1160,7 +1192,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       await _onStartQhtpSend(StartQhtpSend(paths, mode: _selectedMode), emit);
       return;
     }
-    emit(const SenderError('Nothing to restart.'));
+    emit(const SenderError('Nothing to restart.',
+        code: FailureCode.nothingToRestart));
   }
 
   Future<void> _onTransferProgress(
@@ -1207,7 +1240,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// direct one look identical behind a progress ring and differ by an order
   /// of magnitude. Reading it off a log file on somebody else's machine is
   /// what this replaces.
-  Future<void> _reportSend({String failure = ''}) async {
+  Future<void> _reportSend({String failure = '', String? code}) async {
     final started = _sendStartedAt;
     if (started == null) return;
     _sendStartedAt = null;
@@ -1223,14 +1256,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     final clientAddress = repository.lastQhtpClientAddress;
     final ice = _activeWebRtcTransport?.lastIcePath;
     final route = switch (ice) {
-      IcePathKind.relayed => 'Internet (relayed)',
-      IcePathKind.peerToPeer => 'Internet (peer to peer)',
-      IcePathKind.direct => 'Internet (direct, same network)',
+      IcePathKind.relayed => TransferRoute.internetRelayed,
+      IcePathKind.peerToPeer => TransferRoute.internetPeerToPeer,
+      IcePathKind.direct => TransferRoute.internetDirect,
       _ when _activeBluetoothTransport != null && clientAddress == null =>
-        'Bluetooth',
+        TransferRoute.bluetooth,
       _ when clientAddress != null && clientAddress.isLoopback =>
-        'Direct Wi-Fi link',
-      _ => 'Local network',
+        TransferRoute.directWifiLink,
+      _ => TransferRoute.localNetwork,
     };
 
     // `_sessionFiles` only exists for the Bluetooth/internet branch, which
@@ -1245,11 +1278,12 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
     await _diagnostics.record(TransferReport(
       at: started,
-      role: 'sent',
+      role: TransferRole.sent,
       route: route,
       bytes: bytes,
       took: DateTime.now().difference(started),
       failure: failure,
+      failureCode: code,
       localAddress: _sessionLocalAddress,
       peerAddress: clientAddress?.address,
     ));
@@ -1301,7 +1335,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
     // Same ordering as cancel, same reason: the server still knows who was
     // connected, if anyone was, until it stops.
-    await _reportSend(failure: event.error);
+    await _reportSend(failure: event.error, code: event.code);
     await repository.stopServer();
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
@@ -1317,7 +1351,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await _activeBluetoothTransport?.stopSharing();
     _activeBluetoothTransport = null;
     _subscribeToWifiProgress();
-    emit(SenderError(event.error));
+    emit(SenderError(event.error, code: event.code));
   }
 
   @override

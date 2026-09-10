@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:universal_ble/universal_ble.dart';
 
+import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
@@ -140,6 +141,12 @@ class BluetoothTransferTransport implements TransferTransport {
   /// it is always set before the status that follows it.
   String? lastFailureReason;
 
+  /// The same reason as a value, where this transport knows it — see
+  /// [FailureCode]. Null where the reason is a native bridge's own error
+  /// text, which no table can translate. Set and cleared alongside
+  /// [lastFailureReason]; read by the bloc when the status arrives.
+  String? lastFailureCode;
+
   bool get _usesNativeAppleBridge =>
       defaultTargetPlatform == TargetPlatform.iOS ||
       defaultTargetPlatform == TargetPlatform.macOS;
@@ -214,6 +221,7 @@ class BluetoothTransferTransport implements TransferTransport {
             // A START without the session token — a receiver too old to pair
             // securely. Say so rather than leaving both sides waiting.
             lastFailureReason = BleControlProtocol.staleReceiverMessage;
+            lastFailureCode = FailureCode.receiverTooOldToPair;
             _statusController.add(TransferStatus.failed);
             // And refuse the write itself. Answering success here told that
             // receiver its transfer had begun while this side was tearing
@@ -293,6 +301,9 @@ class BluetoothTransferTransport implements TransferTransport {
         final error = map['error'] as String?;
         debugPrint('Bluetooth send failed: $error');
         lastFailureReason = error;
+        // Apple's bridge names the two refusals it decides itself; anything
+        // else it reports is CoreBluetooth's own text, which stays as-is.
+        lastFailureCode = map['code'] as String?;
         _statusController.add(TransferStatus.failed);
         break;
     }
@@ -318,6 +329,7 @@ class BluetoothTransferTransport implements TransferTransport {
     final session = (files == null || files.isEmpty) ? [file] : files;
     _totalBytes = session.fold<int>(0, (sum, f) => sum + f.size);
     lastFailureReason = null;
+    lastFailureCode = null;
     if (_usesNativeAppleBridge) {
       try {
         await _method.invokeMethod('startAdvertising', {
@@ -357,7 +369,7 @@ class BluetoothTransferTransport implements TransferTransport {
         onProgress: (sent, total) {
           if (total > 0) _progressController.add(sent / total);
         },
-        onStatus: (status, [error]) {
+        onStatus: (status, [error, code]) {
           switch (status) {
             case 'advertising':
               _statusController.add(TransferStatus.serving);
@@ -377,6 +389,7 @@ class BluetoothTransferTransport implements TransferTransport {
             case 'failed':
               debugPrint('Bluetooth Linux sender failed: $error');
               lastFailureReason = error;
+              lastFailureCode = code;
               _statusController.add(TransferStatus.failed);
               break;
           }
@@ -478,6 +491,7 @@ class BluetoothTransferTransport implements TransferTransport {
     _universalTransferStarted = true;
     if (!BleControlProtocol.peerSupportsDirectLink(_universalPeerGeneration)) {
       lastFailureReason = BleControlProtocol.directLinkRequiredMessage;
+      lastFailureCode = FailureCode.receiverTooOldForDirectLink;
       _statusController.add(TransferStatus.failed);
       return;
     }

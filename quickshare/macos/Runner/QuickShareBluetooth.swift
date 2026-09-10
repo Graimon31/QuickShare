@@ -773,7 +773,9 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
                 // pair securely. Refuse and say why, rather than leaving both
                 // sides waiting on a transfer that will never begin.
                 peripheral.respond(to: request, withResult: .insufficientAuthentication)
-                emit(["type": "senderFailed", "error": BTControl.staleReceiverMessage])
+                emit(["type": "senderFailed",
+                      "error": BTControl.staleReceiverMessage,
+                      "code": "receiverTooOldToPair"])
             } else {
                 peripheral.respond(to: request, withResult: .success)
             }
@@ -792,7 +794,11 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
         if (sendPeerGeneration ?? 1) >= BTControl.generation {
             emit(["type": "receiverReady"])
         } else {
-            emit(["type": "senderFailed", "error": BTControl.directLinkRequiredMessage])
+            // The error text is English, for the log; the code is what the
+            // Dart side translates for the screen.
+            emit(["type": "senderFailed",
+                  "error": BTControl.directLinkRequiredMessage,
+                  "code": "receiverTooOldForDirectLink"])
         }
     }
 

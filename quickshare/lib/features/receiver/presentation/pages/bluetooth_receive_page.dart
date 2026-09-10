@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/direct_link_driver.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
@@ -129,14 +130,18 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     if (!mounted || _completed) return;
 
     switch (outcome) {
-      case DirectLinkUnavailable(message: final message):
+      case DirectLinkUnavailable(message: final message, code: final code):
         // An old sender's transfer is bytes over this radio, visibly moving.
         // Only a generation-4 session can end here — and for one, the radio
         // will never carry anything, so waiting longer helps nobody.
         if (_bleProgressSeen) return;
+        // Translated here rather than stored: `_error` is what the screen
+        // shows, and the coordinator that produced this has no locale.
+        final shown = localizedFailure(AppLocalizations.of(context),
+            code: code, fallback: message);
         setState(() {
           _phase = _Phase.failed;
-          _error = message;
+          _error = shown;
         });
 
       case DirectLinkOverPeerLink(localPort: final localPort):

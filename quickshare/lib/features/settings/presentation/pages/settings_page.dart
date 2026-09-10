@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
+import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/localization/locale_controller.dart';
 import 'package:quickshare/core/localization/locale_store.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
@@ -441,7 +442,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         : AppColors.warning,
                   ),
                   title: Text(
-                    '${report.route} — '
+                    '${report.route.localized(l10n)} — '
                     '${TransferReport.formatRate(report.bytesPerSecond)}',
                     style: const TextStyle(color: AppColors.textPrimary),
                   ),
@@ -451,10 +452,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text(
-                        report.succeeded
-                            ? '${report.role} ${TransferReport.formatBytes(report.bytes)} '
-                                'in ${report.took.inSeconds}s'
-                            : report.failure,
+                        report.outcome(l10n),
                         style: const TextStyle(
                             color: AppColors.textSecondary, fontSize: 12),
                       ),
@@ -466,7 +464,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       // the time.
                       if (report.peerAddress != null)
                         Text(
-                          report.role == 'sent'
+                          report.role == TransferRole.sent
                               ? l10n.settingsTransferPeerSent(
                                   report.peerAddress!)
                               : l10n.settingsTransferPeerReceived(

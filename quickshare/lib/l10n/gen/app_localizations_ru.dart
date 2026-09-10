@@ -880,4 +880,105 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get codeMalformed => 'Код состоит из 10 цифр';
+
+  @override
+  String get routeDirectWifiLink => 'Прямая связь Wi-Fi';
+
+  @override
+  String get routeLocalNetwork => 'Локальная сеть';
+
+  @override
+  String get routeInternetDirect => 'Интернет (напрямую, одна сеть)';
+
+  @override
+  String get routeInternetPeerToPeer =>
+      'Интернет (напрямую между устройствами)';
+
+  @override
+  String get routeInternetRelayed => 'Интернет (через реле)';
+
+  @override
+  String get routeBluetooth => 'Bluetooth';
+
+  @override
+  String get routeUnknown => 'Маршрут неизвестен';
+
+  @override
+  String settingsTransferSent(String size, int seconds) {
+    return 'Отправлено $size за $seconds с';
+  }
+
+  @override
+  String settingsTransferReceived(String size, int seconds) {
+    return 'Принято $size за $seconds с';
+  }
+
+  @override
+  String get errorTransferFailedUnexpectedly =>
+      'Передача оборвалась, и соединение не сообщило почему. Попробуйте ещё раз, а если повторяется — подключите оба устройства к одной сети.';
+
+  @override
+  String get errorBluetoothStartFailed =>
+      'Не удалось начать передачу по Bluetooth.';
+
+  @override
+  String get errorBluetoothTransferFailed =>
+      'Передача по Bluetooth оборвалась.';
+
+  @override
+  String get errorInternetStartFailed =>
+      'Не удалось начать передачу через интернет.';
+
+  @override
+  String get errorNothingSelected => 'Не выбрано ни одного файла или папки.';
+
+  @override
+  String get errorSelectionUnreadable => 'Не удалось прочитать выбранное.';
+
+  @override
+  String get errorNetworkCreateFailed =>
+      'Не удалось создать сеть на этом устройстве.';
+
+  @override
+  String get errorNetworkWithoutAddress =>
+      'Сеть поднялась, но так и не получила адреса — направить второе устройство некуда.';
+
+  @override
+  String get errorNothingToRestart =>
+      'Возобновлять нечего — выберите файлы заново.';
+
+  @override
+  String get errorReceiverTooOldForDirectLink =>
+      'На принимающем устройстве старая версия: она умеет принимать только по Bluetooth. Обновите её, и передача пойдёт по прямой связи Wi-Fi.';
+
+  @override
+  String get errorReceiverTooOldToPair =>
+      'На принимающем устройстве старая версия: она не умеет безопасно соединяться по Bluetooth. Обновите её или отправьте по Wi-Fi.';
+
+  @override
+  String get errorCancelledHere => 'Вы отменили передачу.';
+
+  @override
+  String get errorLinkWifiOff =>
+      'Wi-Fi выключен. Передача строит прямую связь Wi-Fi между устройствами и без него не начнётся.';
+
+  @override
+  String get errorLinkPeerSilentAtSetup =>
+      'Второе устройство не ответило на настройку защищённой связи. Убедитесь, что на нём стоит текущая версия, и попробуйте ещё раз.';
+
+  @override
+  String get errorLinkSetupFailed =>
+      'Не удалось построить прямую связь Wi-Fi. Держите устройства рядом и попробуйте ещё раз.';
+
+  @override
+  String get errorLinkPeerLost =>
+      'Связь со вторым устройством пропала до того, как канал был построен. Не уходите с этого экрана и попробуйте ещё раз.';
+
+  @override
+  String get errorLinkWithoutAddress =>
+      'Канал поднят, но это устройство не смогло определить свой адрес в нём.';
+
+  @override
+  String get errorSessionWithoutCertificate =>
+      'Передача началась без сертификата, и второму устройству нечему доверять. Попробуйте ещё раз.';
 }

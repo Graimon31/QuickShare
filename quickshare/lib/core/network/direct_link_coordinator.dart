@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:quickshare/core/crypto/link_secret.dart';
+import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
@@ -273,11 +274,18 @@ class DirectLinkOverPeerLink extends DirectLinkOutcome {
   const DirectLinkOverPeerLink({required this.hosting, this.localPort});
 }
 
-/// The ladder ran out. [message] is for the person holding the device, so it
-/// names what was wrong, not which rung failed.
+/// The ladder ran out. [message] names what was wrong, not which rung
+/// failed — but in English, because this file has no locale. [code] is the
+/// same fact as a value, and it is what the screen translates; the message
+/// is what the log keeps.
 class DirectLinkUnavailable extends DirectLinkOutcome {
   final String message;
-  const DirectLinkUnavailable(this.message);
+
+  /// See [FailureCode]. Always set: every message here is one this file
+  /// wrote, so every one of them can be translated.
+  final String code;
+
+  const DirectLinkUnavailable(this.message, this.code);
 }
 
 /// Builds the Wi-Fi link a Bluetooth-paired transfer then runs over.
@@ -354,7 +362,8 @@ class DirectLinkCoordinator {
     if (!await driver.ensureWifiReady()) {
       return const DirectLinkUnavailable(
           'Wi-Fi is turned off. The transfer builds a direct Wi-Fi link '
-          'between the devices, so it cannot start without it.');
+          'between the devices, so it cannot start without it.',
+          FailureCode.linkWifiOff);
     }
 
     // Before anything that could carry credentials. The far side writes its
@@ -365,7 +374,8 @@ class DirectLinkCoordinator {
     if (peerKey == null) {
       return const DirectLinkUnavailable(
           'The other device did not answer the setup for a private link. '
-          'Make sure it is running the current version and try again.');
+          'Make sure it is running the current version and try again.',
+          FailureCode.linkPeerSilentAtSetup);
     }
 
     if (driver.canHost) {
@@ -441,7 +451,8 @@ class DirectLinkCoordinator {
 
     return const DirectLinkUnavailable(
         'Could not set up the direct Wi-Fi link. Keep the devices next to '
-        'each other and try again.');
+        'each other and try again.',
+        FailureCode.linkSetupFailed);
   }
 
   /// The receiver's half: work through what the sender proposes until
@@ -463,7 +474,8 @@ class DirectLinkCoordinator {
     if (!await driver.ensureWifiReady()) {
       return const DirectLinkUnavailable(
           'Wi-Fi is turned off. The transfer builds a direct Wi-Fi link '
-          'between the devices, so it cannot start without it.');
+          'between the devices, so it cannot start without it.',
+          FailureCode.linkWifiOff);
     }
 
     // Sent before any directive can arrive, so the far side has this side's
@@ -503,11 +515,15 @@ class DirectLinkCoordinator {
       await subscription.cancel();
     }
 
-    return DirectLinkUnavailable(heardAnything
-        ? 'Could not set up the direct Wi-Fi link with the other device. '
-            'Keep the devices next to each other and try again.'
-        : 'Lost contact with the sending device before the link was set up. '
-            'Stay on this screen and try again.');
+    return heardAnything
+        ? const DirectLinkUnavailable(
+            'Could not set up the direct Wi-Fi link with the other device. '
+            'Keep the devices next to each other and try again.',
+            FailureCode.linkSetupFailed)
+        : const DirectLinkUnavailable(
+            'Lost contact with the sending device before the link was set '
+            'up. Stay on this screen and try again.',
+            FailureCode.linkPeerLost);
   }
 
   /// One proposal. Null means "this device could not take that one" — the

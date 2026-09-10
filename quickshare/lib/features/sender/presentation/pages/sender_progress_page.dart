@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
@@ -154,7 +155,8 @@ class SenderProgressPage extends StatelessWidget {
               return Center(
                 child: TransferPhaseLoader(
                   phaseLabel: l10n.senderProgressFailed,
-                  detail: state.message,
+                  detail: localizedFailure(l10n,
+                      code: state.code, fallback: state.message),
                   icon: Icons.error_outline_rounded,
                 ),
               );

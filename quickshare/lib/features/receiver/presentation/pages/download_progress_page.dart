@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
-import 'package:quickshare/core/errors/failures.dart';
+import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
@@ -51,17 +51,10 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
   /// What the snackbar says. [ReceiverError.message] is a caught
   /// exception's own text where [ReceiverError.code] is null — nobody
   /// reading only Russian should have to parse a `DioException` to learn
-  /// their transfer stopped, so a known [code] always wins.
-  String _errorMessage(AppLocalizations l10n, ReceiverError state) {
-    switch (state.code) {
-      case FailureCode.senderUnreachable:
-        return l10n.downloadErrorSenderUnreachable;
-      case FailureCode.cancelledBySender:
-        return l10n.downloadErrorCancelledBySender;
-      default:
-        return state.message;
-    }
-  }
+  /// their transfer stopped, so a known [code] always wins. The table this
+  /// consults is shared with every other screen that shows a failure.
+  String _errorMessage(AppLocalizations l10n, ReceiverError state) =>
+      localizedFailure(l10n, code: state.code, fallback: state.message);
 
   Widget _buildWakelockWarning(AppLocalizations l10n) {
     return Container(
