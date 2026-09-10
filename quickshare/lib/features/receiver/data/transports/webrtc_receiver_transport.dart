@@ -85,6 +85,21 @@ class WebRtcReceiverTransport {
   DateTime _lastTick = DateTime.now();
   int _lastBytes = 0;
   int _speedBps = 0;
+
+  /// Progress crosses into the bloc, emits a state and rebuilds the receiving
+  /// screen. A chunk is 64 KB, so unthrottled that fired hundreds of times a
+  /// second on the same isolate that runs the write loop — the same shape as
+  /// a Desktop→iOS transfer "hanging". Same cadence as the QHTP client, and
+  /// for the same reason.
+  static const Duration _progressInterval = Duration(milliseconds: 100);
+  DateTime _lastProgressReport =
+      DateTime.now().subtract(_progressInterval);
+
+  /// How large the item now open is meant to be, from the manifest. The seal
+  /// checks the file against it before the name goes on: a truncated item
+  /// from the middle of a folder must not land under its real name with the
+  /// rest of the transfer looking fine.
+  int _currentItemExpectedBytes = -1;
   String _baseDir = '';
   final _gathering = IceGatheringTracker();
 
@@ -369,6 +384,21 @@ class WebRtcReceiverTransport {
     _handlerChain = _handlerChain.then((_) => _processMessage(message));
   }
 
+  /// Feeds one frame the way `onMessage` would, and resolves when the handler
+  /// chain has drained it. The chained model means a caller cannot otherwise
+  /// know when a message has finished being processed.
+  @visibleForTesting
+  Future<void> deliverForTest(RTCDataChannelMessage message, {String? baseDir}) {
+    if (baseDir != null) _baseDir = baseDir;
+    _handleMessage(message);
+    return _handlerChain;
+  }
+
+  /// The completion future the real receive path returns, so a test can see
+  /// how it settles without standing up a peer connection.
+  @visibleForTesting
+  Future<String> get completionForTest => _completion.future;
+
   /// §8 — handles incoming DataChannel messages.
   ///
   /// Binary messages are decompressed if the sender advertised
@@ -396,7 +426,11 @@ class WebRtcReceiverTransport {
           _lastTick = now;
           _lastBytes = _sessionReceivedBytes;
         }
-        _emit('transferring');
+        final sinceReport = now.difference(_lastProgressReport);
+        if (sinceReport >= _progressInterval) {
+          _lastProgressReport = now;
+          _emit('transferring');
+        }
         return;
       }
 
@@ -444,12 +478,19 @@ class WebRtcReceiverTransport {
           }
           final item = _manifest[index];
           _isCompressed = item.compressed;
+          _currentItemExpectedBytes = item.size;
           _currentFile = _openIncoming(item.path);
           await _currentFile!.open();
+          _lastProgressReport =
+              DateTime.now().subtract(_progressInterval);
           _emit('transferring');
 
         case TransferProtocol.fileEnd:
           await _sealCurrentFile();
+          // The seal fails the whole transfer when the item came up short;
+          // do not then turn around and declare it delivered on the running
+          // total.
+          if (_completion.isCompleted) return;
           // A full byte count is completion in its own right: the sender's
           // trailing `complete` frame can die in its closing channel over a
           // relay, and waiting for it is what left receivers hanging on
@@ -477,8 +518,11 @@ class WebRtcReceiverTransport {
           _isCompressed = item.compressed;
           _lastBytes = 0;
           _lastTick = DateTime.now();
+          _currentItemExpectedBytes = item.size;
           _currentFile = _openIncoming(_fileName);
           await _currentFile!.open();
+          _lastProgressReport =
+              DateTime.now().subtract(_progressInterval);
           _statusController.add(TransferStatus.transferring);
           _emit('transferring');
           _armIdleWatchdog();
@@ -660,10 +704,31 @@ class WebRtcReceiverTransport {
 
   /// fsyncs, closes and (outside folder mode) atomically renames the file
   /// currently being written, if any, and records its committed path once.
+  ///
+  /// The length is checked against the manifest before `commit()` renames the
+  /// partial into place. QHTP verifies every item this way; this channel only
+  /// checked the session total at the end, so a file truncated in the middle
+  /// of a folder — a `file-end` that arrived early, a channel that dropped a
+  /// chunk — landed under its real name and nothing downstream knew it was
+  /// short.
   Future<void> _sealCurrentFile() async {
     final file = _currentFile;
     _currentFile = null;
+    final expected = _currentItemExpectedBytes;
+    _currentItemExpectedBytes = -1;
     if (file == null) return;
+
+    if (expected >= 0 && file.length != expected) {
+      // Discard the partial rather than rename it: half a file under the
+      // right name is worse than no file, because nobody goes looking for
+      // what is missing.
+      final short = file.length;
+      await file.abort();
+      _fail('"${p.basename(file.finalPath)}" arrived with $short of '
+          '$expected bytes');
+      return;
+    }
+
     final path = await file.commit();
     if (!_writtenPaths.contains(path)) _writtenPaths.add(path);
   }
@@ -681,6 +746,9 @@ class WebRtcReceiverTransport {
       _sessionFinished = true;
       _idleWatchdog?.cancel();
       await _sealCurrentFile();
+      // A short final item fails inside the seal. Nothing below should run:
+      // no folder commit, no "completed", no successful completion.
+      if (_completion.isCompleted) return;
       await _commitFolderIfStaged();
       _statusController.add(TransferStatus.completed);
       _emit('completed');
