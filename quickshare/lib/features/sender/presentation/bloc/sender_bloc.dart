@@ -95,6 +95,12 @@ class RelayBlocked extends SenderEvent {
   List<Object?> get props => [sessionBytes, limitBytes];
 }
 
+/// ICE gave up before a byte moved: there is no route between these two
+/// devices, which is a thing to explain rather than a failure to report.
+class NoPathFound extends SenderEvent {
+  const NoPathFound();
+}
+
 /// A device said it is nearby and waiting to be sent something over Bluetooth.
 class BluetoothReceiverAnnounced extends SenderEvent {
   final String name;
@@ -343,6 +349,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// leave the first one's listener adding devices to it.
   StreamSubscription<String>? _waitingSubscription;
 
+  /// Feeds [NoPathFound]. Held so a second session does not leave the first
+  /// one's listener opening a fallback screen over it.
+  StreamSubscription<void>? _noPathSubscription;
+
   /// Feeds the direct-link negotiation: fires when a generation-4 receiver
   /// is connected and the link-building may begin.
   StreamSubscription<void>? _receiverReadySubscription;
@@ -435,6 +445,19 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     on<SendToWaitingReceiver>((event, emit) async {
       await _activeBluetoothTransport?.beginTransfer();
     });
+    on<NoPathFound>((event, emit) async {
+      // The state existed and the screen was already listening for it; the
+      // only thing missing was anyone emitting it, so an ICE collapse
+      // arrived as `SenderError('Transfer failed unexpectedly')` and the
+      // screen that explains the cause never opened.
+      await _closeAnswerChannel();
+      await _activeWebRtcTransport?.stopSharing();
+      _activeWebRtcTransport = null;
+      _subscribeToWifiProgress();
+      AppLogger.info('No usable path between the devices', tag: 'SENDER');
+      emit(const NoUsablePathFound());
+    });
+
     on<RelayBlocked>((event, emit) async {
       await _closeAnswerChannel();
       await _activeWebRtcTransport?.stopSharing();
@@ -626,6 +649,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _relayBlockedSubscription = _activeWebRtcTransport!.relayBlockedStream
             .listen((blocked) =>
                 add(RelayBlocked(blocked.sessionBytes, blocked.limitBytes)));
+
+        _noPathSubscription?.cancel();
+        _noPathSubscription = _activeWebRtcTransport!.noUsablePath
+            .listen((_) => add(const NoPathFound()));
 
         await _activeWebRtcTransport!
             .startSharingServerless(file, files: _sessionFiles ?? [file]);
@@ -1110,6 +1137,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _fastPathSubscription = null;
     await _receiverReadySubscription?.cancel();
     _receiverReadySubscription = null;
+    await _noPathSubscription?.cancel();
+    _noPathSubscription = null;
     _bluetoothSessionCode = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
@@ -1235,6 +1264,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _fastPathSubscription = null;
     await _receiverReadySubscription?.cancel();
     _receiverReadySubscription = null;
+    await _noPathSubscription?.cancel();
+    _noPathSubscription = null;
     _bluetoothSessionCode = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
@@ -1252,6 +1283,22 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onTransferFailed(
       TransferFailed event, Emitter<SenderState> emit) async {
+    // A session that already ended in an explanation keeps it.
+    //
+    // Both of these mean the same thing — nothing was sent, and here is why,
+    // and here is what to do instead — and both are reached by a transport
+    // that then had every reason to report a failure as well. The two
+    // events queued, the generic one arrived second, and "Transfer failed
+    // unexpectedly" is what the person read.
+    final current = state;
+    if (current is RelayTooExpensive || current is NoUsablePathFound) {
+      AppLogger.info(
+          'Ignoring "${event.error}": the session already ended in an '
+          'explanation the screen is showing',
+          tag: 'SENDER');
+      return;
+    }
+
     // Same ordering as cancel, same reason: the server still knows who was
     // connected, if anyone was, until it stops.
     await _reportSend(failure: event.error);
@@ -1261,6 +1308,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _fastPathSubscription = null;
     await _receiverReadySubscription?.cancel();
     _receiverReadySubscription = null;
+    await _noPathSubscription?.cancel();
+    _noPathSubscription = null;
     _bluetoothSessionCode = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
@@ -1277,6 +1326,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _statusSubscription?.cancel();
     _waitingSubscription?.cancel();
     _receiverReadySubscription?.cancel();
+    _noPathSubscription?.cancel();
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;

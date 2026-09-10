@@ -83,6 +83,21 @@ class WebRtcTransferTransport implements TransferTransport {
   Stream<RelayLimitExceeded> get relayBlockedStream =>
       _degradationController.stream;
 
+  final _noPathController = StreamController<void>.broadcast();
+
+  /// ICE gave up before a single byte moved.
+  ///
+  /// Separate from a failure because it is a different thing to say and a
+  /// different thing to do about it: nothing was sent, the cause is a VPN or
+  /// a NAT that will not open, and there is a way out — put both devices on
+  /// one network. Reported as a failure it reached the person as "Transfer
+  /// failed unexpectedly", which names neither.
+  Stream<void> get noUsablePath => _noPathController.stream;
+
+  /// True once the session has begun putting bytes on the channel. After
+  /// that an ICE collapse is an interruption, not an absent route.
+  bool _sendingStarted = false;
+
   /// §6 — keeps the CPU/display awake for the duration of a transfer.
   final _wakelockGuard = WakelockGuard();
 
@@ -227,10 +242,15 @@ class WebRtcTransferTransport implements TransferTransport {
       if (!_degradationController.isClosed) {
         _degradationController.add(blocked);
       }
-      _statusController.add(TransferStatus.failed);
+      // No `failed` on top of it. The refusal above *is* the outcome, and it
+      // has somewhere to go — the screen that explains the limit and offers a
+      // local network instead. Both events reached the bloc, the failure
+      // arrived second, and "Transfer failed unexpectedly" replaced the
+      // explanation on its way to the screen.
       return;
     }
 
+    _sendingStarted = true;
     _statusController.add(TransferStatus.transferring);
     await _sendFilesInChunks(_sessionFiles ?? [file]);
   }
@@ -461,6 +481,16 @@ class WebRtcTransferTransport implements TransferTransport {
   /// Previously only `failed` was handled, so a connection that went
   /// `disconnected` and stayed there left the send loop waiting on a buffer
   /// nobody was draining, with the UI frozen on its last percentage.
+  /// Says which of the two things just happened: a route that never existed,
+  /// or a transfer that was under way and broke.
+  void _reportIceGaveUp() {
+    if (!_sendingStarted && !_noPathController.isClosed) {
+      _noPathController.add(null);
+      return;
+    }
+    _statusController.add(TransferStatus.failed);
+  }
+
   void _onIceStateChanged(RTCIceConnectionState state) {
     AppLogger.info('Sender ICE state: $state', tag: 'WEBRTC_SENDER');
 
@@ -476,13 +506,13 @@ class WebRtcTransferTransport implements TransferTransport {
               'ICE stayed disconnected for ${_iceRecoveryGrace.inSeconds}s — '
               'giving up on this session',
               tag: 'WEBRTC_SENDER');
-          _statusController.add(TransferStatus.failed);
+          _reportIceGaveUp();
         });
       case RTCIceConnectionState.RTCIceConnectionStateFailed:
       case RTCIceConnectionState.RTCIceConnectionStateClosed:
         _iceRecoveryTimer?.cancel();
         _iceRecoveryTimer = null;
-        _statusController.add(TransferStatus.failed);
+        _reportIceGaveUp();
       default:
         break;
     }
@@ -532,6 +562,9 @@ class WebRtcTransferTransport implements TransferTransport {
     await _peerConnection?.close();
     _dataChannel = null;
     _peerConnection = null;
+    if (!_noPathController.isClosed) {
+      await _noPathController.close();
+    }
     if (!_degradationController.isClosed) {
       await _degradationController.close();
     }
