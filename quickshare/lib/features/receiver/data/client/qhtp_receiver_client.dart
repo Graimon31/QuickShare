@@ -17,6 +17,7 @@ import 'package:quickshare/core/utils/streaming_digest.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
+import 'package:quickshare/features/receiver/data/manifest_guard.dart';
 import 'package:quickshare/features/receiver/data/store/session_state_store.dart';
 import 'package:quickshare/features/receiver/domain/entities/qhtp_receive_result.dart';
 
@@ -478,17 +479,34 @@ class QhtpReceiverClient {
         speedBps: 0,
       ));
 
-      final manifestRes =
-          await dio.get('https://$host:$port/v2/manifest', options: options);
+      final manifestRes = await dio.get<String>(
+        'https://$host:$port/v2/manifest',
+        // As text, not a decoded map: the guard below checks the byte length
+        // before anything parses it, which is the point of checking at all —
+        // a manifest built to be expensive to parse must not be parsed.
+        options: options.copyWith(responseType: ResponseType.plain),
+      );
       if (manifestRes.statusCode != 200) {
         return const Left(NetworkFailure('Failed to fetch session manifest'));
       }
 
-      final manifestMap = manifestRes.data is String
-          ? jsonDecode(manifestRes.data as String)
-          : manifestRes.data;
-      final manifest =
-          QhtpManifest.fromJson(manifestMap as Map<String, dynamic>);
+      final manifestBody = manifestRes.data ?? '';
+      const guard = ManifestGuard();
+      final QhtpManifest manifest;
+      try {
+        guard.checkSize(utf8.encode(manifestBody).length);
+        manifest = QhtpManifest.fromJson(
+            jsonDecode(manifestBody) as Map<String, dynamic>);
+        // Paths after the parse: the same limits the sender's indexer applies
+        // while it walks a selection, applied here where the sender is not
+        // trusted. A tree thousands deep, or a path no filesystem accepts,
+        // is refused before the loop that creates directories runs.
+        guard.checkPaths(manifest);
+      } on ManifestRejected catch (e) {
+        return Left(FileFailure(e.message));
+      } on FormatException {
+        return const Left(NetworkFailure('The session manifest was unreadable.'));
+      }
 
       // Load or initialize state store for resume
       final localState = await stateStore.loadState(sessionId) ?? {};
