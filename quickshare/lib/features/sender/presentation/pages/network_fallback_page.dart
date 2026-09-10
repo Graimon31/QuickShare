@@ -96,7 +96,14 @@ class NetworkFallbackPage extends StatelessWidget {
                   _SuggestionTile(
                     icon: Icons.wifi_rounded,
                     title: l10n.fallbackWifiTitle,
-                    subtitle: l10n.fallbackWifiBody,
+                    // Only claim this device can raise the network when the
+                    // button that does it is actually on screen. On iOS and
+                    // macOS it is hidden — the platform gives an app no way
+                    // to host — and the sentence sent people looking for a
+                    // control that was not there.
+                    subtitle: onCreateNetwork != null
+                        ? l10n.fallbackWifiBodyCanHost
+                        : l10n.fallbackWifiBody,
                   ),
                   const SizedBox(height: 12),
                   _SuggestionTile(

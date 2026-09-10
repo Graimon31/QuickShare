@@ -269,13 +269,14 @@ class _QRScanPageState extends State<QRScanPage>
             if (!mounted || _isClosing) return;
 
             if (state is QRParsed) {
-              if (state.payload.mode == 'internet' ||
-                  state.payload.ip == 'webrtc') {
-                _navigateAfterCameraRelease(
-                    '/receive/code?room=${state.payload.token}');
-              } else {
-                unawaited(_openPreviewAfterParse());
-              }
+              // Every scanned QR — LAN, Bluetooth or a serverless WebRTC
+              // offer — goes to the preview screen, which asks before it
+              // starts and which the bloc's own StartDownload then routes by
+              // mode. There used to be a branch here for `mode == 'internet'`
+              // that sent the token to a code screen as `?room=`; that format
+              // and that flow are both gone, and no current payload carries
+              // either value.
+              unawaited(_openPreviewAfterParse());
             } else if (state is ReceiverError) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(

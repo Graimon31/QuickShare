@@ -37,7 +37,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
   @override
   void initState() {
     super.initState();
-    // initialCode: bare room, or full quickshare://join?room=&sig=
+    // initialCode: ten digits, or a directdrop://join?p=<payload> link.
     if (widget.initialCode != null && widget.initialCode!.isNotEmpty) {
       _controller.text = widget.initialCode!;
       WidgetsBinding.instance.addPostFrameCallback((_) => _submit());

@@ -150,7 +150,7 @@ class AppConstants {
       .contains(channel);
 
   /// Custom URL scheme used for share links between DirectDrop apps.
-  /// A share link looks like: directdrop://join?room=A1B2C3
+  /// A share link looks like: directdrop://join?p=<payload>
   static const String deepLinkScheme = 'directdrop';
   static const String deepLinkHost = 'join';
 

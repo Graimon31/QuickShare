@@ -207,8 +207,9 @@ class AppRouter {
           GoRoute(
             path: '/receive/code',
             pageBuilder: (context, state) {
-              final room = state.uri.queryParameters['room'];
-              final sig = state.uri.queryParameters['sig'];
+              // Only `?p=<payload>` is a real share link now. The `?room=`
+              // form belonged to the room-based WebRTC handshake, which is
+              // gone.
               final payload = state.uri.queryParameters['p'];
               String? initial;
               if (payload != null && payload.isNotEmpty) {
@@ -219,10 +220,6 @@ class AppRouter {
                   itemCount:
                       int.tryParse(state.uri.queryParameters['c'] ?? ''),
                 );
-              } else if (room != null && room.isNotEmpty) {
-                initial = (sig != null && sig.isNotEmpty)
-                    ? 'directdrop://join?room=$room&sig=${Uri.encodeComponent(sig)}'
-                    : 'directdrop://join?room=$room';
               }
               return _qsPage(
                 state,

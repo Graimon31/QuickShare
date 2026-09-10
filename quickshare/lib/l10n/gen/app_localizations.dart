@@ -947,8 +947,14 @@ abstract class AppLocalizations {
   /// No description provided for @fallbackWifiBody.
   ///
   /// In en, this message translates to:
-  /// **'The local transfer has no size limit and runs at full link speed. This phone can create that network itself if there is no router around.'**
+  /// **'The local transfer has no size limit and runs at full link speed.'**
   String get fallbackWifiBody;
+
+  /// No description provided for @fallbackWifiBodyCanHost.
+  ///
+  /// In en, this message translates to:
+  /// **'The local transfer has no size limit and runs at full link speed. This device can create that network itself if there is no router around.'**
+  String get fallbackWifiBodyCanHost;
 
   /// No description provided for @fallbackVpnTitle.
   ///
