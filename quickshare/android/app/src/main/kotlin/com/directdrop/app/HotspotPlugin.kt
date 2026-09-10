@@ -3,7 +3,13 @@ package com.directdrop.app
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
+import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import androidx.annotation.RequiresApi
 import io.flutter.plugin.common.MethodCall
@@ -22,11 +28,15 @@ class HotspotPlugin(private val context: Context) : MethodChannel.MethodCallHand
 
     private var reservation: WifiManager.LocalOnlyHotspotReservation? = null
 
+    /// The join currently in flight, so a retry can withdraw it rather than
+    /// stack another system dialog on top of it.
+    private var joinCallback: ConnectivityManager.NetworkCallback? = null
+
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "startHotspot" -> startHotspot(result)
             "stopHotspot" -> stopHotspot(result)
-            "joinHotspot" -> result.success(null) // Android joins by scanning the QR.
+            "joinHotspot" -> joinHotspot(call, result)
             else -> result.notImplemented()
         }
     }
@@ -132,9 +142,166 @@ class HotspotPlugin(private val context: Context) : MethodChannel.MethodCallHand
         result.success(null)
     }
 
+    private fun joinHotspot(call: MethodCall, result: MethodChannel.Result) {
+        val ssid = call.argument<String>("ssid")
+        if (ssid.isNullOrEmpty()) {
+            result.error("BAD_ARGS", "joinHotspot needs an ssid", null)
+            return
+        }
+        val passphrase = call.argument<String>("passphrase") ?: ""
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            joinWithSpecifier(ssid, passphrase, result)
+        } else {
+            joinLegacy(ssid, passphrase, result)
+        }
+    }
+
+    /**
+     * Joins a network the other device raised.
+     *
+     * WifiNetworkSpecifier is the only way in since Android 10, and it shows
+     * a system dialog with the matching network — one tap the person makes,
+     * because the OS does not trust an app to move the device between
+     * networks on its own. The dialog is answered by the callback, so the
+     * Dart side gets its result when the join actually happened, not when it
+     * was asked for.
+     *
+     * The process is bound to the network on arrival: a local-only hotspot
+     * has no internet, and without the binding Android routes around it —
+     * the exact failure that made this look like "connected, but the
+     * transfer cannot start".
+     */
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun joinWithSpecifier(
+        ssid: String,
+        passphrase: String,
+        result: MethodChannel.Result,
+    ) {
+        // The permission changed names in 33; either way an app joining a
+        // specific network has to hold it, and a bare SecurityException is
+        // the reward for not checking first.
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.NEARBY_WIFI_DEVICES
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION
+        }
+        if (context.checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+            result.error(
+                "PERMISSION_DENIED",
+                "Joining a Wi-Fi network needs the nearby-devices permission",
+                null,
+            )
+            return
+        }
+
+        val connectivity = context.applicationContext
+            .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+        // A retry replaces the request rather than queueing behind it: the
+        // dialog it raises is modal in practice, and two of them is one
+        // confusion too many.
+        joinCallback?.let {
+            try {
+                connectivity.unregisterNetworkCallback(it)
+            } catch (_: IllegalArgumentException) {
+                // Already gone.
+            }
+        }
+
+        val specifier = WifiNetworkSpecifier.Builder()
+            .setSsid(ssid)
+            .setWpa2Passphrase(passphrase)
+            .build()
+        // The hotspot carries no internet, and it must still satisfy the
+        // request — without this removal Android matches only networks it
+        // would route the web over.
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(specifier)
+            .build()
+
+        var answered = false
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                connectivity.bindProcessToNetwork(network)
+                if (!answered) {
+                    answered = true
+                    result.success(null)
+                }
+            }
+
+            override fun onUnavailable() {
+                if (!answered) {
+                    answered = true
+                    result.error(
+                        "JOIN_FAILED",
+                        "The network was not found, or the join was declined",
+                        null,
+                    )
+                }
+            }
+        }
+        joinCallback = callback
+
+        try {
+            connectivity.requestNetwork(request, callback)
+        } catch (e: SecurityException) {
+            result.error("PERMISSION_DENIED", e.message, null)
+        }
+    }
+
+    /** The pre-10 way: describe the network and ask to be moved to it. */
+    @Suppress("DEPRECATION")
+    private fun joinLegacy(
+        ssid: String,
+        passphrase: String,
+        result: MethodChannel.Result,
+    ) {
+        if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            result.error(
+                "PERMISSION_DENIED",
+                "Joining a Wi-Fi network needs the location permission",
+                null,
+            )
+            return
+        }
+        val wifiManager =
+            context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val config = WifiConfiguration()
+        config.SSID = "\"$ssid\""
+        config.preSharedKey = "\"$passphrase\""
+        val networkId = wifiManager.addNetwork(config)
+        if (networkId < 0) {
+            result.error("JOIN_FAILED", "Android refused the network configuration", null)
+            return
+        }
+        wifiManager.disconnect()
+        val moved = wifiManager.enableNetwork(networkId, true)
+        wifiManager.reconnect()
+        if (moved) {
+            result.success(null)
+        } else {
+            result.error("JOIN_FAILED", "Android would not move to the network", null)
+        }
+    }
+
     /** Called when the engine goes away, so a hotspot never outlives the app. */
     fun dispose() {
         reservation?.close()
         reservation = null
+        joinCallback?.let {
+            val connectivity = context.applicationContext
+                .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            try {
+                connectivity.unregisterNetworkCallback(it)
+                connectivity.bindProcessToNetwork(null)
+            } catch (_: IllegalArgumentException) {
+                // Already gone.
+            }
+        }
+        joinCallback = null
     }
 }

@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:universal_ble/universal_ble.dart';
 
+import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -73,6 +74,39 @@ class UniversalBleReceiverTransport {
   Stream<BleDevice> get devices => _devicesController.stream;
   Stream<UniversalBleReceiveProgress> get progressStream =>
       _progressController.stream;
+
+  /// Who raises the direct Wi-Fi link and how to reach it — the sender's
+  /// `{"link": …}` frames, decoded for the coordinator.
+  final _linkDirectiveController =
+      StreamController<DirectLinkDirective>.broadcast();
+
+  /// Where the file is served once the link is up — the sender's
+  /// `{"serve": …}` frames, decoded.
+  final _serveInfoController = StreamController<LinkServeInfo>.broadcast();
+
+  Stream<DirectLinkDirective> get linkDirectives =>
+      _linkDirectiveController.stream;
+
+  Stream<LinkServeInfo> get serveInfos => _serveInfoController.stream;
+
+  /// Tells the sender about a network this receiver raised: an `AP:` write
+  /// on its control characteristic.
+  Future<void> sendApOffer(String ssid, String passphrase) async {
+    final deviceId = _targetDeviceId;
+    if (deviceId == null) {
+      throw StateError('sendApOffer before connect — no sender to answer.');
+    }
+    await UniversalBle.write(
+      deviceId,
+      _serviceUuid,
+      _controlUuid,
+      Uint8List.fromList(
+          utf8.encode(BleControlProtocol.apOffer(ssid, passphrase))),
+      // With a response, for the same reason CAPS is: a silently dropped
+      // offer is a session that never finds its network.
+      withoutResponse: false,
+    );
+  }
 
   StreamSubscription<BleDevice>? _scanSub;
   StreamSubscription<dynamic>? _valueSub;
@@ -263,6 +297,23 @@ class UniversalBleReceiverTransport {
   void _handleMetadata(Uint8List value) {
     try {
       final json = jsonDecode(utf8.decode(value)) as Map<String, dynamic>;
+
+      // The rendezvous' negotiation frames share this characteristic with
+      // the file metadata — a generation-4 sender's first frames are the
+      // link it is building and where the file is served on it.
+      final link = json['link'];
+      if (link is Map<String, dynamic>) {
+        final directive = DirectLinkDirective.fromJson(link);
+        if (directive != null) _linkDirectiveController.add(directive);
+        return;
+      }
+      final serve = json['serve'];
+      if (serve is Map<String, dynamic>) {
+        final info = LinkServeInfo.fromJson(serve);
+        if (info != null) _serveInfoController.add(info);
+        return;
+      }
+
       // Whatever was open belongs to the previous file: a metadata frame is
       // the only end-of-file marker this channel has.
       unawaited(_sealCurrentFile());
@@ -458,7 +509,10 @@ class UniversalBleReceiverTransport {
       }
     }
     _partialPath = null;
-    if (!_completion.isCompleted) {
+    // Only a connect actually in flight has anyone listening on this future;
+    // erroring it otherwise is an unhandled async error, not a cancellation
+    // anyone can act on.
+    if (_targetDeviceId != null && !_completion.isCompleted) {
       _completion.completeError(Exception('Cancelled by user'));
     }
     if (_targetDeviceId != null) {
@@ -470,6 +524,8 @@ class UniversalBleReceiverTransport {
     await stopScanning();
     await _devicesController.close();
     await _progressController.close();
+    await _linkDirectiveController.close();
+    await _serveInfoController.close();
   }
 }
 

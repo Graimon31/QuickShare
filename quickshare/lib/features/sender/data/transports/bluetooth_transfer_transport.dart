@@ -1,16 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show File, RandomAccessFile;
-import 'dart:math' show max;
 
-import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:universal_ble/universal_ble.dart';
 
+import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
-import 'package:quickshare/core/utils/mime_compression.dart';
-import 'package:quickshare/core/utils/wakelock_guard.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
@@ -24,20 +20,14 @@ import 'linux_bluetooth_sender.dart';
 /// and raw data stream. That means an iPhone or Mac can receive from either
 /// of those platforms without a second transfer protocol.
 ///
-/// ## More than one file
+/// ## Generation 4: the rendezvous, not the road
 ///
-/// A session is a list, not a file. The metadata characteristic is notified
-/// once per item — `{name, path, size, mime, compressed, index, count,
-/// sessionBytes}` — and the bytes of that item follow on the data
-/// characteristic before the next metadata arrives. Notifications on one
-/// characteristic are delivered in order over a single ATT connection, so the
-/// receiver needs no framing beyond "a new metadata means the previous file
-/// is finished".
-///
-/// `path` is what makes a folder possible here: the relative path each file
-/// keeps, root folder included. Before it, this channel could carry exactly
-/// one object of a known size, and a folder had to be zipped into one to fit
-/// — which is what the recipient then had to unpack.
+/// Since protocol generation 4 no bytes cross this channel. Once a receiver
+/// says what it is (CAPS) and asks (START) or is picked (HELLO), the session
+/// negotiates a direct Wi-Fi link over the control and metadata
+/// characteristics — see `DirectLinkCoordinator` — and the file crosses
+/// that link at Wi-Fi speed. What remains here is the radio's part of that
+/// negotiation: the advertisement, the writes, and [sendLinkFrame].
 class BluetoothTransferTransport implements TransferTransport {
   static const _method = MethodChannel('quickshare/bluetooth');
   static const _events = EventChannel('quickshare/bluetooth/events');
@@ -53,7 +43,6 @@ class BluetoothTransferTransport implements TransferTransport {
   final _universalSubscriptions = <StreamSubscription<dynamic>>[];
 
   StreamSubscription? _nativeEventSub;
-  RandomAccessFile? _universalFile;
   LinuxBluetoothSender? _linuxSender;
   String? _universalSessionToken;
   String? _universalClientId;
@@ -71,8 +60,54 @@ class BluetoothTransferTransport implements TransferTransport {
   /// Bytes across the whole session, so progress does not restart per file.
   int _totalBytes = 0;
 
-  /// §6 — keeps CPU/display awake during the BLE transfer (universal path).
-  final _wakelockGuard = WakelockGuard();
+  /// Fires when a generation-4 receiver is connected and the session may
+  /// start — the direct-link negotiation begins from here.
+  final _receiverReadyController = StreamController<void>.broadcast();
+
+  /// Credentials of a network the receiver raised and offered over the
+  /// control channel (`AP:`), in arrival order.
+  final _apOfferController =
+      StreamController<({String ssid, String passphrase})>.broadcast();
+
+  Stream<void> get receiverReady => _receiverReadyController.stream;
+
+  Stream<({String ssid, String passphrase})> get apOffers =>
+      _apOfferController.stream;
+
+  /// This transport as the coordinator's signal channel.
+  DirectLinkSignal get linkSignal => _SenderLinkSignal(this);
+
+  /// Sends a negotiation frame — `{"link": …}` or `{"serve": …}` — to the
+  /// connected receiver over the metadata characteristic.
+  ///
+  /// Retried briefly where the platform queue can refuse: CoreBluetooth
+  /// answers a full queue with a BUSY error rather than a lost frame, and a
+  /// negotiation frame lost is a session that never begins.
+  Future<void> sendLinkFrame(Map<String, Object?> frame) async {
+    if (_usesNativeAppleBridge) {
+      PlatformException? lastBusy;
+      for (var attempt = 0; attempt < 4; attempt++) {
+        try {
+          await _method.invokeMethod('sendLinkFrame', {'frame': frame});
+          return;
+        } on PlatformException catch (e) {
+          if (e.code != 'BUSY') rethrow;
+          lastBusy = e;
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+        }
+      }
+      throw lastBusy!;
+    }
+    if (_usesLinuxBridge) {
+      await _linuxSender?.notifyLinkFrame(frame);
+      return;
+    }
+    await UniversalBlePeripheral.updateCharacteristicValue(
+      characteristicId: _metadataUuid,
+      value: Uint8List.fromList(utf8.encode(jsonEncode(frame))),
+      deviceId: _universalClientId,
+    );
+  }
 
   /// Why the last failure happened, in words meant for the person sending.
   ///
@@ -123,7 +158,7 @@ class BluetoothTransferTransport implements TransferTransport {
         _universalClientId = event.deviceId;
         _universalDataSubscribed = true;
         _statusController.add(TransferStatus.connecting);
-        unawaited(_maybeStartUniversalTransfer());
+        _onUniversalSessionReady();
       }),
     );
 
@@ -138,11 +173,16 @@ class BluetoothTransferTransport implements TransferTransport {
           final generation = BleControlProtocol.parseCapabilities(command);
           if (generation != null) {
             _universalPeerGeneration = generation;
+          } else if (BleControlProtocol.parseApOffer(command)
+              case final offer?) {
+            // A receiver that raised the network itself says where.
+            _universalClientId ??= deviceId;
+            _apOfferController.add(offer);
           } else if (BleControlProtocol.isStart(
               command, _universalSessionToken)) {
             _universalClientId = deviceId;
             _universalStartReceived = true;
-            unawaited(_maybeStartUniversalTransfer());
+            _onUniversalSessionReady();
           } else if (BleControlProtocol.isUnauthorizedStart(
               command, _universalSessionToken)) {
             // A START without the session token — a receiver too old to pair
@@ -192,6 +232,19 @@ class BluetoothTransferTransport implements TransferTransport {
       case 'receiverAnnounced':
         final name = map['name'] as String?;
         if (name != null && name.isNotEmpty) _waitingController.add(name);
+        break;
+      case 'receiverReady':
+        // A generation-4 receiver is connected and the session may start —
+        // the direct-link negotiation begins from here.
+        _receiverReadyController.add(null);
+        break;
+      case 'apOffer':
+        // A receiver that raised the network itself says where.
+        final ssid = map['ssid'] as String?;
+        final passphrase = map['passphrase'] as String?;
+        if (ssid != null && passphrase != null) {
+          _apOfferController.add((ssid: ssid, passphrase: passphrase));
+        }
         break;
       case 'senderProgress':
         final sent = map['sent'] as int;
@@ -279,6 +332,11 @@ class BluetoothTransferTransport implements TransferTransport {
             case 'connected':
               _statusController.add(TransferStatus.connecting);
               break;
+            case 'ready':
+              // A generation-4 receiver is connected; the direct-link
+              // negotiation begins from here.
+              _receiverReadyController.add(null);
+              break;
             case 'completed':
               _progressController.add(1.0);
               _statusController.add(TransferStatus.completed);
@@ -290,16 +348,17 @@ class BluetoothTransferTransport implements TransferTransport {
               break;
           }
         },
+        onApOffer: (ssid, passphrase) =>
+            _apOfferController.add((ssid: ssid, passphrase: passphrase)),
       );
       return file.name;
     }
 
-    await _startUniversalAdvertising(session, token, publicId);
+    await _startUniversalAdvertising(token, publicId);
     return file.name;
   }
 
-  Future<void> _startUniversalAdvertising(
-      List<FileMetadata> session, String token, String publicId) async {
+  Future<void> _startUniversalAdvertising(String token, String publicId) async {
     await UniversalBle.requestPermissions(withAndroidFineLocation: false);
     final capabilities = await UniversalBlePeripheral.getCapabilities();
     if (!capabilities.supportsPeripheralMode) {
@@ -311,7 +370,6 @@ class BluetoothTransferTransport implements TransferTransport {
     }
 
     _universalSessionToken = token;
-    _universalFiles = session;
     _universalPeerGeneration = null;
     _universalClientId = null;
     _universalDataSubscribed = false;
@@ -368,7 +426,14 @@ class BluetoothTransferTransport implements TransferTransport {
     _statusController.add(TransferStatus.serving);
   }
 
-  Future<void> _maybeStartUniversalTransfer() async {
+  /// The session is fully dressed — subscribed and asked for — so it begins.
+  ///
+  /// Since generation 4 "begins" never means streaming bytes here: a peer
+  /// that understands the direct link is announced on [receiverReady] and
+  /// the coordinator builds the network the file actually crosses, and a
+  /// peer below it is refused with the update it needs rather than sent
+  /// anything slowly.
+  void _onUniversalSessionReady() {
     if (_universalTransferStarted ||
         !_universalDataSubscribed ||
         !_universalStartReceived ||
@@ -377,118 +442,12 @@ class BluetoothTransferTransport implements TransferTransport {
       return;
     }
     _universalTransferStarted = true;
-
-    await _wakelockGuard.acquire(); // §6
-    try {
-      final session = _universalFiles;
-      if (session.isEmpty) {
-        throw Exception('No file selected for Bluetooth transfer.');
-      }
-      _refuseListToAnOlderPeer(session, _universalPeerGeneration);
-
-      final maxNotify = await UniversalBlePeripheral.getMaximumNotifyLength(
-        _universalClientId!,
-      );
-      final chunkSize = max((maxNotify ?? 185) - 3, 20);
-
-      // Counted across the session rather than per file: a folder of forty
-      // photos should fill one progress ring, not forty.
-      var sessionSent = 0;
-
-      for (var index = 0; index < session.length; index++) {
-        final item = session[index];
-        _universalFile = await File(item.path).open();
-
-        // §8: decide whether to compress this payload. Per file, because a
-        // folder holds documents worth deflating next to photos that are
-        // already compressed and would only be slowed down by it.
-        final compress = shouldCompressForTransfer(item.mimeType, item.name);
-
-        final metadata = utf8.encode(jsonEncode({
-          'name': item.name,
-          // The relative path this file keeps on the far side. Equal to the
-          // name for a file picked directly; `Trip/Day 1/IMG_0042.HEIC` for
-          // one inside a folder.
-          'path': item.relPath,
-          'size': item.size,
-          'mime': item.mimeType,
-          'compressed': compress, // §8
-          // What tells the receiver this is a list and where it is in it. A
-          // build that predates them reads a session of one, which is what
-          // every session used to be.
-          'index': index,
-          'count': session.length,
-          'sessionBytes': _totalBytes,
-        }));
-        await UniversalBlePeripheral.updateCharacteristicValue(
-          characteristicId: _metadataUuid,
-          value: Uint8List.fromList(metadata),
-          deviceId: _universalClientId,
-        );
-
-        var fileSent = 0;
-        try {
-          while (fileSent < item.size) {
-            final chunk = await _universalFile!.read(chunkSize);
-            if (chunk.isEmpty) break;
-
-            // §8: compress the chunk if applicable.
-            final payload = compress
-                ? Uint8List.fromList(GZipEncoder().encode(chunk)!)
-                : Uint8List.fromList(chunk);
-
-            await UniversalBlePeripheral.updateCharacteristicValue(
-              characteristicId: _dataUuid,
-              value: payload,
-              deviceId: _universalClientId,
-            );
-            fileSent += chunk.length;
-            sessionSent += chunk.length;
-            _progressController
-                .add(_totalBytes > 0 ? sessionSent / _totalBytes : 1.0);
-          }
-        } finally {
-          await _universalFile?.close();
-          _universalFile = null;
-        }
-
-        if (fileSent < item.size) {
-          throw Exception(
-              'Bluetooth sender reached the end of "${item.name}" with '
-              '$fileSent of ${item.size} bytes sent.');
-        }
-      }
-
-      _progressController.add(1.0);
-      _statusController.add(TransferStatus.completed);
-    } catch (e) {
-      debugPrint('Bluetooth universal sender failed: $e');
-      lastFailureReason = e is Exception ? '$e'.replaceFirst('Exception: ', '') : '$e';
+    if (!BleControlProtocol.peerSupportsDirectLink(_universalPeerGeneration)) {
+      lastFailureReason = BleControlProtocol.directLinkRequiredMessage;
       _statusController.add(TransferStatus.failed);
-    } finally {
-      await _universalFile?.close();
-      _universalFile = null;
-      await _wakelockGuard.release(); // §6
-    }
-  }
-
-  /// The session the universal path is serving, in the order it is sent.
-  List<FileMetadata> _universalFiles = const [];
-
-  /// Stops a multi-file session from being half-delivered in silence.
-  ///
-  /// A receiver older than [BleControlProtocol.generation] treats the first
-  /// file's last byte as the end of the transfer and disconnects. It shows a
-  /// completed transfer, with one file in it, and no indication that a folder
-  /// was ever sent — which is worse than any error, because nobody goes
-  /// looking for what is missing.
-  static void _refuseListToAnOlderPeer(
-      List<FileMetadata> session, int? peerGeneration) {
-    if (BleControlProtocol.peerCanTakeSession(
-        fileCount: session.length, peerGeneration: peerGeneration)) {
       return;
     }
-    throw Exception(BleControlProtocol.sessionRefusedMessage);
+    _receiverReadyController.add(null);
   }
 
   @override
@@ -511,8 +470,6 @@ class BluetoothTransferTransport implements TransferTransport {
       } catch (_) {
         // best effort
       }
-      await _universalFile?.close();
-      _universalFile = null;
       for (final subscription in _universalSubscriptions) {
         await subscription.cancel();
       }
@@ -523,9 +480,35 @@ class BluetoothTransferTransport implements TransferTransport {
       _universalDataSubscribed = false;
       _universalStartReceived = false;
       _universalTransferStarted = false;
-      _universalFiles = const [];
       _universalPeerGeneration = null;
     }
     _statusController.add(TransferStatus.cancelled);
   }
+}
+
+/// The sender side of the rendezvous' signal channel.
+///
+/// Directives go out over the metadata characteristic; a sender never
+/// receives one — the receiver does not decide who hosts, it is told. What
+/// comes back is the credentials of the network the receiver was asked to
+/// raise.
+class _SenderLinkSignal implements DirectLinkSignal {
+  final BluetoothTransferTransport _transport;
+
+  _SenderLinkSignal(this._transport);
+
+  @override
+  Future<void> sendDirective(DirectLinkDirective directive) =>
+      _transport.sendLinkFrame({'link': directive.toJson()});
+
+  @override
+  Stream<DirectLinkDirective> get directives => const Stream.empty();
+
+  @override
+  Future<void> sendApOffer(String ssid, String passphrase) =>
+      throw UnsupportedError('a sender makes no offers');
+
+  @override
+  Stream<({String ssid, String passphrase})> get apOffers =>
+      _transport.apOffers;
 }

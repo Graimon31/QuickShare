@@ -3,9 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import 'package:quickshare/core/network/peer_link_service.dart';
+import 'package:quickshare/core/network/direct_link_coordinator.dart';
+import 'package:quickshare/core/network/direct_link_driver.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
-import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/features/receiver/data/client/isolated_qhtp_receiver.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/network/session_code.dart';
@@ -34,7 +34,7 @@ class BluetoothReceivePage extends StatefulWidget {
 enum _Phase { scanning, connecting, waiting, transferring, completed, failed }
 
 class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
-  final _transport = BluetoothReceiverTransport();
+  final BleReceiver _transport = BluetoothReceiverTransport.forPlatform();
   final _devices = <BluetoothDevice>[];
 
   _Phase _phase = _Phase.scanning;
@@ -45,11 +45,32 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   String? _error;
   bool _autoConnectAttempted = false;
 
+  /// Two routes can finish this session — an old sender's bytes arriving
+  /// over BLE, or the direct-link pull. Whichever gets there first wins;
+  /// the second finds this set and stands down.
+  bool _completed = false;
+
+  /// The loopback port a joined peer-to-peer link reaches the sender on.
+  ///
+  /// Set only when the rendezvous took that rung, and it overrides the
+  /// address the sender sends: on a link with no access point the sender's
+  /// own address is not routable from here, and its end of the link is.
+  int? _peerLinkPort;
+
+  /// Bytes are arriving over BLE itself, which only a sender older than
+  /// protocol generation 4 still does. Set from the progress stream so the
+  /// coordinator's timeout — "no directive ever came" — is not read as a
+  /// failure while such a transfer is visibly working.
+  bool _bleProgressSeen = false;
+
   /// Set when the person typed the code instead of scanning the QR. Both
   /// arrive at the same two values, which is the point of deriving them from
-  /// the digits rather than sending them.
+  /// the digits rather than sending them. The code itself is kept as well:
+  /// if the link negotiation asks this device to raise the network, the code
+  /// names it.
   String? _typedToken;
   String? _typedPublicId;
+  SessionCode? _typedCode;
 
   /// Set once a search for one particular session has gone long enough that
   /// "still looking" stops being the honest word for it. Without this a code
@@ -80,48 +101,48 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         _connect(d);
       }
     });
-    _tryDirectLinkThenScan();
+    _startScan();
   }
 
-  /// Takes the direct Wi-Fi link when the sender is offering one, and falls
-  /// back to the Bluetooth transfer when it is not.
+  /// The receiver's half of the rendezvous: once the BLE channel is up, the
+  /// sender's first metadata frame says who raises the direct Wi-Fi link,
+  /// and its `serve` frame then says where the file is on it.
   ///
-  /// Same button, same promise — nothing nearby needs a network — but the
-  /// bytes travel over the only radio that can carry them at speed. Bluetooth
-  /// itself tops out at 2 Mbit/s for BLE, which is what Apple leaves open to
-  /// apps, so 200 MB over it is twenty minutes at the theoretical best.
-  ///
-  /// Everything about this is best effort. An older sender, a non-Apple one,
-  /// Wi-Fi switched off, no session token to look up — each simply falls
-  /// through to the scan that was here before.
-  Future<void> _tryDirectLinkThenScan() async {
-    final token = widget.sessionToken;
-    if (token == null || token.isEmpty || !PeerLinkService.isSupported) {
-      await _startScan();
-      return;
-    }
+  /// A sender older than generation 4 never sends either; the bytes arriving
+  /// over BLE itself are that case, and they keep their path.
+  Future<void> _negotiateDirectLink() async {
+    final outcome = await DirectLinkCoordinator(
+      driver: LocalHotspotDriver(),
+      signal: _ReceiverLinkSignal(_transport),
+    ).runReceiver(_typedCode);
+    if (!mounted || _completed) return;
 
-    setState(() {
-      _phase = _Phase.connecting;
-      _fileName = AppLocalizations.of(context).btReceiveLookingForLink;
-    });
+    switch (outcome) {
+      case DirectLinkUnavailable(message: final message):
+        // An old sender's transfer is bytes over this radio, visibly moving.
+        // Only a generation-4 session can end here — and for one, the radio
+        // will never carry anything, so waiting longer helps nobody.
+        if (_bleProgressSeen) return;
+        setState(() {
+          _phase = _Phase.failed;
+          _error = message;
+        });
 
-    try {
-      final port = await const PeerLinkService().join(
-        serviceName: PeerLinkService.serviceNameFor(token),
-        timeout: const Duration(seconds: 8),
-      );
-      if (!mounted) return;
-      await _receiveOverDirectLink(token, port);
-      return;
-    } on PeerLinkException catch (e) {
-      AppLogger.info('No direct link for this transfer, using Bluetooth: $e',
-          tag: 'PEERLINK');
+      case DirectLinkOverPeerLink(localPort: final localPort):
+        // No access point exists: the link is a loopback port on this
+        // machine that reaches the sender's server. The address in the serve
+        // frame belongs to the far side and means nothing here, so this is
+        // where the file actually is.
+        _peerLinkPort = localPort;
+
+      case DirectLinkReady():
+        // The link is up; the sender's serve frame names the rest.
+        break;
     }
-    if (mounted) await _startScan();
   }
 
-  Future<void> _receiveOverDirectLink(String token, int port) async {
+  Future<void> _receiveOverDirectLink(LinkServeInfo serve) async {
+    if (_completed) return;
     setState(() {
       _phase = _Phase.transferring;
       _fileName = AppLocalizations.of(context).btReceiveDirectLinkPlaceholder;
@@ -137,10 +158,10 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       // exactly what resuming wants.
       payload: QRPayload(
         version: 2,
-        ip: '127.0.0.1',
-        port: port,
-        token: token,
-        sessionId: token,
+        ip: _peerLinkPort != null ? '127.0.0.1' : serve.ip,
+        port: _peerLinkPort ?? serve.port,
+        token: serve.token,
+        sessionId: serve.token,
         mode: 'http-lan',
       ),
       targetBaseDir: session.path,
@@ -153,23 +174,17 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         });
       },
     );
-    await const PeerLinkService().stop();
-    if (!mounted) return;
+    if (!mounted || _completed) return;
 
     result.fold(
       (failure) {
-        // Falling back rather than failing. The direct link is an optimisation
-        // the user never asked for by name; if it does not deliver, the
-        // Bluetooth transfer they did ask for is still there and still works.
-        // Showing "connection failed" here sent people to tap Scan again,
-        // which quietly did this anyway — badly, and only after alarming them.
-        AppLogger.info(
-            'The direct link did not deliver (${failure.message}); '
-            'falling back to Bluetooth',
-            tag: 'PEERLINK');
-        unawaited(_startScan());
+        setState(() {
+          _phase = _Phase.failed;
+          _error = failure.message;
+        });
       },
       (received) {
+        _completed = true;
         final items = TransferCache.itemsIn(session);
         context.go('/receive/complete', extra: {
           'filePath': received.preferredResultPath,
@@ -198,6 +213,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       _codeError = null;
       _typedToken = code.sessionToken;
       _typedPublicId = code.publicId;
+      _typedCode = code;
     });
     await _transport.stopScanning();
     if (!mounted) return;
@@ -224,6 +240,9 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       _devices.clear();
       _error = null;
       _autoConnectAttempted = false;
+      _completed = false;
+      _bleProgressSeen = false;
+      _peerLinkPort = null;
     });
     _restartSearchClock();
     try {
@@ -247,6 +266,10 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
 
     final sub = _transport.progressStream.listen((p) {
       if (!mounted) return;
+      // File metadata or bytes on the radio itself mean the far side is
+      // older than generation 4 — its transfer is the one that finishes
+      // this session.
+      if (p.phase == 'transferring') _bleProgressSeen = true;
       setState(() {
         _phase = switch (p.phase) {
           'completed' => _Phase.completed,
@@ -261,14 +284,27 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       });
     });
 
+    // The link the file actually crosses is negotiated over the channel the
+    // moment it is up, and the sender's serve frame then names where to pull
+    // from. Both subscriptions go in before the connect future is awaited —
+    // for a generation-4 sender that future never resolves, because no bytes
+    // were ever going to cross this radio.
+    final serveSub = _transport.serveInfos.listen((serve) {
+      unawaited(_receiveOverDirectLink(serve));
+    });
+
     try {
       // Into the transfer cache, like every other transport: a Bluetooth
       // transfer used to write straight into Documents on iOS and Downloads
       // elsewhere, so a photo sent this way never reached the gallery and a
       // document was never asked about.
       final session = await const TransferCache().sessionDirectory();
-      final path = await _transport.connect(device.id, targetDir: session.path);
-      if (!mounted) return;
+      final connectFuture = _transport.connect(device.id,
+          token: _token, targetDir: session.path);
+      unawaited(_negotiateDirectLink());
+      final path = await connectFuture;
+      if (!mounted || _completed) return;
+      _completed = true;
       setState(() {
         _phase = _Phase.completed;
         _savedPath = path;
@@ -283,13 +319,14 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         'items': items,
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || _completed) return;
       setState(() {
         _phase = _Phase.failed;
         _error = e.toString().replaceFirst('Exception: ', '');
       });
     } finally {
       await sub.cancel();
+      await serveSub.cancel();
     }
   }
 
@@ -514,4 +551,30 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         );
     }
   }
+}
+
+/// The receiver side of the rendezvous' signal channel.
+///
+/// Directives come in over the metadata characteristic; the receiver never
+/// sends one — it does not decide who hosts, it is told. What goes out is
+/// the credentials of the network it was asked to raise.
+class _ReceiverLinkSignal implements DirectLinkSignal {
+  final BleReceiver _transport;
+
+  _ReceiverLinkSignal(this._transport);
+
+  @override
+  Future<void> sendDirective(DirectLinkDirective directive) =>
+      throw UnsupportedError('a receiver sends no directives');
+
+  @override
+  Stream<DirectLinkDirective> get directives => _transport.linkDirectives;
+
+  @override
+  Future<void> sendApOffer(String ssid, String passphrase) =>
+      _transport.sendApOffer(ssid, passphrase);
+
+  @override
+  Stream<({String ssid, String passphrase})> get apOffers =>
+      const Stream.empty();
 }

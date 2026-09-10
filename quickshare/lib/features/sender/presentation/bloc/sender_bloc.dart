@@ -12,7 +12,10 @@ import 'package:quickshare/features/sender/data/transports/webrtc_transfer_trans
 import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
 import 'package:quickshare/features/sender/data/indexer/transfer_selection.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
+import 'package:quickshare/core/network/direct_link_coordinator.dart';
+import 'package:quickshare/core/network/direct_link_driver.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
+import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
@@ -340,6 +343,19 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// leave the first one's listener adding devices to it.
   StreamSubscription<String>? _waitingSubscription;
 
+  /// Feeds the direct-link negotiation: fires when a generation-4 receiver
+  /// is connected and the link-building may begin.
+  StreamSubscription<void>? _receiverReadySubscription;
+
+  /// The code the live Bluetooth session advertises, kept for the link
+  /// negotiation that follows the receiver's arrival.
+  SessionCode? _bluetoothSessionCode;
+
+  /// One negotiation per session — [BluetoothTransferTransport.receiverReady]
+  /// can fire again on a reconnect, and a second coordinator would raise a
+  /// second network over the first one's.
+  bool _directLinkStarted = false;
+
   TransportType _selectedMode = TransportType.wifi;
   DateTime? _lastProgressUpdate;
   int _lastBytes = 0;
@@ -352,6 +368,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   /// Offers the running QHTP session over direct Wi-Fi as well as the LAN.
   final PeerLinkService peerLink;
+
+  /// Builds the direct Wi-Fi link a Bluetooth-paired transfer runs over.
+  /// Injected so tests can answer for the radio the CI runner does not have.
+  final DirectLinkDriver _directLinkDriver;
 
   /// Facts about the last transfer, for the settings screen to show.
   final TransferDiagnostics _diagnostics;
@@ -383,9 +403,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     required this.repository,
     LocalHotspotService? hotspotService,
     PeerLinkService? peerLinkService,
+    DirectLinkDriver? directLinkDriver,
     TransferDiagnostics? diagnostics,
   })  : hotspot = hotspotService ?? LocalHotspotService(),
         peerLink = peerLinkService ?? const PeerLinkService(),
+        _directLinkDriver = directLinkDriver ?? LocalHotspotDriver(),
         _diagnostics = diagnostics ?? const TransferDiagnostics(),
         super(SenderInitial()) {
     on<PickFile>(_onPickFile);
@@ -684,6 +706,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         // and without anything else travelling between the two devices.
         final sessionCode = SessionCode.generate();
         final token = sessionCode.sessionToken;
+        _bluetoothSessionCode = sessionCode;
+        _directLinkStarted = false;
         // Bounded, because there is no way out of the screen this runs
         // behind except killing the app. Raising an advertisement is a radio
         // operation with no deadline of its own, and when it did not come
@@ -694,11 +718,16 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
                 files: _sessionFiles ?? [file],
                 publicId: sessionCode.publicId)
             .timeout(_bluetoothStartBudget);
-        // Awaited on purpose: the fast path subscribes to the repository's
-        // progress stream, and that subscription must exist before the QR
-        // shows, or the first progress events fall on the floor. It is cheap
-        // now that indexing no longer hashes inline.
-        await _offerBluetoothFastPath(token).timeout(_bluetoothStartBudget);
+        // The direct-link negotiation starts the moment a generation-4
+        // receiver is connected — the Bluetooth channel is the rendezvous,
+        // the file crosses the Wi-Fi link the coordinator builds. Subscription
+        // before the QR shows, so a receiver that was already waiting does
+        // not fire into the floor.
+        _receiverReadySubscription?.cancel();
+        _receiverReadySubscription =
+            _activeBluetoothTransport!.receiverReady.listen((_) {
+          unawaited(_beginBluetoothDirectLink());
+        });
         emit(BluetoothAdvertising(
           _makeDummySession(_sessionDisplay ?? file),
           qrData: BluetoothQrPayload(
@@ -857,8 +886,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     );
   }
 
-  /// Serves the same selection over the direct Wi-Fi link while Bluetooth
-  /// advertises.
+  /// Builds the direct Wi-Fi link a Bluetooth-paired transfer runs over,
+  /// then serves the selection on it and tells the receiver where.
   ///
   /// This is the shape AirDrop has: Bluetooth finds the device, Wi-Fi carries
   /// the file. It is not a workaround for a slow implementation — the whole
@@ -869,61 +898,94 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   ///
   /// So the button keeps its name and its promise — find what is nearby, send
   /// without a network — and the bytes take the only path that can carry them
-  /// at speed. If the link does not come up, the Bluetooth transfer that is
-  /// already advertising carries them instead, slowly but surely.
-  ///
-  /// Both routes carry the same thing now — the selection itself, folders
-  /// and all — so which one wins changes only how long it takes, never what
-  /// the recipient ends up holding.
-  Future<void> _offerBluetoothFastPath(String sessionToken) async {
-    if (!peerLink.supported) return;
+  /// at speed. Since protocol generation 4 there is no slower radio fallback:
+  /// a receiver that cannot build the link is told why, in words.
+  Future<void> _beginBluetoothDirectLink() async {
+    if (_directLinkStarted) return;
+    _directLinkStarted = true;
+
+    final transport = _activeBluetoothTransport;
+    final code = _bluetoothSessionCode;
     final paths = _currentPaths;
-    if (paths == null || paths.isEmpty) return;
+    if (transport == null || code == null || paths == null || paths.isEmpty) {
+      return;
+    }
 
-    // Nothing in here may escape. This is an optional faster route offered
-    // beside a Bluetooth transfer that is already advertising and already
-    // works; letting a failure out would mean the extra route took down the
-    // one the user actually asked for. A bluetooth test caught exactly that.
-    try {
-      // The same token the Bluetooth session advertises. The receiver has no
-      // other, so a session minting its own would answer 401 to the one
-      // device it exists to serve — which is exactly what happened: the link
-      // came up, the transfer failed, and the screen said "connection
-      // failed" before falling back to Bluetooth on the retry.
-      final result = await repository.startQhtpTransfer(
-        paths,
-        authToken: sessionToken,
-      );
-      await result.fold(
-        (failure) async => AppLogger.info(
-            'No fast path alongside Bluetooth: ${failure.message}',
-            tag: 'PEERLINK'),
-        (session) async {
-          await peerLink.host(
-            serviceName: PeerLinkService.serviceNameFor(sessionToken),
-            localPort: session.serverPort,
-          );
-          // Without this the sender screen sits on its QR code while the
-          // file goes out over the fast route and finishes — no progress, no
-          // completion, nothing to say it worked. Functionally fine and
-          // indistinguishable from a hung app, which is not a distinction
-          // worth asking anyone to make.
-          _sessionLocalAddress = '${session.localIp}:${session.serverPort}';
-          _fastPathSubscription?.cancel();
-          _fastPathSubscription =
-              repository.transferProgress.listen((progress) {
-            add(TransferProgressEvent(progress));
-            if (progress >= 1.0) add(TransferCompleted());
-          });
+    // The session comes up before the link, not after. The peer-to-peer rung
+    // forwards a port, so there has to be something listening on it by the
+    // time that rung is tried — and a server bound to every interface is
+    // waiting on the hotspot's the moment it appears, so nothing is lost by
+    // starting here. The same token the Bluetooth session advertised: the
+    // receiver has no other, and a session minting its own would answer 401
+    // to the one device it exists to serve.
+    final started = await repository.startQhtpTransfer(
+      paths,
+      authToken: code.sessionToken,
+    );
+    // `Either` here is the project's own and not sealed, so flow analysis
+    // cannot see that one of the two branches always assigns.
+    final session = started.fold<TransferSession?>((_) => null, (s) => s);
+    if (session == null) {
+      add(TransferFailed(started.fold((f) => f.message, (_) => '')));
+      return;
+    }
 
-          AppLogger.info(
-              'Bluetooth is advertising; the file is also on the direct '
-              'Wi-Fi link at :${session.serverPort}',
-              tag: 'PEERLINK');
-        },
-      );
-    } catch (e) {
-      AppLogger.info('No fast path alongside Bluetooth: $e', tag: 'PEERLINK');
+    final outcome = await DirectLinkCoordinator(
+      driver: _directLinkDriver,
+      signal: transport.linkSignal,
+    ).runSender(code, servingPort: session.serverPort);
+
+    // The session may have been cancelled while the ladder climbed.
+    if (!identical(transport, _activeBluetoothTransport)) {
+      await repository.stopServer(force: true);
+      return;
+    }
+
+    /// Hands the receiver the address to pull from and starts reporting
+    /// progress, so the sender's own screen leaves the QR code behind.
+    Future<void> serveAt(String ip) async {
+      _sessionLocalAddress = '$ip:${session.serverPort}';
+      _fastPathSubscription?.cancel();
+      _fastPathSubscription = repository.transferProgress.listen((progress) {
+        add(TransferProgressEvent(progress));
+        if (progress >= 1.0) add(TransferCompleted());
+      });
+      await transport.sendLinkFrame({
+        'serve': LinkServeInfo(
+                ip: ip, port: session.serverPort, token: code.sessionToken)
+            .toJson(),
+      });
+      AppLogger.info(
+          'Bluetooth rendezvous done; serving on the direct Wi-Fi link at '
+          '$ip:${session.serverPort}',
+          tag: 'SENDER');
+    }
+
+    switch (outcome) {
+      case DirectLinkUnavailable(message: final message):
+        AppLogger.info('Bluetooth direct link unavailable: $message',
+            tag: 'SENDER');
+        await repository.stopServer(force: true);
+        add(TransferFailed(message));
+
+      case DirectLinkOverPeerLink():
+        // The link already forwards to this session's port, so the address
+        // the receiver needs is its own end of it — which it has, and which
+        // is loopback. Only the token has to travel.
+        await serveAt('127.0.0.1');
+
+      case DirectLinkReady(credentials: final credentials, hosting: final hosting):
+        final ip = hosting
+            ? credentials.hostAddress
+            : await NetworkInfoService().getLocalIpAddress();
+        if (ip == null) {
+          await repository.stopServer(force: true);
+          add(const TransferFailed(
+              'The link is up, but this device could not work out its '
+              'own address on it.'));
+          return;
+        }
+        await serveAt(ip);
     }
   }
 
@@ -1029,6 +1091,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
     _fastPathSubscription = null;
+    await _receiverReadySubscription?.cancel();
+    _receiverReadySubscription = null;
+    _bluetoothSessionCode = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -1105,8 +1170,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // throwing says the direct link came up, not which address the far side
     // actually opened a socket to, and only the second one is a route.
     //
-    // A loopback client can now only be the fast path offered beside a
-    // Bluetooth transfer — the Wi-Fi flow raises no link of its own and
+    // A loopback client is a peer-to-peer link and nothing else: that rung
+    // exposes the far side as a port on this machine, and only the Bluetooth
+    // rendezvous climbs it. The Wi-Fi flow raises no link of its own and
     // always serves the LAN address the QR names.
     final clientAddress = repository.lastQhtpClientAddress;
     final ice = _activeWebRtcTransport?.lastIcePath;
@@ -1150,6 +1216,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
     _fastPathSubscription = null;
+    await _receiverReadySubscription?.cancel();
+    _receiverReadySubscription = null;
+    _bluetoothSessionCode = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -1173,6 +1242,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
     _fastPathSubscription = null;
+    await _receiverReadySubscription?.cancel();
+    _receiverReadySubscription = null;
+    _bluetoothSessionCode = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -1187,6 +1259,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _progressSubscription?.cancel();
     _statusSubscription?.cancel();
     _waitingSubscription?.cancel();
+    _receiverReadySubscription?.cancel();
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;

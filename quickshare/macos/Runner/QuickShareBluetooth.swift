@@ -30,7 +30,9 @@ import CoreBluetooth
 enum BTControl {
     /// 1 — one file per session. 2 — a list of files carrying relative paths.
     /// 3 — START must carry the session token; a bare START is refused.
-    static let generation = 3
+    /// 4 — the direct-link generation: the file never travels this channel;
+    /// after the rendezvous the two devices raise a Wi-Fi link of their own.
+    static let generation = 4
 
     static func capabilities() -> String { "CAPS:\(generation)" }
 
@@ -48,6 +50,49 @@ enum BTControl {
         guard !name.isEmpty, name.count <= 64 else { return nil }
         return name
     }
+
+    /// Receiver -> sender: "the network is up at these credentials — join
+    /// it". Only sessions whose host could not choose the network's name —
+    /// Android's hotspot API picks its own — ever carry this write; the rest
+    /// derive the same credentials from the session code. Mirrors
+    /// BleControlProtocol.parseApOffer in Dart.
+    static let apPrefix = "AP:"
+
+    static func parseApOffer(_ command: String?) -> (ssid: String, passphrase: String)? {
+        guard let command, command.hasPrefix(apPrefix) else { return nil }
+        let parts = command.dropFirst(apPrefix.count)
+            .split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let ssid = parts[0].removingPercentEncoding,
+              let passphrase = parts[1].removingPercentEncoding
+        else { return nil }
+        // The limits are the 802.11 ones, as in Dart: an SSID is at most 32
+        // bytes, a WPA passphrase 8–63 characters.
+        guard !ssid.isEmpty, ssid.utf8.count <= 32,
+              passphrase.count >= 8, passphrase.count <= 63
+        else { return nil }
+        return (ssid, passphrase)
+    }
+
+    /// Builds the `AP:` write — see parseApOffer for what one means. The
+    /// parts are percent-encoded exactly as Dart's Uri.encodeComponent does,
+    /// so the separator can never be mistaken for part of a credential.
+    static func apOffer(_ ssid: String, _ passphrase: String) -> String {
+        "\(apPrefix)\(percentEncode(ssid)):\(percentEncode(passphrase))"
+    }
+
+    private static func percentEncode(_ value: String) -> String {
+        let allowed = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    /// Shown when a receiver below generation 4 asks for a transfer: it only
+    /// knows this channel, which no longer carries files.
+    static let directLinkRequiredMessage =
+        "The receiving device is on an older version that can only receive "
+        + "over Bluetooth. Update it, and the transfer moves to a direct "
+        + "Wi-Fi link."
 
     /// The generation a command announces, or nil if it is not a CAPS write.
     static func parseCapabilities(_ command: String) -> Int? {
@@ -219,6 +264,45 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         // that used to arrive as the receiver's own START.
         case "beginTransfer":
             beginTransferIfReady()
+            result(nil)
+
+        // A generation-4 session negotiates over this channel instead of
+        // transferring over it: the "link" frame says which side raises the
+        // Wi-Fi network, the "serve" frame says where on it the file is.
+        case "sendLinkFrame":
+            guard let args = call.arguments as? [String: Any],
+                  let frame = args["frame"] as? [String: Any],
+                  let data = try? JSONSerialization.data(withJSONObject: frame),
+                  let metadata = metadataChar,
+                  let manager = peripheralManager
+            else {
+                result(FlutterError(code: "UNAVAILABLE", message: "no link channel is up", details: nil))
+                return
+            }
+            if manager.updateValue(data, for: metadata, onSubscribedCentrals: nil) {
+                result(nil)
+            } else {
+                // The queue is full or nobody is listening yet; the caller retries.
+                result(FlutterError(code: "BUSY", message: "the notification queue is full", details: nil))
+            }
+
+        // The receiver's half of the negotiation: the credentials of the
+        // network it raised, written back over the control characteristic.
+        case "sendApOffer":
+            guard let args = call.arguments as? [String: Any],
+                  let ssid = args["ssid"] as? String,
+                  let passphrase = args["passphrase"] as? String,
+                  let peripheral = targetPeripheral,
+                  let control = remoteControlChar
+            else {
+                result(FlutterError(code: "UNAVAILABLE", message: "no sender is connected", details: nil))
+                return
+            }
+            let offerType: CBCharacteristicWriteType =
+                control.properties.contains(.write) ? .withResponse : .withoutResponse
+            peripheral.writeValue(
+                Data(BTControl.apOffer(ssid, passphrase).utf8),
+                for: control, type: offerType)
             result(nil)
 
         case "startScanning":
@@ -633,6 +717,14 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
                 continue
             }
 
+            // A receiver that raised the network itself says where. What to
+            // do with the credentials is the coordinator's call in Dart.
+            if let offer = BTControl.parseApOffer(command) {
+                peripheral.respond(to: request, withResult: .success)
+                emit(["type": "apOffer", "ssid": offer.ssid, "passphrase": offer.passphrase])
+                continue
+            }
+
             if BTControl.isStart(command, token: sendSessionToken) {
                 peripheral.respond(to: request, withResult: .success)
                 beginTransferIfReady()
@@ -651,22 +743,17 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
     private func beginTransferIfReady() {
         guard !transferStarted, subscribedToData, metadataChar != nil, pendingMetadataJSON != nil else { return }
 
-        // A receiver older than this protocol treats the first file's last
-        // byte as the end of the transfer and disconnects. It then shows a
-        // completed transfer holding one file, with nothing to say a folder
-        // was sent — which is worse than any error, because nobody goes
-        // looking for what is missing. One file is still sent to anyone.
-        if sendItems.count > 1, (sendPeerGeneration ?? 1) < BTControl.generation {
-            transferStarted = true
-            emit([
-                "type": "senderFailed",
-                "error": "The receiving device is on an older version that can only accept one file over Bluetooth. Update it, or send over Wi-Fi.",
-            ])
-            return
-        }
-
+        // Generation 4 is where the bytes left this radio. A peer from this
+        // generation on gets the Wi-Fi link negotiated over this channel
+        // instead of the file over it — Dart runs that from the receiverReady
+        // event. A peer below it gets told to update rather than sent the
+        // file slowly.
         transferStarted = true
-        pumpSendQueue()
+        if (sendPeerGeneration ?? 1) >= BTControl.generation {
+            emit(["type": "receiverReady"])
+        } else {
+            emit(["type": "senderFailed", "error": BTControl.directLinkRequiredMessage])
+        }
     }
 
     public func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
@@ -790,6 +877,19 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
         guard let value = characteristic.value else { return }
 
         if characteristic.uuid == BTServiceIDs.metadata {
+            // A link frame is not a file: the sender is negotiating the
+            // Wi-Fi network the transfer will actually cross (generation 4),
+            // and a serve frame says where on that network the file then is.
+            if let json = try? JSONSerialization.jsonObject(with: value) as? [String: Any] {
+                if let link = json["link"] as? [String: Any] {
+                    emit(["type": "linkDirective", "link": link])
+                    return
+                }
+                if let serve = json["serve"] as? [String: Any] {
+                    emit(["type": "serveInfo", "serve": serve])
+                    return
+                }
+            }
             guard
                 let json = try? JSONSerialization.jsonObject(with: value) as? [String: Any],
                 let name = json["name"] as? String,

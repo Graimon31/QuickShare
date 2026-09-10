@@ -126,13 +126,18 @@ class LocalHotspotService {
   /// The network carries no internet connection, which is the point: Android
   /// keeps mobile data alive on its own interface while the Wi-Fi radio serves
   /// the guest.
-  Future<HotspotCredentials> startHosting() async {
+  ///
+  /// [code] pins the network's name and passphrase to a session the caller
+  /// already has, so the far side can derive them from the code it holds
+  /// rather than be told. Left null, one is minted here — the older flows,
+  /// where the QR code is how the session travels, want exactly that.
+  Future<HotspotCredentials> startHosting({SessionCode? code}) async {
     if (!canHost) {
       throw HotspotException(
           '${Platform.operatingSystem} cannot create a hotspot from inside an '
           'app; the other device has to host');
     }
-    if (Platform.isLinux) return _startHostingOnLinux();
+    if (Platform.isLinux) return _startHostingOnLinux(code: code);
 
     // Windows is told what to call the network; Android names its own and
     // ignores these. Both answers come back the same way, so the caller does
@@ -141,13 +146,13 @@ class LocalHotspotService {
     // The pair comes from a session code so the far side can derive it rather
     // than be told it — the same reasoning as everywhere else, and the reason
     // this is not a random string.
-    final code = SessionCode.generate();
+    final sessionCode = code ?? SessionCode.generate();
 
     try {
       final result = await _methodChannel
           .invokeMethod<Map<Object?, Object?>>('startHotspot', {
-        'ssid': code.ssid,
-        'passphrase': code.passphrase,
+        'ssid': sessionCode.ssid,
+        'passphrase': sessionCode.passphrase,
       });
       if (result == null) {
         throw const HotspotException(
@@ -299,7 +304,7 @@ class LocalHotspotService {
   /// adapter with no AP mode is a fact about the hardware, and telling someone
   /// to host from the other device is more use than "could not create
   /// network".
-  Future<HotspotCredentials> _startHostingOnLinux() async {
+  Future<HotspotCredentials> _startHostingOnLinux({SessionCode? code}) async {
     if (!await _linux.isAvailable) {
       throw const HotspotException(
           'NetworkManager is not running, so this machine cannot create a '
@@ -313,13 +318,11 @@ class LocalHotspotService {
 
     // Both halves come from a session code, which is the point of having one:
     // the far side derives the same pair from the code it was shown, so
-    // nothing about the network has to be transmitted. `startHosting` does not
-    // take the code yet — the sender still has to thread it through — so one
-    // is minted here and its name and passphrase used.
-    final code = SessionCode.generate();
+    // nothing about the network has to be transmitted.
+    final sessionCode = code ?? SessionCode.generate();
     final credentials = HotspotCredentials(
-      ssid: code.ssid,
-      passphrase: code.passphrase,
+      ssid: sessionCode.ssid,
+      passphrase: sessionCode.passphrase,
     );
 
     try {

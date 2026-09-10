@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:dbus/dbus.dart';
 
@@ -9,14 +8,21 @@ import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 
 typedef LinuxBluetoothProgress = void Function(int sent, int total);
 typedef LinuxBluetoothStatus = void Function(String status, [String? error]);
+typedef LinuxBluetoothApOffer = void Function(String ssid, String passphrase);
 
 /// Minimal BlueZ GATT server used only by the Linux sender.
 ///
 /// BlueZ exposes client APIs through most Flutter BLE plugins, but peripheral
 /// mode still requires registering a local GATT application over D-Bus. This
 /// class registers the DirectDrop service/characteristics and an LE
-/// advertisement, then streams the selected file as Value notifications after
-/// the receiver writes START:<token> to the control characteristic.
+/// advertisement.
+///
+/// Since protocol generation 4 the channel is the rendezvous, not the road:
+/// once the receiver's subscriptions are up and its START has arrived, this
+/// sender reports `ready` and the `DirectLinkCoordinator` builds the Wi-Fi
+/// link the file actually crosses. What stays here is the negotiation itself
+/// — CAPS/START/AP on the control characteristic, link frames on the
+/// metadata one (see [notifyLinkFrame]).
 class LinuxBluetoothSender {
   static const serviceUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10';
   static const controlUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
@@ -31,35 +37,31 @@ class LinuxBluetoothSender {
   _GattCharacteristic? _metadata;
   _GattCharacteristic? _data;
   _BleAdvertisement? _advertisement;
-  RandomAccessFile? _file;
 
   String? _token;
 
-  /// The session being served, in send order. One entry for a single file,
-  /// one per file for a folder — the same list the other BLE senders take.
-  List<FileMetadata> _sessionFiles = const [];
   /// What the receiver said it can take, from its `CAPS:` write. Null means
-  /// it never sent one — a build that stops at the first file.
+  /// it never sent one — a build that predates the direct link.
   int? _peerGeneration;
   bool _dataNotifying = false;
   bool _startReceived = false;
   bool _transferStarted = false;
   bool _stopping = false;
-  LinuxBluetoothProgress? _onProgress;
   LinuxBluetoothStatus? _onStatus;
+  LinuxBluetoothApOffer? _onApOffer;
 
   Future<void> start(
     List<FileMetadata> files,
     String token, {
     required LinuxBluetoothProgress onProgress,
     required LinuxBluetoothStatus onStatus,
+    LinuxBluetoothApOffer? onApOffer,
   }) async {
     await stop();
-    _sessionFiles = files;
     _peerGeneration = null;
     _token = token;
-    _onProgress = onProgress;
     _onStatus = onStatus;
+    _onApOffer = onApOffer;
     _stopping = false;
 
     try {
@@ -90,6 +92,11 @@ class LinuxBluetoothSender {
           final generation = BleControlProtocol.parseCapabilities(command);
           if (generation != null) {
             _peerGeneration = generation;
+            return;
+          }
+          if (BleControlProtocol.parseApOffer(command) case final offer?) {
+            // A receiver that raised the network itself says where.
+            _onApOffer?.call(offer.ssid, offer.passphrase);
             return;
           }
           if (BleControlProtocol.isStart(command, _token)) {
@@ -204,75 +211,32 @@ class LinuxBluetoothSender {
     throw StateError('No Bluetooth adapter with BlueZ GATT support found.');
   }
 
+  /// Pushes a negotiation frame — `{"link": …}` or `{"serve": …}` — to the
+  /// connected receiver as a metadata notification.
+  Future<void> notifyLinkFrame(Map<String, Object?> frame) async {
+    final metadataCharacteristic = _metadata;
+    if (metadataCharacteristic == null || _stopping) return;
+    await metadataCharacteristic.setValue(utf8.encode(jsonEncode(frame)));
+  }
+
+  /// The session is fully dressed — the receiver's notifications are up and
+  /// its START has arrived — so the session may begin.
+  ///
+  /// Since generation 4 "begins" never means streaming bytes here: a peer
+  /// that understands the direct link is reported as `ready` and the
+  /// coordinator builds the network the file actually crosses, and a peer
+  /// below it is refused with the update it needs rather than sent anything
+  /// slowly.
   Future<void> _maybeStartTransfer() async {
     if (_transferStarted || !_dataNotifying || !_startReceived || _stopping) {
       return;
     }
-    final session = _sessionFiles;
-    final dataCharacteristic = _data;
-    final metadataCharacteristic = _metadata;
-    if (session.isEmpty ||
-        dataCharacteristic == null ||
-        metadataCharacteristic == null) {
-      return;
-    }
-
     _transferStarted = true;
-    // Half a folder delivered in silence is worse than a refusal: an older
-    // receiver ends the transfer at the first file and reports success.
-    if (!BleControlProtocol.peerCanTakeSession(
-        fileCount: session.length, peerGeneration: _peerGeneration)) {
-      _onStatus?.call('failed', BleControlProtocol.sessionRefusedMessage);
+    if (!BleControlProtocol.peerSupportsDirectLink(_peerGeneration)) {
+      _onStatus?.call('failed', BleControlProtocol.directLinkRequiredMessage);
       return;
     }
-    final sessionBytes = session.fold<int>(0, (sum, f) => sum + f.size);
-    var sessionSent = 0;
-    try {
-      for (var index = 0; index < session.length; index++) {
-        if (_stopping) return;
-        final item = session[index];
-        _file = await File(item.path).open();
-        await metadataCharacteristic.setValue(
-          utf8.encode(jsonEncode({
-            'name': item.name,
-            // Where this file sits inside the selection, so a folder is
-            // rebuilt on the far side instead of arriving as a heap of files
-            // or as an archive to unpack.
-            'path': item.relPath,
-            'size': item.size,
-            'mime': item.mimeType,
-            'index': index,
-            'count': session.length,
-            'sessionBytes': sessionBytes,
-          })),
-        );
-
-        const chunkSize = 182;
-        var fileSent = 0;
-        try {
-          while (!_stopping && fileSent < item.size) {
-            final chunk = await _file!.read(chunkSize);
-            if (chunk.isEmpty) break;
-            await dataCharacteristic.setValue(chunk);
-            fileSent += chunk.length;
-            sessionSent += chunk.length;
-            // Progress belongs to the session, not to whichever file happens
-            // to be open.
-            _onProgress?.call(sessionSent, sessionBytes);
-          }
-        } finally {
-          await _file?.close();
-          _file = null;
-        }
-        if (fileSent < item.size) return;
-      }
-      if (!_stopping) _onStatus?.call('completed');
-    } catch (error) {
-      if (!_stopping) _onStatus?.call('failed', error.toString());
-    } finally {
-      await _file?.close();
-      _file = null;
-    }
+    _onStatus?.call('ready');
   }
 
   Future<void> stop() async {
@@ -297,8 +261,6 @@ class LinuxBluetoothSender {
         );
       }
     } catch (_) {}
-    await _file?.close();
-    _file = null;
     final bus = _bus;
     if (bus != null) {
       for (final object in [
@@ -326,10 +288,9 @@ class LinuxBluetoothSender {
     _data = null;
     _advertisement = null;
     _token = null;
-    _sessionFiles = const [];
     _peerGeneration = null;
-    _onProgress = null;
     _onStatus = null;
+    _onApOffer = null;
     _dataNotifying = false;
     _startReceived = false;
     _transferStarted = false;

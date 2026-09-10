@@ -11,12 +11,13 @@
 
 namespace directdrop {
 
-// Raises a Wi-Fi network other devices can join, and answers questions about
-// the one this machine is on.
+// Raises a Wi-Fi network other devices can join, joins the ones they raise,
+// and answers questions about the one this machine is on.
 //
-// Windows is the only desktop platform that can host from inside an app, which
-// makes it the answer for every pair an iPhone or a Mac is half of: neither of
-// those can create a network, so somebody else has to.
+// Windows can host from inside an app, which makes it the answer for every
+// pair an iPhone or a Mac is half of: neither of those can create a network,
+// so somebody else has to. Joining matters for the opposite pairing — an
+// Android or Linux sender hosts, and this machine is the guest.
 //
 // Built on Wi-Fi Direct in *legacy* mode rather than the Mobile Hotspot API.
 // The difference matters:
@@ -54,6 +55,9 @@ class HotspotPlugin : public flutter::Plugin {
   void StopHotspot(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
   void ScanForNetworks(
+      const flutter::EncodableMap* arguments,
+      std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+  void JoinHotspot(
       const flutter::EncodableMap* arguments,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
   void CurrentSsid(

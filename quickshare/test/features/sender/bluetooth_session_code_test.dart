@@ -78,7 +78,7 @@ void main() {
     });
 
     test('still reads one from a build that sent no identifier', () {
-      final old = BluetoothQrPayload(token: 'a-token').encode();
+      final old = const BluetoothQrPayload(token: 'a-token').encode();
       final decoded = BluetoothQrPayload.tryDecode(old);
 
       expect(decoded, isNotNull);
@@ -111,13 +111,19 @@ void main() {
     });
 
     test('it does not claim a new generation', () {
-      // Bumping one would make every current receiver look too old to take a
-      // folder, and an older sender answers an unrecognised write with success
-      // and carries on — so this costs nothing there.
-      expect(BleControlProtocol.generation, equals(3));
+      // A HELLO is not a CAPS write: it must not make the receiver look
+      // newer than it is. Generation 4 is the direct-link rendezvous — the
+      // bump that took folders off the radio entirely.
+      expect(BleControlProtocol.generation, equals(4));
+      expect(
+        BleControlProtocol.peerCanTakeSession(fileCount: 9, peerGeneration: 4),
+        isTrue,
+      );
       expect(
         BleControlProtocol.peerCanTakeSession(fileCount: 9, peerGeneration: 3),
-        isTrue,
+        isFalse,
+        reason: 'a generation-3 receiver ends the transfer at the first '
+            'file and reports success',
       );
     });
   });

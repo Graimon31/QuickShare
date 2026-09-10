@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'universal_ble_receiver_transport.dart';
 
@@ -33,12 +34,41 @@ class BluetoothReceiveProgress {
   });
 }
 
+/// What a receive screen needs from a BLE receiver, whichever platform
+/// implements it: discovery, the transfer itself, and the direct-link
+/// negotiation the transfer rides on since protocol generation 4.
+///
+/// [BluetoothReceiverTransport] (native CoreBluetooth, iOS/macOS) and
+/// [_UniversalBleReceiverAdapter] (universal_ble, Android/Windows) both
+/// answer this; [BluetoothReceiverTransport.forPlatform] picks.
+abstract interface class BleReceiver {
+  Stream<BluetoothDevice> get devices;
+  Stream<BluetoothReceiveProgress> get progressStream;
+  Stream<DirectLinkDirective> get linkDirectives;
+  Stream<LinkServeInfo> get serveInfos;
+
+  Future<void> startScanning({String? sessionToken, String? publicId});
+  Future<void> stopScanning();
+
+  /// Connects to [deviceId] and resolves with the saved file path once the
+  /// transfer completes. [token] authorises the session; the native bridge
+  /// already holds it from [startScanning], the universal transport writes
+  /// it as `START:<token>` here and cannot connect without it.
+  Future<String> connect(String deviceId, {String? token, String? targetDir});
+
+  /// Tells the sender about a network this receiver raised.
+  Future<void> sendApOffer(String ssid, String passphrase);
+
+  Future<void> cancel();
+  Future<void> dispose();
+}
+
 /// Native CoreBluetooth receiver for iOS and macOS.
 ///
 /// On Android and Windows, use [UniversalBleReceiverTransport] instead.
 /// The static factory [BluetoothReceiverTransport.forPlatform] picks the right
 /// one automatically.
-class BluetoothReceiverTransport {
+class BluetoothReceiverTransport implements BleReceiver {
   static const _method = MethodChannel('quickshare/bluetooth');
   static const _events = EventChannel('quickshare/bluetooth/events');
 
@@ -51,9 +81,35 @@ class BluetoothReceiverTransport {
   String _fileName = 'received_file';
   int _total = 0;
 
+  @override
   Stream<BluetoothDevice> get devices => _devicesController.stream;
+  @override
   Stream<BluetoothReceiveProgress> get progressStream =>
       _progressController.stream;
+
+  /// Who raises the direct Wi-Fi link and how to reach it — the sender's
+  /// `{"link": …}` frames, decoded for the coordinator.
+  final _linkDirectiveController =
+      StreamController<DirectLinkDirective>.broadcast();
+
+  /// Where the file is served once the link is up — the sender's
+  /// `{"serve": …}` frames, decoded.
+  final _serveInfoController = StreamController<LinkServeInfo>.broadcast();
+
+  @override
+  Stream<DirectLinkDirective> get linkDirectives =>
+      _linkDirectiveController.stream;
+
+  @override
+  Stream<LinkServeInfo> get serveInfos => _serveInfoController.stream;
+
+  /// Tells the sender about a network this receiver raised: an `AP:` write
+  /// on the control characteristic of the peripheral it connected to.
+  @override
+  Future<void> sendApOffer(String ssid, String passphrase) async {
+    await _method.invokeMethod(
+        'sendApOffer', {'ssid': ssid, 'passphrase': passphrase});
+  }
 
   // -------------------------------------------------------------------------
   // Factory: returns the right receiver for the current platform.
@@ -71,19 +127,10 @@ class BluetoothReceiverTransport {
 
   /// Creates the appropriate BLE receiver for the current platform.
   ///
-  /// On iOS/macOS: returns a [BluetoothReceiverTransport] (CoreBluetooth).
-  /// On Android/Windows: returns a [UniversalBleReceiverTransport].
-  ///
-  /// Usage:
-  /// ```dart
-  /// final receiver = BluetoothReceiverTransport.forPlatform();
-  /// if (receiver is BluetoothReceiverTransport) {
-  ///   await receiver.startScanning(sessionToken: token);
-  /// } else if (receiver is UniversalBleReceiverTransport) {
-  ///   await receiver.startScanning(sessionToken: token);
-  /// }
-  /// ```
-  static Object forPlatform() {
+  /// On iOS/macOS: a [BluetoothReceiverTransport] (CoreBluetooth).
+  /// On Android/Windows: a [UniversalBleReceiverTransport] behind an adapter.
+  /// Both answer [BleReceiver], so the caller never branches on the type.
+  static BleReceiver forPlatform() {
     if (_usesNativeBridge) {
       AppLogger.info('BLE receiver: using native CoreBluetooth bridge',
           tag: 'BLE_RECEIVER');
@@ -91,13 +138,14 @@ class BluetoothReceiverTransport {
     }
     AppLogger.info('BLE receiver: using universal_ble GATT Central',
         tag: 'BLE_RECEIVER');
-    return UniversalBleReceiverTransport();
+    return _UniversalBleReceiverAdapter(UniversalBleReceiverTransport());
   }
 
   // -------------------------------------------------------------------------
   // Native CoreBluetooth implementation (iOS / macOS)
   // -------------------------------------------------------------------------
 
+  @override
   Future<void> startScanning({String? sessionToken, String? publicId}) async {
     _eventSub ??= _events.receiveBroadcastStream().listen(
           _handleEvent,
@@ -117,6 +165,7 @@ class BluetoothReceiverTransport {
     }
   }
 
+  @override
   Future<void> stopScanning() async {
     try {
       await _method.invokeMethod('stopScanning');
@@ -130,8 +179,12 @@ class BluetoothReceiverTransport {
   ///
   /// [targetDir] is where the bytes land. Callers pass a transfer-cache
   /// session directory: what arrives is not the user's yet, and the decision
-  /// about where it belongs is made once the transfer is finished.
-  Future<String> connect(String deviceId, {String? targetDir}) async {
+  /// about where it belongs is made once the transfer is finished. [token] is
+  /// accepted for the [BleReceiver] contract and ignored — the bridge took it
+  /// in [startScanning].
+  @override
+  Future<String> connect(String deviceId,
+      {String? token, String? targetDir}) async {
     final completer = Completer<String>();
     _completion = completer;
 
@@ -156,6 +209,26 @@ class BluetoothReceiverTransport {
       case 'connecting':
         _progressController.add(BluetoothReceiveProgress(
             phase: 'connecting', fileName: _fileName, received: 0, total: 0));
+        break;
+
+      // The rendezvous' negotiation frames, off the metadata characteristic
+      // before any file metadata could arrive there.
+      case 'linkDirective':
+        final link = map['link'];
+        if (link is Map) {
+          final directive = DirectLinkDirective.fromJson(
+              Map<String, Object?>.from(link));
+          if (directive != null) _linkDirectiveController.add(directive);
+        }
+        break;
+
+      case 'serveInfo':
+        final serve = map['serve'];
+        if (serve is Map) {
+          final info =
+              LinkServeInfo.fromJson(Map<String, Object?>.from(serve));
+          if (info != null) _serveInfoController.add(info);
+        }
         break;
 
       case 'metadataReceived':
@@ -206,6 +279,7 @@ class BluetoothReceiverTransport {
     }
   }
 
+  @override
   Future<void> cancel() async {
     try {
       await _method.invokeMethod('cancelTransfer');
@@ -217,10 +291,68 @@ class BluetoothReceiverTransport {
     }
   }
 
+  @override
   Future<void> dispose() async {
     await _eventSub?.cancel();
     _eventSub = null;
     await _devicesController.close();
     await _progressController.close();
+    await _linkDirectiveController.close();
+    await _serveInfoController.close();
   }
+}
+
+/// [BleReceiver] over the universal_ble GATT-central receiver, for Android
+/// and Windows. Pure translation: device and progress shapes differ between
+/// the two implementations, the contract does not.
+class _UniversalBleReceiverAdapter implements BleReceiver {
+  final UniversalBleReceiverTransport _inner;
+
+  _UniversalBleReceiverAdapter(this._inner);
+
+  @override
+  Stream<BluetoothDevice> get devices => _inner.devices.map((d) =>
+      BluetoothDevice(id: d.deviceId, name: d.name ?? 'Unknown device'));
+
+  @override
+  Stream<BluetoothReceiveProgress> get progressStream =>
+      _inner.progressStream.map((p) => BluetoothReceiveProgress(
+          phase: p.phase,
+          fileName: p.fileName,
+          received: p.received,
+          total: p.total));
+
+  @override
+  Stream<DirectLinkDirective> get linkDirectives => _inner.linkDirectives;
+
+  @override
+  Stream<LinkServeInfo> get serveInfos => _inner.serveInfos;
+
+  @override
+  Future<void> startScanning({String? sessionToken, String? publicId}) =>
+      _inner.startScanning(sessionToken: sessionToken, publicId: publicId);
+
+  @override
+  Future<void> stopScanning() => _inner.stopScanning();
+
+  @override
+  Future<String> connect(String deviceId,
+      {String? token, String? targetDir}) async {
+    if (token == null || token.isEmpty) {
+      // The universal transport writes START:<token> itself, so it has no
+      // announce-without-a-session path the native bridge has.
+      throw Exception('Missing session token — scan the QR code again.');
+    }
+    return _inner.connect(deviceId, token: token, targetDir: targetDir);
+  }
+
+  @override
+  Future<void> sendApOffer(String ssid, String passphrase) =>
+      _inner.sendApOffer(ssid, passphrase);
+
+  @override
+  Future<void> cancel() => _inner.cancel();
+
+  @override
+  Future<void> dispose() => _inner.dispose();
 }

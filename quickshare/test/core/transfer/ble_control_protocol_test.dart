@@ -10,8 +10,8 @@ import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 void main() {
   group('capabilities', () {
     test('a receiver announces the generation it understands', () {
-      expect(BleControlProtocol.capabilities(), equals('CAPS:3'));
-      expect(BleControlProtocol.parseCapabilities('CAPS:3'), equals(3));
+      expect(BleControlProtocol.capabilities(), equals('CAPS:4'));
+      expect(BleControlProtocol.parseCapabilities('CAPS:4'), equals(4));
     });
 
     test('START is not mistaken for an announcement', () {
@@ -37,7 +37,7 @@ void main() {
     test('a peer that announced this generation takes the whole list', () {
       expect(
           BleControlProtocol.peerCanTakeSession(
-              fileCount: 412, peerGeneration: 3),
+              fileCount: 412, peerGeneration: 4),
           isTrue);
     });
 
@@ -52,6 +52,12 @@ void main() {
       expect(
           BleControlProtocol.peerCanTakeSession(
               fileCount: 2, peerGeneration: 1),
+          isFalse);
+      // A generation-3 peer understood lists, but not the direct link that
+      // now carries them.
+      expect(
+          BleControlProtocol.peerCanTakeSession(
+              fileCount: 2, peerGeneration: 3),
           isFalse);
     });
 
@@ -113,6 +119,91 @@ void main() {
     test('the stale-receiver message names the way out', () {
       expect(BleControlProtocol.staleReceiverMessage, contains('Wi-Fi'));
       expect(BleControlProtocol.staleReceiverMessage, contains('Update'));
+    });
+  });
+
+  group('hotspot offer', () {
+    test('the plain shape an Android hotspot produces', () {
+      // The wire format is pinned: the Swift bridges parse this string, so a
+      // drift here breaks the join on exactly the pairs nobody tests with.
+      final command =
+          BleControlProtocol.apOffer('AndroidShare_4821', 'x7k29dmq');
+      expect(command, equals('AP:AndroidShare_4821:x7k29dmq'));
+      final offer = BleControlProtocol.parseApOffer(command);
+      expect(offer?.ssid, equals('AndroidShare_4821'));
+      expect(offer?.passphrase, equals('x7k29dmq'));
+    });
+
+    test('credentials survive a round trip, colons and spaces included', () {
+      // A hotspot name is chosen by the system; nothing about an SSID or a
+      // WPA passphrase promises to avoid the separator, so the parts travel
+      // percent-encoded.
+      final command =
+          BleControlProtocol.apOffer('Cafe: Guest Wi-Fi', 'p@ss:word 123');
+      final offer = BleControlProtocol.parseApOffer(command);
+      expect(offer?.ssid, equals('Cafe: Guest Wi-Fi'));
+      expect(offer?.passphrase, equals('p@ss:word 123'));
+    });
+
+    test('not an offer reads as none', () {
+      expect(BleControlProtocol.parseApOffer('START:abc'), isNull);
+      expect(BleControlProtocol.parseApOffer('CAPS:4'), isNull);
+      expect(BleControlProtocol.parseApOffer('AP:'), isNull);
+      expect(BleControlProtocol.parseApOffer('AP:onlyone'), isNull);
+      expect(BleControlProtocol.parseApOffer('AP:a:b:c'), isNull);
+    });
+
+    test('the limits are the 802.11 ones', () {
+      // An SSID is at most 32 bytes, a WPA passphrase 8 to 63 characters; a
+      // write outside them is malformed, not a network to look for.
+      expect(
+          BleControlProtocol.parseApOffer(
+              BleControlProtocol.apOffer('A' * 33, 'x7k29dmq')),
+          isNull);
+      expect(
+          BleControlProtocol.parseApOffer(
+              BleControlProtocol.apOffer('AndroidShare_4821', 'short')),
+          isNull);
+      expect(
+          BleControlProtocol.parseApOffer(
+              BleControlProtocol.apOffer('AndroidShare_4821', 'x' * 64)),
+          isNull);
+      // 32 bytes, not 32 characters: a Cyrillic name spends two bytes per
+      // letter.
+      expect(
+          BleControlProtocol.parseApOffer(
+              BleControlProtocol.apOffer('Д' * 17, 'x7k29dmq')),
+          isNull);
+      expect(
+          BleControlProtocol.parseApOffer(
+              BleControlProtocol.apOffer('Д' * 16, 'x7k29dmq')),
+          isNotNull);
+    });
+
+    test('garbled percent-encoding is dropped, not thrown', () {
+      expect(BleControlProtocol.parseApOffer('AP:%zz:x7k29dmq'), isNull);
+    });
+  });
+
+  group('the direct-link generation', () {
+    test('a peer from this generation on can take part', () {
+      expect(BleControlProtocol.peerSupportsDirectLink(4), isTrue);
+      expect(BleControlProtocol.peerSupportsDirectLink(7), isTrue);
+    });
+
+    test('a peer below it cannot, whatever it could once do', () {
+      // Generation 4 is where the bytes left this radio: a peer that only
+      // knows the old way gets told to update, not sent the file slowly.
+      expect(BleControlProtocol.peerSupportsDirectLink(3), isFalse);
+      expect(BleControlProtocol.peerSupportsDirectLink(null), isFalse);
+    });
+
+    test('the message names the fix and the reason', () {
+      // "Update" alone sends somebody to the store page wondering why; the
+      // reason rides in the same breath.
+      expect(BleControlProtocol.directLinkRequiredMessage, contains('Update'));
+      expect(
+          BleControlProtocol.directLinkRequiredMessage, contains('Wi-Fi'));
     });
   });
 }

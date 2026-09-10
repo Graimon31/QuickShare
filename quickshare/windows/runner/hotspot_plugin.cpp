@@ -63,6 +63,36 @@ const std::string* StringArgument(const EncodableMap* arguments,
   return std::get_if<std::string>(&it->second);
 }
 
+// The profile XML takes the SSID twice — as text and as bytes — and a
+// passphrase; all three can carry what the other device picked, so the text
+// is escaped and the bytes are hex.
+std::string XmlEscape(const std::string& value) {
+  std::string out;
+  out.reserve(value.size());
+  for (const char c : value) {
+    switch (c) {
+      case '&': out += "&amp;"; break;
+      case '<': out += "&lt;"; break;
+      case '>': out += "&gt;"; break;
+      case '"': out += "&quot;"; break;
+      case '\'': out += "&apos;"; break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
+std::string ToHex(const std::string& bytes) {
+  static constexpr char kDigits[] = "0123456789ABCDEF";
+  std::string out;
+  out.reserve(bytes.size() * 2);
+  for (const unsigned char c : bytes) {
+    out += kDigits[c >> 4];
+    out += kDigits[c & 0x0F];
+  }
+  return out;
+}
+
 // Every SSID this machine can currently see, and the one it is joined to.
 //
 // The Native WiFi API rather than WinRT: `WlanGetAvailableNetworkList` reports
@@ -177,13 +207,7 @@ void HotspotPlugin::HandleMethodCall(
   } else if (call.method_name() == "currentSsid") {
     CurrentSsid(std::move(result));
   } else if (call.method_name() == "joinHotspot") {
-    // Windows joins networks through its own UI. Automating that means
-    // writing a WLAN profile and calling WlanConnect, which is a bigger piece
-    // than it looks and is not what unblocks anything: in every pair Windows
-    // is in, Windows is the one that can host.
-    result->Error("UNSUPPORTED",
-                  "Joining from inside the app is not implemented on Windows; "
-                  "this machine can host the network instead.");
+    JoinHotspot(arguments, std::move(result));
   } else {
     result->NotImplemented();
   }
@@ -295,6 +319,103 @@ void HotspotPlugin::ScanForNetworks(
     found.push_back(EncodableValue(ssid));
   }
   result->Success(EncodableValue(found));
+}
+
+void HotspotPlugin::JoinHotspot(
+    const flutter::EncodableMap* arguments,
+    std::unique_ptr<flutter::MethodResult<EncodableValue>> result) {
+  const std::string* ssid = StringArgument(arguments, "ssid");
+  const std::string* passphrase = StringArgument(arguments, "passphrase");
+  if (!ssid || ssid->empty() || ssid->size() > 32) {
+    result->Error("BAD_ARGS", "joinHotspot needs an ssid of at most 32 bytes");
+    return;
+  }
+  if (!passphrase || passphrase->size() < 8 || passphrase->size() > 63) {
+    result->Error("BAD_ARGS",
+                  "joinHotspot needs a WPA passphrase of 8-63 characters");
+    return;
+  }
+
+  DWORD negotiated = 0;
+  HANDLE client = nullptr;
+  if (WlanOpenHandle(2, nullptr, &negotiated, &client) != ERROR_SUCCESS) {
+    result->Error("UNAVAILABLE",
+                  "The Wi-Fi service is not running on this machine");
+    return;
+  }
+
+  WLAN_INTERFACE_INFO_LIST* interfaces = nullptr;
+  if (WlanEnumInterfaces(client, nullptr, &interfaces) != ERROR_SUCCESS ||
+      interfaces->dwNumberOfItems == 0) {
+    if (interfaces) WlanFreeMemory(interfaces);
+    WlanCloseHandle(client, nullptr);
+    result->Error("UNAVAILABLE", "This machine has no Wi-Fi adapter");
+    return;
+  }
+  const GUID guid = interfaces->InterfaceInfo[0].InterfaceGuid;
+  WlanFreeMemory(interfaces);
+
+  // A stored profile is how WlanConnect is driven without the UI: the
+  // profile names the network and carries the key, the connect call points
+  // at it by name, and the association itself completes asynchronously —
+  // the Dart side confirms it landed by watching currentSsid.
+  const std::string xml =
+      "<?xml version=\"1.0\"?>"
+      "<WLANProfile xmlns=\"http://www.microsoft.com/networking/WLAN/profile/v1\">"
+      "<name>" + XmlEscape(*ssid) + "</name>"
+      "<SSIDConfig><SSID><hex>" + ToHex(*ssid) + "</hex><name>" +
+      XmlEscape(*ssid) + "</name></SSID></SSIDConfig>"
+      "<connectionType>ESS</connectionType>"
+      "<connectionMode>manual</connectionMode>"
+      "<MSM><security>"
+      "<authEncryption><authentication>WPA2PSK</authentication>"
+      "<encryption>AES</encryption><useOneX>false</useOneX></authEncryption>"
+      "<sharedKey><keyType>passPhrase</keyType><protected>false</protected>"
+      "<keyMaterial>" + XmlEscape(*passphrase) + "</keyMaterial></sharedKey>"
+      "</security></MSM>"
+      "</WLANProfile>";
+
+  const std::wstring wide_xml = ToWide(xml);
+  DWORD reason = 0;
+  if (WlanSetProfile(client, &guid, 0, wide_xml.c_str(), nullptr, TRUE,
+                     nullptr, &reason) != ERROR_SUCCESS) {
+    wchar_t* explanation = nullptr;
+    std::string detail = "code " + std::to_string(reason);
+    if (WlanReasonCodeToString(client, reason, nullptr, &explanation) ==
+            ERROR_SUCCESS &&
+        explanation) {
+      detail = ToUtf8(explanation);
+    }
+    if (explanation) WlanFreeMemory(explanation);
+    WlanCloseHandle(client, nullptr);
+    result->Error("JOIN_FAILED",
+                  "Windows refused the network profile: " + detail);
+    return;
+  }
+
+  const std::wstring profile_name = ToWide(*ssid);
+  DOT11_SSID target{};
+  std::copy_n(ssid->begin(), ssid->size(), target.ucSSID);
+  target.uSSIDLength = static_cast<ULONG>(ssid->size());
+
+  WLAN_CONNECTION_PARAMETERS params{};
+  params.wlanConnectionMode = wlan_connection_mode_profile;
+  params.strProfile = profile_name.c_str();
+  params.pDot11Ssid = &target;
+  params.dot11BssType = dot11_BSS_type_infrastructure;
+  params.dwFlags = 0;
+
+  const DWORD connect_result = WlanConnect(client, &guid, &params, nullptr);
+  WlanCloseHandle(client, nullptr);
+
+  if (connect_result != ERROR_SUCCESS) {
+    result->Error(
+        "JOIN_FAILED",
+        "Windows would not start connecting (code " +
+            std::to_string(connect_result) + ")");
+    return;
+  }
+  result->Success();
 }
 
 void HotspotPlugin::CurrentSsid(

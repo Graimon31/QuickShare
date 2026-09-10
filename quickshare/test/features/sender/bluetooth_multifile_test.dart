@@ -20,7 +20,10 @@ import 'package:path/path.dart' as p;
 
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
+import 'package:quickshare/core/network/direct_link_coordinator.dart';
+import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
+import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
@@ -47,6 +50,46 @@ class _FakePeerLink extends PeerLinkService {
 
   @override
   Future<void> stop() async {}
+}
+
+/// Answers for the Wi-Fi radio the test runner does not have: hosting always
+/// succeeds and the network always has an address.
+class _FakeDirectLinkDriver implements DirectLinkDriver {
+  const _FakeDirectLinkDriver();
+
+  @override
+  bool get canHost => true;
+
+  @override
+  Future<HotspotCredentials> host(SessionCode code) async =>
+      HotspotCredentials(
+          ssid: code.ssid,
+          passphrase: code.passphrase,
+          hostAddress: '192.168.4.1');
+
+  @override
+  Future<void> joinNetwork(HotspotCredentials credentials) async {}
+
+  @override
+  Future<bool> ensureWifiReady() async => true;
+
+  @override
+  Future<void> stopHosting() async {}
+
+  // Hosting works in this fake, so the peer-to-peer rung is never reached.
+  @override
+  bool get canPeerLink => false;
+
+  @override
+  Future<void> hostPeerLink(String serviceName, int localPort) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<int> joinPeerLink(String serviceName) async =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> stopPeerLink() async {}
 }
 
 void main() {
@@ -119,7 +162,26 @@ void main() {
   Future<List<Map>> advertisedFiles(List<String> paths) async =>
       ((await advertised(paths))['files'] as List).cast<Map>();
 
-  test('progress on the fast path moves the sender off its QR code', () async {
+  /// Delivers a native bridge event the way CoreBluetooth would.
+  Future<void> emitNativeEvent(Map<String, Object?> event) async {
+    await messenger.handlePlatformMessage(
+      'quickshare/bluetooth/events',
+      const StandardMethodCodec().encodeSuccessEnvelope(event),
+      (_) {},
+    );
+  }
+
+  /// Waits until [condition] holds, bounded so a broken negotiation fails
+  /// the test instead of hanging it.
+  Future<void> until(bool Function() condition) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (!condition() && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+  }
+
+  test('progress on the direct link moves the sender off its QR code',
+      () async {
     // The file went out over the direct link, finished, and the sender screen
     // sat on its QR the whole time — no progress, no completion, nothing to
     // say it had worked. Reported as "the QR never changed", and it is
@@ -131,7 +193,7 @@ void main() {
     when(() => repository.startQhtpTransfer(any(),
             authToken: any(named: 'authToken')))
         .thenAnswer((_) async => Right(TransferSession(
-              id: 'fast-path',
+              id: 'direct-link',
               fileMetadata: const FileMetadata(
                 name: 'holiday.mov',
                 path: '/tmp/holiday.mov',
@@ -147,6 +209,7 @@ void main() {
     final bloc = SenderBloc(
       repository: repository,
       peerLinkService: const _FakePeerLink(),
+      directLinkDriver: const _FakeDirectLinkDriver(),
     );
     addTearDown(bloc.close);
     final advertising = bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
@@ -154,13 +217,19 @@ void main() {
         mode: TransportType.bluetooth));
     await advertising.timeout(const Duration(seconds: 20));
 
+    // A generation-4 receiver is connected; the negotiation and the serving
+    // session build from here, and only then does progress have a listener.
+    await emitNativeEvent({'type': 'receiverReady'});
+    await until(() => nativeCalls.any((c) => c.method == 'sendLinkFrame'));
+
     final moved = bloc.stream.firstWhere((s) => s is Transferring);
     progress.add(0.5);
     await expectLater(moved.timeout(const Duration(seconds: 10)),
         completes);
   });
 
-  test('the fast path accepts the token the receiver actually has', () async {
+  test('the direct link accepts the token the receiver actually has',
+      () async {
     // The receiver on the far side of a Bluetooth session holds one token:
     // the Bluetooth one. A QHTP session minting its own answered 401 to the
     // only device it existed to serve, and the screen reported a connection
@@ -173,16 +242,19 @@ void main() {
       return const Left(NetworkFailure('not needed for this test'));
     });
 
-    final only = write('holiday.mov');
-    await advertisedPath([only.path]);
+    final bloc = SenderBloc(
+      repository: repository,
+      peerLinkService: const _FakePeerLink(),
+      directLinkDriver: const _FakeDirectLinkDriver(),
+    );
+    addTearDown(bloc.close);
+    final advertising = bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
+    bloc.add(StartQhtpSend([write('holiday.mov').path],
+        mode: TransportType.bluetooth));
+    await advertising.timeout(const Duration(seconds: 20));
 
-    // Advertising and offering the fast path are two things happening at
-    // once, and which finishes first is not fixed — asserting straight after
-    // the advertisement passed on one machine and raced on another.
-    final deadline = DateTime.now().add(const Duration(seconds: 10));
-    while (captured.isEmpty && DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-    }
+    await emitNativeEvent({'type': 'receiverReady'});
+    await until(() => captured.isNotEmpty);
 
     final advertisedToken =
         (nativeCalls.firstWhere((c) => c.method == 'startAdvertising').arguments

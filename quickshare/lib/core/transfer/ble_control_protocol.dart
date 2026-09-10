@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 /// The commands a Bluetooth receiver writes to the sender's control
 /// characteristic.
 ///
@@ -22,6 +24,16 @@
 /// reaches `START` without having seen it knows the far side is old, and
 /// refuses a multi-file session with something the user can act on instead of
 /// delivering one file quietly.
+///
+/// ## What the channel is for now
+///
+/// Generation 4 is where the bytes left this radio. The rendezvous still
+/// happens here — who is present, what they can take, which session may
+/// start, and, via [BleControlProtocol.apOffer], where to join when the
+/// network's name could not be chosen — but the file itself crosses a Wi-Fi
+/// link the two devices raise for the occasion, at Wi-Fi speed. A peer below
+/// 4 only knows how to receive over Bluetooth itself, a path this build
+/// never takes, so it is told to update rather than sent the file slowly.
 class BleControlProtocol {
   const BleControlProtocol._();
 
@@ -33,7 +45,10 @@ class BleControlProtocol {
   /// 3 — `START` must carry the session token. A bare `START` is refused:
   ///     without the token any device in radio range could open the GATT
   ///     server and pull the file the sender is offering to someone else.
-  static const int generation = 3;
+  /// 4 — the direct-link generation. The file never travels this channel:
+  ///     after the rendezvous the two devices raise a Wi-Fi link of their
+  ///     own and the bytes cross there.
+  static const int generation = 4;
 
   /// Sent before [startCommand], never instead of it.
   static String capabilities([int gen = generation]) => 'CAPS:$gen';
@@ -67,6 +82,51 @@ class BleControlProtocol {
     return name;
   }
 
+  /// Receiver → sender: "the network is up at these credentials — join it".
+  ///
+  /// Credentials travel only when they could not be derived from the session
+  /// code: Android's hotspot API names the network itself, so its name and
+  /// passphrase have to cross this channel. A host that chose its own name
+  /// took it from the session code, the joiner derives the same credentials
+  /// locally, and nothing is written.
+  static const String apPrefix = 'AP:';
+
+  static String apOffer(String ssid, String passphrase) =>
+      '$apPrefix${Uri.encodeComponent(ssid)}:${Uri.encodeComponent(passphrase)}';
+
+  /// The credentials an [apOffer] write carries, or null if [command] is
+  /// not one.
+  ///
+  /// The parts are percent-encoded, so a colon inside either of them cannot
+  /// be mistaken for the separator. The limits are the 802.11 ones — an SSID
+  /// is at most 32 bytes and a WPA passphrase 8 to 63 characters — so a
+  /// malformed write is dropped here rather than handed to the Wi-Fi stack
+  /// to fail less legibly.
+  static ({String ssid, String passphrase})? parseApOffer(String command) {
+    if (!command.startsWith(apPrefix)) return null;
+    final parts = command.substring(apPrefix.length).split(':');
+    if (parts.length != 2) return null;
+    final String ssid;
+    final String passphrase;
+    try {
+      ssid = Uri.decodeComponent(parts[0]);
+      passphrase = Uri.decodeComponent(parts[1]);
+      // decodeComponent reports bad percent-encoding as ArgumentError and
+      // bad UTF-8 as FormatException; both mean the write was malformed.
+    } on ArgumentError {
+      return null;
+    } on FormatException {
+      return null;
+    }
+    if (ssid.isEmpty ||
+        utf8.encode(ssid).length > 32 ||
+        passphrase.length < 8 ||
+        passphrase.length > 63) {
+      return null;
+    }
+    return (ssid: ssid, passphrase: passphrase);
+  }
+
   /// The generation [command] announces, or null if it is not a CAPS write.
   ///
   /// Anything unparseable reads as null rather than as generation 1: a command
@@ -98,6 +158,24 @@ class BleControlProtocol {
   static const String sessionRefusedMessage =
       'The receiving device is on an older version that can only accept one '
       'file over Bluetooth. Update it, or send over Wi-Fi.';
+
+  /// Whether a peer can take part in a session at all.
+  ///
+  /// Generation 4 is where the bytes left this radio: a peer below it only
+  /// knows how to receive over Bluetooth itself, a path this build never
+  /// takes — so the session does not begin, whatever it could once have
+  /// carried. The person sending gets [directLinkRequiredMessage] instead of
+  /// a transfer that crawls.
+  static bool peerSupportsDirectLink(int? peerGeneration) =>
+      (peerGeneration ?? 1) >= generation;
+
+  /// Shown to the person sending when [peerSupportsDirectLink] says no.
+  /// Names the fix, and the reason is in the same breath so the update does
+  /// not feel arbitrary.
+  static const String directLinkRequiredMessage =
+      'The receiving device is on an older version that can only receive '
+      'over Bluetooth. Update it, and the transfer moves to a direct Wi-Fi '
+      'link.';
 
   /// Whether [command] is a valid start for a session opened with [token].
   ///
