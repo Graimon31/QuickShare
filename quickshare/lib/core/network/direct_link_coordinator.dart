@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:quickshare/core/crypto/link_secret.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
@@ -67,8 +68,14 @@ abstract interface class DirectLinkDriver {
 /// the same message, so the receiver never has to know why it was asked.
 class DirectLinkDirective {
   final bool receiverHosts;
-  final String? ssid;
-  final String? passphrase;
+
+  /// The network's name and passphrase, sealed against a key neither side
+  /// transmitted. Opaque here: only `LinkSecret` knows what is inside.
+  final String? sealedCredentials;
+
+  /// The sender's public half for this negotiation, so the receiver can open
+  /// [sealedCredentials] and seal its own.
+  final String? senderPublicKey;
 
   /// The Bonjour name of a peer-to-peer link the sender has raised, when the
   /// rendezvous took that rung. Non-null only for [DirectLinkDirective.overPeerLink].
@@ -79,17 +86,17 @@ class DirectLinkDirective {
   /// name a network it is asked to raise after the session it belongs to.
   final String? codeDigits;
 
-  /// The sender raised the network itself. Credentials always ride along —
-  /// even when they could be derived from the session code — so the joiner
+  /// The sender raised the network itself. The credentials ride along sealed
+  /// — even when they could be derived from the session code — so the joiner
   /// never has to guess at a network that is not there yet.
   const DirectLinkDirective.hostBySender({
-    required String ssid,
-    required String passphrase,
+    required String sealedCredentials,
+    required String senderPublicKey,
     String? codeDigits,
   }) : this._(
             receiverHosts: false,
-            ssid: ssid,
-            passphrase: passphrase,
+            sealedCredentials: sealedCredentials,
+            senderPublicKey: senderPublicKey,
             codeDigits: codeDigits);
 
   /// Neither device can raise a network, and both are Apple: the sender put
@@ -98,28 +105,29 @@ class DirectLinkDirective {
   /// the name.
   const DirectLinkDirective.overPeerLink({
     required String serviceName,
+    String? senderPublicKey,
     String? codeDigits,
   }) : this._(
             receiverHosts: false,
-            ssid: null,
-            passphrase: null,
             peerLinkService: serviceName,
+            senderPublicKey: senderPublicKey,
             codeDigits: codeDigits);
 
   /// The receiver has to raise it — the sender cannot (iPhone, Mac), or
   /// tried and failed.
-  const DirectLinkDirective.hostByReceiver({String? codeDigits})
-      : this._(
+  const DirectLinkDirective.hostByReceiver({
+    String? senderPublicKey,
+    String? codeDigits,
+  }) : this._(
             receiverHosts: true,
-            ssid: null,
-            passphrase: null,
+            senderPublicKey: senderPublicKey,
             codeDigits: codeDigits);
 
   const DirectLinkDirective._({
     required this.receiverHosts,
-    required this.ssid,
-    required this.passphrase,
     required this.codeDigits,
+    this.sealedCredentials,
+    this.senderPublicKey,
     this.peerLinkService,
   });
 
@@ -127,8 +135,8 @@ class DirectLinkDirective {
         'host': peerLinkService != null
             ? 'peerlink'
             : (receiverHosts ? 'receiver' : 'sender'),
-        if (ssid != null) 'ssid': ssid,
-        if (passphrase != null) 'passphrase': passphrase,
+        if (sealedCredentials != null) 'sealed': sealedCredentials,
+        if (senderPublicKey != null) 'kex': senderPublicKey,
         if (peerLinkService != null) 'service': peerLinkService,
         if (codeDigits != null) 'code': codeDigits,
       };
@@ -138,21 +146,29 @@ class DirectLinkDirective {
     final digits = codeDigits is String && codeDigits.isNotEmpty
         ? codeDigits
         : null;
+    final kex = json['kex'];
+    final senderKey = kex is String && kex.isNotEmpty ? kex : null;
     switch (json['host']) {
       case 'peerlink':
         final service = json['service'];
         if (service is! String || service.isEmpty) return null;
         return DirectLinkDirective.overPeerLink(
-            serviceName: service, codeDigits: digits);
+            serviceName: service,
+            senderPublicKey: senderKey,
+            codeDigits: digits);
       case 'receiver':
-        return DirectLinkDirective.hostByReceiver(codeDigits: digits);
+        return DirectLinkDirective.hostByReceiver(
+            senderPublicKey: senderKey, codeDigits: digits);
       case 'sender':
-        final ssid = json['ssid'];
-        final passphrase = json['passphrase'];
-        if (ssid is! String || ssid.isEmpty) return null;
-        if (passphrase is! String || passphrase.isEmpty) return null;
+        final sealed = json['sealed'];
+        if (sealed is! String || sealed.isEmpty) return null;
+        // Without the sender's public half the credentials cannot be opened,
+        // so a directive missing it is not one.
+        if (senderKey == null) return null;
         return DirectLinkDirective.hostBySender(
-            ssid: ssid, passphrase: passphrase, codeDigits: digits);
+            sealedCredentials: sealed,
+            senderPublicKey: senderKey,
+            codeDigits: digits);
       default:
         return null;
     }
@@ -216,10 +232,20 @@ abstract interface class DirectLinkSignal {
 
   Stream<DirectLinkDirective> get directives;
 
-  /// Receiver → sender: the credentials of the network the receiver raised.
-  Future<void> sendApOffer(String ssid, String passphrase);
+  /// Receiver → sender: the credentials of the network the receiver raised,
+  /// sealed. Opaque to everything between here and the far side's
+  /// `LinkSecret`.
+  Future<void> sendApOffer(String sealed);
 
-  Stream<({String ssid, String passphrase})> get apOffers;
+  Stream<String> get apOffers;
+
+  /// Receiver → sender: this side's public half for the negotiation.
+  Future<void> sendKeyExchange(String publicKey);
+
+  /// The far side's public half, as it arrives. Readable by anyone listening,
+  /// which is what makes a key exchange the right shape here: the secret both
+  /// sides derive from it never crosses the wire.
+  Stream<String> get peerKeys;
 }
 
 sealed class DirectLinkOutcome {
@@ -293,6 +319,11 @@ class DirectLinkCoordinator {
   final Duration retryPause;
   final Duration apOfferTimeout;
 
+  /// How long to wait for the far side's public half before giving up on a
+  /// private link. It is written as soon as that side connects, so this is a
+  /// bound on a message already in flight rather than on anyone's decision.
+  final Duration keyExchangeTimeout;
+
   /// How long the receiver keeps working through what the sender proposes.
   /// Must outlast the sender's whole ladder, or the rung that reaches an
   /// Apple pair arrives after this side has stopped listening.
@@ -307,6 +338,7 @@ class DirectLinkCoordinator {
     this.offerRounds = 2,
     this.retryPause = const Duration(milliseconds: 700),
     this.apOfferTimeout = const Duration(seconds: 8),
+    this.keyExchangeTimeout = const Duration(seconds: 8),
     this.negotiationBudget = const Duration(seconds: 45),
   });
 
@@ -325,13 +357,29 @@ class DirectLinkCoordinator {
           'between the devices, so it cannot start without it.');
     }
 
+    // Before anything that could carry credentials. The far side writes its
+    // public half as soon as it is connected, so this is normally already in
+    // hand; waiting for it is what makes the rest of this method able to seal.
+    final secret = await LinkSecret.generate();
+    final peerKey = await _firstFrom(signal.peerKeys, keyExchangeTimeout);
+    if (peerKey == null) {
+      return const DirectLinkUnavailable(
+          'The other device did not answer the setup for a private link. '
+          'Make sure it is running the current version and try again.');
+    }
+
     if (driver.canHost) {
       for (var attempt = 0; attempt < hostAttempts; attempt++) {
         final creds = await _tryHost(code);
         if (creds != null) {
           await signal.sendDirective(DirectLinkDirective.hostBySender(
-              ssid: creds.ssid,
-              passphrase: creds.passphrase,
+              sealedCredentials: await secret.seal(
+                ssid: creds.ssid,
+                passphrase: creds.passphrase,
+                sessionId: code.publicId,
+                peerPublicKey: peerKey,
+              ),
+              senderPublicKey: secret.publicKey,
               codeDigits: code.code));
           if (await _probe()) {
             return DirectLinkReady(credentials: creds, hosting: true);
@@ -348,9 +396,14 @@ class DirectLinkCoordinator {
     // the network. The directive is resent each round — an offer that raced
     // a lost BLE write costs a round, not the session.
     for (var round = 0; round < offerRounds; round++) {
-      await signal.sendDirective(
-          DirectLinkDirective.hostByReceiver(codeDigits: code.code));
-      final offer = await _firstApOffer(apOfferTimeout);
+      await signal.sendDirective(DirectLinkDirective.hostByReceiver(
+          senderPublicKey: secret.publicKey, codeDigits: code.code));
+      final sealed = await _firstFrom(signal.apOffers, apOfferTimeout);
+      if (sealed == null) continue;
+      final offer = await secret.open(
+          sealed: sealed, sessionId: code.publicId, peerPublicKey: peerKey);
+      // A frame that will not open is somebody else's, or stale, or being
+      // probed at: the round is spent, the session is not.
       if (offer == null) continue;
       final joined = await _joinWithRetries(HotspotCredentials(
           ssid: offer.ssid, passphrase: offer.passphrase));
@@ -373,7 +426,9 @@ class DirectLinkCoordinator {
         try {
           await driver.hostPeerLink(name, servingPort);
           await signal.sendDirective(DirectLinkDirective.overPeerLink(
-              serviceName: name, codeDigits: code.code));
+              serviceName: name,
+              senderPublicKey: secret.publicKey,
+              codeDigits: code.code));
           return const DirectLinkOverPeerLink(hosting: true);
         } on Error {
           rethrow;
@@ -411,6 +466,11 @@ class DirectLinkCoordinator {
           'between the devices, so it cannot start without it.');
     }
 
+    // Sent before any directive can arrive, so the far side has this side's
+    // public half by the time it has credentials to seal.
+    final secret = await LinkSecret.generate();
+    await signal.sendKeyExchange(secret.publicKey);
+
     final pending = <DirectLinkDirective>[];
     Completer<void>? waiting;
     final subscription = signal.directives.listen((directive) {
@@ -436,7 +496,7 @@ class DirectLinkCoordinator {
           if (pending.isEmpty) break;
         }
         heardAnything = true;
-        final outcome = await _actOn(pending.removeAt(0), code);
+        final outcome = await _actOn(pending.removeAt(0), code, secret);
         if (outcome != null) return outcome;
       }
     } finally {
@@ -452,8 +512,8 @@ class DirectLinkCoordinator {
 
   /// One proposal. Null means "this device could not take that one" — the
   /// caller keeps listening rather than declaring the session dead.
-  Future<DirectLinkOutcome?> _actOn(
-      DirectLinkDirective directive, SessionCode? code) async {
+  Future<DirectLinkOutcome?> _actOn(DirectLinkDirective directive,
+      SessionCode? code, LinkSecret secret) async {
     final peerLinkService = directive.peerLinkService;
     if (peerLinkService != null) {
       if (!driver.canPeerLink) return null;
@@ -468,9 +528,28 @@ class DirectLinkCoordinator {
       }
     }
 
+    // Whatever the directive asks for, acting on it needs the far side's
+    // public half: to open credentials it sent, or to seal the ones this
+    // device is about to raise.
+    final peerKey = directive.senderPublicKey;
+    if (peerKey == null) return null;
+
+    // Names this negotiation for the seal. Both sides derive it from the same
+    // digits; a receiver that has none takes the sender's word for it, which
+    // is the only thing binding the frame to a session at all on that path.
+    final sessionId =
+        code?.publicId ?? _sessionIdFrom(directive.codeDigits) ?? '';
+
     if (!directive.receiverHosts) {
+      final sealed = directive.sealedCredentials;
+      if (sealed == null) return null;
+      final creds = await secret.open(
+          sealed: sealed, sessionId: sessionId, peerPublicKey: peerKey);
+      // Not ours, or tampered with, or from another session: let the sender's
+      // ladder try the next rung rather than ending the negotiation on it.
+      if (creds == null) return null;
       return _joinWithRetries(HotspotCredentials(
-          ssid: directive.ssid!, passphrase: directive.passphrase!));
+          ssid: creds.ssid, passphrase: creds.passphrase));
     }
 
     // Being asked to host by a device that cannot is the ordinary case
@@ -487,13 +566,28 @@ class DirectLinkCoordinator {
       if (creds != null) {
         // Always offer, even when the credentials could be derived from the
         // session code: a sender waiting on this never has to guess at a
-        // network that is not there yet.
-        await signal.sendApOffer(creds.ssid, creds.passphrase);
+        // network that is not there yet. Sealed, because an Android host's
+        // network names itself and the pair it hands back is the live
+        // passphrase of a network now on the air.
+        await signal.sendApOffer(await secret.seal(
+          ssid: creds.ssid,
+          passphrase: creds.passphrase,
+          sessionId: sessionId,
+          peerPublicKey: peerKey,
+        ));
         return DirectLinkReady(credentials: creds, hosting: true);
       }
       await Future<void>.delayed(retryPause);
     }
     return null;
+  }
+
+  /// The session's public identifier, derived from digits the directive
+  /// carried. Null when it carried none — an empty name still binds both
+  /// sides to the same value, which is all the seal needs of it.
+  static String? _sessionIdFrom(String? codeDigits) {
+    if (codeDigits == null || codeDigits.isEmpty) return null;
+    return SessionCode.parse(codeDigits)?.publicId;
   }
 
   /// One hosting attempt. Null means the ladder should climb, not stop: the
@@ -536,15 +630,18 @@ class DirectLinkCoordinator {
 
   Future<bool> _probe() => probeLink?.call() ?? Future.value(true);
 
-  Future<({String ssid, String passphrase})?> _firstApOffer(
-      Duration timeout) {
-    final completer = Completer<({String ssid, String passphrase})?>();
-    late final StreamSubscription<({String ssid, String passphrase})> sub;
+  /// The first thing [source] produces, or null when the wait runs out.
+  ///
+  /// Every wait in this class is bounded, so a caller that loses interest can
+  /// simply stop awaiting and tear the driver down.
+  Future<T?> _firstFrom<T>(Stream<T> source, Duration timeout) {
+    final completer = Completer<T?>();
+    late final StreamSubscription<T> sub;
     final timer = Timer(timeout, () {
       if (!completer.isCompleted) completer.complete(null);
     });
-    sub = signal.apOffers.listen((offer) {
-      if (!completer.isCompleted) completer.complete(offer);
+    sub = source.listen((value) {
+      if (!completer.isCompleted) completer.complete(value);
     }, onError: (_) {
       if (!completer.isCompleted) completer.complete(null);
     });

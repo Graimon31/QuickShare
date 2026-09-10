@@ -111,65 +111,56 @@ void main() {
   });
 
   group('hotspot offer', () {
-    test('the plain shape an Android hotspot produces', () {
-      // The wire format is pinned: the Swift bridges parse this string, so a
-      // drift here breaks the join on exactly the pairs nobody tests with.
-      final command =
-          BleControlProtocol.apOffer('AndroidShare_4821', 'x7k29dmq');
-      expect(command, equals('AP:AndroidShare_4821:x7k29dmq'));
-      final offer = BleControlProtocol.parseApOffer(command);
-      expect(offer?.ssid, equals('AndroidShare_4821'));
-      expect(offer?.passphrase, equals('x7k29dmq'));
-    });
-
-    test('credentials survive a round trip, colons and spaces included', () {
-      // A hotspot name is chosen by the system; nothing about an SSID or a
-      // WPA passphrase promises to avoid the separator, so the parts travel
-      // percent-encoded.
-      final command =
-          BleControlProtocol.apOffer('Cafe: Guest Wi-Fi', 'p@ss:word 123');
-      final offer = BleControlProtocol.parseApOffer(command);
-      expect(offer?.ssid, equals('Cafe: Guest Wi-Fi'));
-      expect(offer?.passphrase, equals('p@ss:word 123'));
+    // DD-03. The pair used to travel as itself, percent-encoded, on a
+    // characteristic with no bonding behind it — the WPA passphrase of a
+    // live network in a packet anything in range could read. What crosses
+    // now is a sealed blob, and this layer deliberately cannot tell what is
+    // in it: `LinkSecret` seals and opens, and checks the 802.11 limits
+    // after opening, where they can be checked on the real values.
+    test('the wire shape is pinned, because both Swift bridges parse it', () {
+      final command = BleControlProtocol.apOffer('c2VhbGVkLWJsb2I');
+      expect(command, equals('AP:c2VhbGVkLWJsb2I'));
+      expect(BleControlProtocol.parseApOffer(command),
+          equals('c2VhbGVkLWJsb2I'));
     });
 
     test('not an offer reads as none', () {
       expect(BleControlProtocol.parseApOffer('START:abc'), isNull);
       expect(BleControlProtocol.parseApOffer('CAPS:4'), isNull);
+      expect(BleControlProtocol.parseApOffer('KEX:abc'), isNull);
       expect(BleControlProtocol.parseApOffer('AP:'), isNull);
-      expect(BleControlProtocol.parseApOffer('AP:onlyone'), isNull);
-      expect(BleControlProtocol.parseApOffer('AP:a:b:c'), isNull);
+      expect(BleControlProtocol.parseApOffer('AP:   '), isNull);
     });
 
-    test('the limits are the 802.11 ones', () {
-      // An SSID is at most 32 bytes, a WPA passphrase 8 to 63 characters; a
-      // write outside them is malformed, not a network to look for.
-      expect(
-          BleControlProtocol.parseApOffer(
-              BleControlProtocol.apOffer('A' * 33, 'x7k29dmq')),
-          isNull);
-      expect(
-          BleControlProtocol.parseApOffer(
-              BleControlProtocol.apOffer('AndroidShare_4821', 'short')),
-          isNull);
-      expect(
-          BleControlProtocol.parseApOffer(
-              BleControlProtocol.apOffer('AndroidShare_4821', 'x' * 64)),
-          isNull);
-      // 32 bytes, not 32 characters: a Cyrillic name spends two bytes per
-      // letter.
-      expect(
-          BleControlProtocol.parseApOffer(
-              BleControlProtocol.apOffer('Д' * 17, 'x7k29dmq')),
-          isNull);
-      expect(
-          BleControlProtocol.parseApOffer(
-              BleControlProtocol.apOffer('Д' * 16, 'x7k29dmq')),
-          isNotNull);
+    test('a write far past the size of a sealed pair is not one', () {
+      // A ceiling rather than a shape: the contents are opaque here, so
+      // length is the only thing this layer can judge.
+      expect(BleControlProtocol.parseApOffer('AP:${'x' * 513}'), isNull);
+      expect(BleControlProtocol.parseApOffer('AP:${'x' * 512}'), isNotNull);
+    });
+  });
+
+  group('the key exchange', () {
+    test('a public half survives the round trip', () {
+      const key = 'MCowBQYDK2VuAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbL';
+      expect(BleControlProtocol.parseKeyExchange(
+              BleControlProtocol.keyExchange(key)),
+          equals(key));
     });
 
-    test('garbled percent-encoding is dropped, not thrown', () {
-      expect(BleControlProtocol.parseApOffer('AP:%zz:x7k29dmq'), isNull);
+    test('the other commands are not mistaken for it', () {
+      // They share one characteristic, and taking a START for a key would
+      // seal the credentials against nonsense.
+      expect(BleControlProtocol.parseKeyExchange('START:abc'), isNull);
+      expect(BleControlProtocol.parseKeyExchange('AP:blob'), isNull);
+      expect(BleControlProtocol.parseKeyExchange('CAPS:4'), isNull);
+    });
+
+    test('an empty or oversized key is refused', () {
+      // An X25519 public key is 32 bytes — 44 characters of base64url.
+      expect(BleControlProtocol.parseKeyExchange('KEX:'), isNull);
+      expect(BleControlProtocol.parseKeyExchange('KEX:   '), isNull);
+      expect(BleControlProtocol.parseKeyExchange('KEX:${'x' * 65}'), isNull);
     });
   });
 

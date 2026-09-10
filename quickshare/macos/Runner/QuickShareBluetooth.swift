@@ -51,40 +51,41 @@ enum BTControl {
         return name
     }
 
-    /// Receiver -> sender: "the network is up at these credentials — join
-    /// it". Only sessions whose host could not choose the network's name —
-    /// Android's hotspot API picks its own — ever carry this write; the rest
-    /// derive the same credentials from the session code. Mirrors
-    /// BleControlProtocol.parseApOffer in Dart.
+    /// Receiver -> sender: the credentials of the network it raised, sealed.
+    ///
+    /// Opaque here on purpose. They used to cross this characteristic as the
+    /// pair itself, on a link with no bonding behind it, which put the WPA
+    /// passphrase of a live network in a packet anything in range could read.
+    /// This bridge now only carries the blob; `LinkSecret` in Dart is what
+    /// seals and opens it, and what checks the 802.11 limits afterwards.
+    /// Mirrors BleControlProtocol.parseApOffer.
     static let apPrefix = "AP:"
 
-    static func parseApOffer(_ command: String?) -> (ssid: String, passphrase: String)? {
+    static func apOffer(_ sealed: String) -> String { "\(apPrefix)\(sealed)" }
+
+    static func parseApOffer(_ command: String?) -> String? {
         guard let command, command.hasPrefix(apPrefix) else { return nil }
-        let parts = command.dropFirst(apPrefix.count)
-            .split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 2,
-              let ssid = parts[0].removingPercentEncoding,
-              let passphrase = parts[1].removingPercentEncoding
-        else { return nil }
-        // The limits are the 802.11 ones, as in Dart: an SSID is at most 32
-        // bytes, a WPA passphrase 8–63 characters.
-        guard !ssid.isEmpty, ssid.utf8.count <= 32,
-              passphrase.count >= 8, passphrase.count <= 63
-        else { return nil }
-        return (ssid, passphrase)
+        let sealed = String(command.dropFirst(apPrefix.count))
+            .trimmingCharacters(in: .whitespaces)
+        guard !sealed.isEmpty, sealed.count <= 512 else { return nil }
+        return sealed
     }
 
-    /// Builds the `AP:` write — see parseApOffer for what one means. The
-    /// parts are percent-encoded exactly as Dart's Uri.encodeComponent does,
-    /// so the separator can never be mistaken for part of a credential.
-    static func apOffer(_ ssid: String, _ passphrase: String) -> String {
-        "\(apPrefix)\(percentEncode(ssid)):\(percentEncode(passphrase))"
+    /// Either side -> the other: a public half for this negotiation. Readable
+    /// by anyone listening, which is the point: what the two sides derive
+    /// from the pair never crosses the wire.
+    static let kexPrefix = "KEX:"
+
+    static func keyExchange(_ publicKey: String) -> String {
+        "\(kexPrefix)\(publicKey)"
     }
 
-    private static func percentEncode(_ value: String) -> String {
-        let allowed = CharacterSet(
-            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()")
-        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    static func parseKeyExchange(_ command: String?) -> String? {
+        guard let command, command.hasPrefix(kexPrefix) else { return nil }
+        let key = String(command.dropFirst(kexPrefix.count))
+            .trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty, key.count <= 64 else { return nil }
+        return key
     }
 
     /// Shown when a receiver below generation 4 asks for a transfer: it only
@@ -290,20 +291,21 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         // network it raised, written back over the control characteristic.
         case "sendApOffer":
             guard let args = call.arguments as? [String: Any],
-                  let ssid = args["ssid"] as? String,
-                  let passphrase = args["passphrase"] as? String,
-                  let peripheral = targetPeripheral,
-                  let control = remoteControlChar
+                  let sealed = args["sealed"] as? String
             else {
-                result(FlutterError(code: "UNAVAILABLE", message: "no sender is connected", details: nil))
+                result(FlutterError(code: "BAD_ARGS", message: "sendApOffer needs sealed credentials", details: nil))
                 return
             }
-            let offerType: CBCharacteristicWriteType =
-                control.properties.contains(.write) ? .withResponse : .withoutResponse
-            peripheral.writeValue(
-                Data(BTControl.apOffer(ssid, passphrase).utf8),
-                for: control, type: offerType)
-            result(nil)
+            writeControl(BTControl.apOffer(sealed), result)
+
+        case "sendKeyExchange":
+            guard let args = call.arguments as? [String: Any],
+                  let key = args["key"] as? String
+            else {
+                result(FlutterError(code: "BAD_ARGS", message: "sendKeyExchange needs a key", details: nil))
+                return
+            }
+            writeControl(BTControl.keyExchange(key), result)
 
         case "startScanning":
             let scanArgs = call.arguments as? [String: Any]
@@ -490,6 +492,19 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     /// `updateValue` can refuse for want of room, which is why the pending
     /// metadata and the file offset are state rather than locals — this
     /// method has to be able to pick up exactly where it stopped.
+    /// Writes one control command to the sender this device is connected to.
+    private func writeControl(_ command: String, _ result: @escaping FlutterResult) {
+        guard let peripheral = targetPeripheral, let control = remoteControlChar
+        else {
+            result(FlutterError(code: "UNAVAILABLE", message: "no sender is connected", details: nil))
+            return
+        }
+        let type: CBCharacteristicWriteType =
+            control.properties.contains(.write) ? .withResponse : .withoutResponse
+        peripheral.writeValue(Data(command.utf8), for: control, type: type)
+        result(nil)
+    }
+
     /// True once the far side has said it understands the direct link, which
     /// is every peer this build will transfer with.
     ///
@@ -735,11 +750,18 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
                 continue
             }
 
-            // A receiver that raised the network itself says where. What to
-            // do with the credentials is the coordinator's call in Dart.
-            if let offer = BTControl.parseApOffer(command) {
+            // A receiver that raised the network itself says where. What is
+            // inside is sealed; opening it is the coordinator's business.
+            if let sealed = BTControl.parseApOffer(command) {
                 peripheral.respond(to: request, withResult: .success)
-                emit(["type": "apOffer", "ssid": offer.ssid, "passphrase": offer.passphrase])
+                emit(["type": "apOffer", "sealed": sealed])
+                continue
+            }
+
+            // The far side's public half for the negotiation.
+            if let key = BTControl.parseKeyExchange(command) {
+                peripheral.respond(to: request, withResult: .success)
+                emit(["type": "peerKey", "key": key])
                 continue
             }
 

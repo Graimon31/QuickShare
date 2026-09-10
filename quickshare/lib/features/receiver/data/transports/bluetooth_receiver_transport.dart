@@ -56,8 +56,11 @@ abstract interface class BleReceiver {
   /// it as `START:<token>` here and cannot connect without it.
   Future<String> connect(String deviceId, {String? token, String? targetDir});
 
-  /// Tells the sender about a network this receiver raised.
-  Future<void> sendApOffer(String ssid, String passphrase);
+  /// Tells the sender about a network this receiver raised, sealed.
+  Future<void> sendApOffer(String sealed);
+
+  /// Hands the sender this side's public half for the negotiation.
+  Future<void> sendKeyExchange(String publicKey);
 
   Future<void> cancel();
   Future<void> dispose();
@@ -106,9 +109,13 @@ class BluetoothReceiverTransport implements BleReceiver {
   /// Tells the sender about a network this receiver raised: an `AP:` write
   /// on the control characteristic of the peripheral it connected to.
   @override
-  Future<void> sendApOffer(String ssid, String passphrase) async {
-    await _method.invokeMethod(
-        'sendApOffer', {'ssid': ssid, 'passphrase': passphrase});
+  Future<void> sendApOffer(String sealed) async {
+    await _method.invokeMethod('sendApOffer', {'sealed': sealed});
+  }
+
+  @override
+  Future<void> sendKeyExchange(String publicKey) async {
+    await _method.invokeMethod('sendKeyExchange', {'key': publicKey});
   }
 
   // -------------------------------------------------------------------------
@@ -347,8 +354,11 @@ class _UniversalBleReceiverAdapter implements BleReceiver {
   }
 
   @override
-  Future<void> sendApOffer(String ssid, String passphrase) =>
-      _inner.sendApOffer(ssid, passphrase);
+  Future<void> sendApOffer(String sealed) => _inner.sendApOffer(sealed);
+
+  @override
+  Future<void> sendKeyExchange(String publicKey) =>
+      _inner.sendKeyExchange(publicKey);
 
   @override
   Future<void> cancel() => _inner.cancel();

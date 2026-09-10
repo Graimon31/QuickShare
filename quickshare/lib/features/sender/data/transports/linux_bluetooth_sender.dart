@@ -8,7 +8,8 @@ import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 
 typedef LinuxBluetoothProgress = void Function(int sent, int total);
 typedef LinuxBluetoothStatus = void Function(String status, [String? error]);
-typedef LinuxBluetoothApOffer = void Function(String ssid, String passphrase);
+typedef LinuxBluetoothApOffer = void Function(String sealed);
+typedef LinuxBluetoothPeerKey = void Function(String publicKey);
 
 /// Minimal BlueZ GATT server used only by the Linux sender.
 ///
@@ -49,6 +50,7 @@ class LinuxBluetoothSender {
   bool _stopping = false;
   LinuxBluetoothStatus? _onStatus;
   LinuxBluetoothApOffer? _onApOffer;
+  LinuxBluetoothPeerKey? _onPeerKey;
 
   Future<void> start(
     List<FileMetadata> files,
@@ -56,12 +58,14 @@ class LinuxBluetoothSender {
     required LinuxBluetoothProgress onProgress,
     required LinuxBluetoothStatus onStatus,
     LinuxBluetoothApOffer? onApOffer,
+    LinuxBluetoothPeerKey? onPeerKey,
   }) async {
     await stop();
     _peerGeneration = null;
     _token = token;
     _onStatus = onStatus;
     _onApOffer = onApOffer;
+    _onPeerKey = onPeerKey;
     _stopping = false;
 
     try {
@@ -94,9 +98,13 @@ class LinuxBluetoothSender {
             _peerGeneration = generation;
             return;
           }
-          if (BleControlProtocol.parseApOffer(command) case final offer?) {
-            // A receiver that raised the network itself says where.
-            _onApOffer?.call(offer.ssid, offer.passphrase);
+          if (BleControlProtocol.parseKeyExchange(command) case final key?) {
+            _onPeerKey?.call(key);
+            return;
+          }
+          if (BleControlProtocol.parseApOffer(command) case final sealed?) {
+            // A receiver that raised the network itself says where — sealed.
+            _onApOffer?.call(sealed);
             return;
           }
           if (BleControlProtocol.isStart(command, _token)) {
@@ -291,6 +299,7 @@ class LinuxBluetoothSender {
     _peerGeneration = null;
     _onStatus = null;
     _onApOffer = null;
+    _onPeerKey = null;
     _dataNotifying = false;
     _startReceived = false;
     _transferStarted = false;

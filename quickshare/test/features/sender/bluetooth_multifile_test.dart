@@ -20,6 +20,7 @@ import 'package:path/path.dart' as p;
 
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
+import 'package:quickshare/core/crypto/link_secret.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
@@ -126,6 +127,8 @@ void main() {
     // session refuses to hand out an address at all — see DD-01.
     when(() => repository.sessionTlsFingerprint)
         .thenReturn('K_Ro4-N-V4udoTFvW8VYS_sPoXq4aCH465');
+    when(() => repository.stopServer(force: any(named: 'force')))
+        .thenAnswer((_) async => const Right(null));
     when(repository.stopServer).thenAnswer((_) async => const Right(null));
   });
 
@@ -223,8 +226,17 @@ void main() {
 
     // A generation-4 receiver is connected; the negotiation and the serving
     // session build from here, and only then does progress have a listener.
+    // Its public half comes first: the credentials of the network this
+    // device raises are sealed against it, so nothing moves until it lands.
+    await emitNativeEvent(
+        {'type': 'peerKey', 'key': (await LinkSecret.generate()).publicKey});
     await emitNativeEvent({'type': 'receiverReady'});
-    await until(() => nativeCalls.any((c) => c.method == 'sendLinkFrame'));
+    // The serve frame, not merely the first one: the negotiation's own
+    // directive goes out before it, and the progress listener is only
+    // subscribed once the address has been handed over.
+    await until(() => nativeCalls.any((c) =>
+        c.method == 'sendLinkFrame' &&
+        '${(c.arguments as Map)['frame']}'.contains('serve')));
 
     final moved = bloc.stream.firstWhere((s) => s is Transferring);
     progress.add(0.5);
@@ -257,6 +269,8 @@ void main() {
         mode: TransportType.bluetooth));
     await advertising.timeout(const Duration(seconds: 20));
 
+    await emitNativeEvent(
+        {'type': 'peerKey', 'key': (await LinkSecret.generate()).publicKey});
     await emitNativeEvent({'type': 'receiverReady'});
     await until(() => captured.isNotEmpty);
 

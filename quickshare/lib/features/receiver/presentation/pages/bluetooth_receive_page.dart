@@ -585,10 +585,18 @@ class _ReceiverLinkSignal implements DirectLinkSignal {
   Stream<DirectLinkDirective> get directives => _transport.linkDirectives;
 
   @override
-  Future<void> sendApOffer(String ssid, String passphrase) =>
-      _transport.sendApOffer(ssid, passphrase);
+  Future<void> sendApOffer(String sealed) => _transport.sendApOffer(sealed);
 
   @override
-  Stream<({String ssid, String passphrase})> get apOffers =>
-      const Stream.empty();
+  Stream<String> get apOffers => const Stream.empty();
+
+  @override
+  Future<void> sendKeyExchange(String publicKey) =>
+      _transport.sendKeyExchange(publicKey);
+
+  /// The sender's public half arrives inside the directive, not on a channel
+  /// of its own — it is already travelling that way and one frame is one
+  /// fewer thing to lose.
+  @override
+  Stream<String> get peerKeys => const Stream.empty();
 }

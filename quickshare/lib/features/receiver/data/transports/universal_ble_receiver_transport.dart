@@ -90,20 +90,26 @@ class UniversalBleReceiverTransport {
   Stream<LinkServeInfo> get serveInfos => _serveInfoController.stream;
 
   /// Tells the sender about a network this receiver raised: an `AP:` write
-  /// on its control characteristic.
-  Future<void> sendApOffer(String ssid, String passphrase) async {
+  /// on its control characteristic, carrying the sealed credentials.
+  Future<void> sendApOffer(String sealed) =>
+      _writeControl(BleControlProtocol.apOffer(sealed));
+
+  /// Hands the sender this side's public half for the negotiation.
+  Future<void> sendKeyExchange(String publicKey) =>
+      _writeControl(BleControlProtocol.keyExchange(publicKey));
+
+  Future<void> _writeControl(String command) async {
     final deviceId = _targetDeviceId;
     if (deviceId == null) {
-      throw StateError('sendApOffer before connect — no sender to answer.');
+      throw StateError('control write before connect — no sender to answer.');
     }
     await UniversalBle.write(
       deviceId,
       _serviceUuid,
       _controlUuid,
-      Uint8List.fromList(
-          utf8.encode(BleControlProtocol.apOffer(ssid, passphrase))),
+      Uint8List.fromList(utf8.encode(command)),
       // With a response, for the same reason CAPS is: a silently dropped
-      // offer is a session that never finds its network.
+      // write is a session that never finds its network.
       withoutResponse: false,
     );
   }

@@ -6,6 +6,7 @@ import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:quickshare/core/crypto/link_secret.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
@@ -104,38 +105,68 @@ class _FakeDriver implements DirectLinkDriver {
 }
 
 class _FakeSignal implements DirectLinkSignal {
-  final sentDirectives = <DirectLinkDirective>[];
-  final sentOffers = <({String ssid, String passphrase})>[];
+  _FakeSignal({this.peerSecret});
 
-  /// Emitted in answer to the next hostByReceiver directive, the way a
-  /// receiver that just raised its network would answer.
+  final sentDirectives = <DirectLinkDirective>[];
+  final sentOffers = <String>[];
+  final sentKeys = <String>[];
+
+  /// The far side of the key exchange, when a test needs one. Present means
+  /// its public half is answered the moment the coordinator asks.
+  final LinkSecret? peerSecret;
+
+  /// Credentials the far side offers in answer to the next hostByReceiver
+  /// directive, sealed against [peerSecret] the way a real receiver would.
   ({String ssid, String passphrase})? autoOffer;
 
+  /// The session name both sides bind the seal to.
+  String sessionId = '';
+
+
   final _directives = StreamController<DirectLinkDirective>.broadcast();
-  final _offers =
-      StreamController<({String ssid, String passphrase})>.broadcast();
+  final _offers = StreamController<String>.broadcast();
+  final _keys = StreamController<String>.broadcast();
 
   @override
   Stream<DirectLinkDirective> get directives => _directives.stream;
 
   @override
-  Stream<({String ssid, String passphrase})> get apOffers => _offers.stream;
+  Stream<String> get apOffers => _offers.stream;
+
+  @override
+  Stream<String> get peerKeys {
+    final peer = peerSecret;
+    if (peer != null) {
+      // A timer, not a microtask: the coordinator subscribes after asking,
+      // and a broadcast stream forgives nothing.
+      Timer(Duration.zero, () => _keys.add(peer.publicKey));
+    }
+    return _keys.stream;
+  }
 
   @override
   Future<void> sendDirective(DirectLinkDirective directive) async {
     sentDirectives.add(directive);
     final offer = autoOffer;
-    if (directive.receiverHosts && offer != null) {
-      // A timer, not a microtask: the coordinator starts listening after the
-      // send returns, and a broadcast stream forgives nothing.
-      Timer(Duration.zero, () => _offers.add(offer));
+    final peer = peerSecret;
+    if (directive.receiverHosts && offer != null && peer != null) {
+      Timer(Duration.zero, () async {
+        _offers.add(await peer.seal(
+          ssid: offer.ssid,
+          passphrase: offer.passphrase,
+          sessionId: sessionId,
+          peerPublicKey: directive.senderPublicKey!,
+        ));
+      });
     }
   }
 
   @override
-  Future<void> sendApOffer(String ssid, String passphrase) async {
-    sentOffers.add((ssid: ssid, passphrase: passphrase));
-  }
+  Future<void> sendApOffer(String sealed) async => sentOffers.add(sealed);
+
+  @override
+  Future<void> sendKeyExchange(String publicKey) async =>
+      sentKeys.add(publicKey);
 
   void pushDirective(DirectLinkDirective directive) {
     _directives.add(directive);
@@ -156,7 +187,35 @@ DirectLinkCoordinator _coordinator(
       offerRounds: 2,
       retryPause: const Duration(milliseconds: 1),
       apOfferTimeout: const Duration(milliseconds: 30),
+      keyExchangeTimeout: const Duration(milliseconds: 30),
       negotiationBudget: const Duration(milliseconds: 200),
+    );
+
+/// A signal with a far side that answers the key exchange, which every
+/// negotiation now begins with.
+Future<_FakeSignal> _signalWithPeer(SessionCode code) async =>
+    _FakeSignal(peerSecret: await LinkSecret.generate())
+      ..sessionId = code.publicId;
+
+/// A directive of the shape a sender that hosts produces, sealed for
+/// [receiverPublicKey] the way the real one is.
+Future<DirectLinkDirective> _sealedFromSender(
+  LinkSecret sender,
+  String receiverPublicKey, {
+  String ssid = 'AndroidShare_4821',
+  String passphrase = 'X7K29DMQ41ZT',
+  String sessionId = 'VM7SD2TA',
+  String? codeDigits,
+}) async =>
+    DirectLinkDirective.hostBySender(
+      sealedCredentials: await sender.seal(
+        ssid: ssid,
+        passphrase: passphrase,
+        sessionId: sessionId,
+        peerPublicKey: receiverPublicKey,
+      ),
+      senderPublicKey: sender.publicKey,
+      codeDigits: codeDigits,
     );
 
 HotspotCredentials _creds(String ssid) =>
@@ -172,7 +231,7 @@ void main() {
       // name that went on air is the one the receiver must join.
       final driver = _FakeDriver()
         ..hostPlan.add(_creds('AndroidShare_4821'));
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
 
       final outcome = await _coordinator(driver, signal).runSender(code);
 
@@ -181,14 +240,15 @@ void main() {
       expect(driver.hostCalls, equals(1));
       final directive = signal.sentDirectives.single;
       expect(directive.receiverHosts, isFalse);
-      expect(directive.ssid, equals('AndroidShare_4821'));
+      expect(directive.sealedCredentials, isNotNull);
+      expect(directive.senderPublicKey, isNotNull);
     });
 
     test('delegates when hosting fails every attempt', () async {
       final driver = _FakeDriver()
         ..hostPlan.add(const HotspotException('adapter busy'))
         ..hostPlan.add(const HotspotException('adapter busy'));
-      final signal = _FakeSignal()
+      final signal = await _signalWithPeer(code)
         ..autoOffer = (ssid: 'DirectDrop-9F2C18', passphrase: 'X7K29DMQ41ZT');
 
       final outcome = await _coordinator(driver, signal).runSender(code);
@@ -203,7 +263,7 @@ void main() {
     test('delegates straight away when it cannot host', () async {
       // iPhone, Mac: hosting is not a failure to retry, it is a fact.
       final driver = _FakeDriver(canHost: false);
-      final signal = _FakeSignal()
+      final signal = await _signalWithPeer(code)
         ..autoOffer = (ssid: 'AndroidShare_7712', passphrase: 'X7K29DMQ41ZT');
 
       final outcome = await _coordinator(driver, signal).runSender(code);
@@ -215,7 +275,7 @@ void main() {
 
     test('an offer that never comes is waited out, then declared', () async {
       final driver = _FakeDriver(canHost: false);
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
 
       final outcome = await _coordinator(driver, signal).runSender(code);
 
@@ -232,7 +292,7 @@ void main() {
       // the session simply died here — the ladder ran out with the one
       // radio that reaches this pair never tried.
       final driver = _FakeDriver(canHost: false, canPeerLink: true);
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
 
       final outcome =
           await _coordinator(driver, signal).runSender(code, servingPort: 8000);
@@ -251,7 +311,7 @@ void main() {
       // one, so "everyone was asked and nobody offered" is the evidence it
       // uses. Trying it first would strand a receiver that only does Wi-Fi.
       final driver = _FakeDriver(canHost: false, canPeerLink: true);
-      final signal = _FakeSignal()
+      final signal = await _signalWithPeer(code)
         ..autoOffer = (ssid: 'AndroidShare_7712', passphrase: 'X7K29DMQ41ZT');
 
       final outcome =
@@ -264,7 +324,7 @@ void main() {
     test('is skipped with nothing to forward to', () async {
       // No serving port means no server on the other end of the link.
       final driver = _FakeDriver(canHost: false, canPeerLink: true);
-      final outcome = await _coordinator(driver, _FakeSignal()).runSender(code);
+      final outcome = await _coordinator(driver, await _signalWithPeer(code)).runSender(code);
 
       expect(outcome, isA<DirectLinkUnavailable>());
       expect(driver.peerLinksHosted, isEmpty);
@@ -275,7 +335,7 @@ void main() {
       final driver = _FakeDriver(canHost: false, canPeerLink: true)
         ..peerLinkPlan.addAll([Exception('awdl asleep'), Exception('again')]);
 
-      final outcome = await _coordinator(driver, _FakeSignal())
+      final outcome = await _coordinator(driver, await _signalWithPeer(code))
           .runSender(code, servingPort: 8000);
 
       expect(outcome, isA<DirectLinkUnavailable>());
@@ -289,7 +349,7 @@ void main() {
       // a second later is not a refusal forever.
       final driver = _FakeDriver(canHost: false)
         ..joinPlan.add(const HotspotException('not found'));
-      final signal = _FakeSignal()
+      final signal = await _signalWithPeer(code)
         ..autoOffer = (ssid: 'AndroidShare_7712', passphrase: 'X7K29DMQ41ZT');
 
       final outcome = await _coordinator(driver, signal).runSender(code);
@@ -303,7 +363,7 @@ void main() {
       final driver = _FakeDriver()
         ..hostPlan.add(_creds('AndroidShare_4821'))
         ..hostPlan.add(_creds('AndroidShare_4821'));
-      final signal = _FakeSignal()
+      final signal = await _signalWithPeer(code)
         ..autoOffer = (ssid: 'DirectDrop-9F2C18', passphrase: 'X7K29DMQ41ZT');
 
       final outcome = await _coordinator(driver, signal, probe: () async {
@@ -320,7 +380,7 @@ void main() {
 
     test('Wi-Fi that stays off ends the ladder before it starts', () async {
       final driver = _FakeDriver(wifiReady: false);
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
 
       final outcome = await _coordinator(driver, signal).runSender(code);
 
@@ -334,12 +394,16 @@ void main() {
   group('receiver', () {
     test('joins the network the directive names', () async {
       final driver = _FakeDriver(canHost: false);
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
+      final sender = await LinkSecret.generate();
 
       final pending = _coordinator(driver, signal).runReceiver(code);
       await Future<void>.delayed(Duration.zero);
-      signal.pushDirective(const DirectLinkDirective.hostBySender(
-          ssid: 'AndroidShare_4821', passphrase: 'X7K29DMQ41ZT'));
+      // Sealed for the key this receiver just announced — the directive is
+      // unreadable to anything that did not take part in the exchange.
+      signal.pushDirective(await _sealedFromSender(
+          sender, signal.sentKeys.single,
+          sessionId: code.publicId));
       final outcome = await pending;
 
       expect(outcome, isA<DirectLinkReady>());
@@ -347,26 +411,59 @@ void main() {
       expect(driver.joined.single.ssid, equals('AndroidShare_4821'));
     });
 
-    test('hosts when asked and offers the credentials it got', () async {
-      final driver = _FakeDriver()
-        ..hostPlan.add(_creds('AndroidShare_7712'));
-      final signal = _FakeSignal();
+    test('credentials it cannot open are let pass, not acted on', () async {
+      // DD-03's other half: a frame sealed for somebody else, or replayed
+      // from another session, must not become a network this device joins.
+      final driver = _FakeDriver(canHost: false);
+      final signal = await _signalWithPeer(code);
+      final stranger = await LinkSecret.generate();
+      final notUs = await LinkSecret.generate();
 
       final pending = _coordinator(driver, signal).runReceiver(code);
       await Future<void>.delayed(Duration.zero);
-      signal.pushDirective(const DirectLinkDirective.hostByReceiver());
+      signal.pushDirective(await _sealedFromSender(
+          stranger, notUs.publicKey,
+          sessionId: code.publicId));
+      final outcome = await pending;
+
+      expect(outcome, isA<DirectLinkUnavailable>());
+      expect(driver.joined, isEmpty);
+    });
+
+    test('hosts when asked and offers the credentials it got', () async {
+      final driver = _FakeDriver()
+        ..hostPlan.add(_creds('AndroidShare_7712'));
+      final signal = await _signalWithPeer(code);
+      final sender = await LinkSecret.generate();
+
+      final pending = _coordinator(driver, signal).runReceiver(code);
+      await Future<void>.delayed(Duration.zero);
+      signal.pushDirective(DirectLinkDirective.hostByReceiver(
+          senderPublicKey: sender.publicKey));
       final outcome = await pending;
 
       expect(outcome, isA<DirectLinkReady>());
       expect((outcome as DirectLinkReady).hosting, isTrue);
+
       // The offer carries what actually went on air, not what the code
-      // derives — the sender never has to guess.
-      expect(signal.sentOffers.single.ssid, equals('AndroidShare_7712'));
+      // derives — the sender never has to guess at a network that is not
+      // there yet.
+      final offered = await sender.open(
+        sealed: signal.sentOffers.single,
+        sessionId: code.publicId,
+        peerPublicKey: signal.sentKeys.single,
+      );
+      expect(offered?.ssid, equals('AndroidShare_7712'));
+
+      // DD-03: and the passphrase of a network now on the air is not in the
+      // packet that announced it.
+      expect(signal.sentOffers.single, isNot(contains('AndroidShare_7712')));
+      expect(signal.sentOffers.single, isNot(contains(offered!.passphrase)));
     });
 
     test('a directive that never comes ends the wait', () async {
       final driver = _FakeDriver();
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
 
       final outcome = await _coordinator(driver, signal).runReceiver(code);
 
@@ -379,11 +476,12 @@ void main() {
       final driver = _FakeDriver()
         ..hostPlan.add(const HotspotException('adapter busy'))
         ..hostPlan.add(_creds('AndroidShare_7712'));
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
 
       final pending = _coordinator(driver, signal).runReceiver(code);
       await Future<void>.delayed(Duration.zero);
-      signal.pushDirective(const DirectLinkDirective.hostByReceiver());
+      signal.pushDirective(DirectLinkDirective.hostByReceiver(
+          senderPublicKey: (await LinkSecret.generate()).publicKey));
       final outcome = await pending;
 
       expect(outcome, isA<DirectLinkReady>());
@@ -394,12 +492,14 @@ void main() {
     test('joins the peer link the sender raised', () async {
       final driver = _FakeDriver(canHost: false, canPeerLink: true)
         ..peerLinkPlan.add(51234);
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
 
       final pending = _coordinator(driver, signal).runReceiver(code);
       await Future<void>.delayed(Duration.zero);
       signal.pushDirective(
-          const DirectLinkDirective.overPeerLink(serviceName: 'dd-abc123'));
+          DirectLinkDirective.overPeerLink(
+              serviceName: 'dd-abc123',
+              senderPublicKey: (await LinkSecret.generate()).publicKey));
       final outcome = await pending;
 
       expect(outcome, isA<DirectLinkOverPeerLink>());
@@ -417,14 +517,17 @@ void main() {
       // offer that was never coming. It keeps listening instead, and the
       // rung that does reach it arrives a moment later.
       final driver = _FakeDriver(canHost: false, canPeerLink: true);
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
 
       final pending = _coordinator(driver, signal).runReceiver(code);
       await Future<void>.delayed(Duration.zero);
-      signal.pushDirective(const DirectLinkDirective.hostByReceiver());
+      signal.pushDirective(DirectLinkDirective.hostByReceiver(
+          senderPublicKey: (await LinkSecret.generate()).publicKey));
       await Future<void>.delayed(Duration.zero);
       signal.pushDirective(
-          const DirectLinkDirective.overPeerLink(serviceName: 'dd-abc123'));
+          DirectLinkDirective.overPeerLink(
+              serviceName: 'dd-abc123',
+              senderPublicKey: (await LinkSecret.generate()).publicKey));
       final outcome = await pending;
 
       expect(outcome, isA<DirectLinkOverPeerLink>());
@@ -437,14 +540,17 @@ void main() {
       // last rung simply is not for them.
       final driver = _FakeDriver(canHost: true, canPeerLink: false)
         ..hostPlan.add(_creds('DirectDrop-9F2C18'));
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
 
       final pending = _coordinator(driver, signal).runReceiver(code);
       await Future<void>.delayed(Duration.zero);
       signal.pushDirective(
-          const DirectLinkDirective.overPeerLink(serviceName: 'dd-abc123'));
+          DirectLinkDirective.overPeerLink(
+              serviceName: 'dd-abc123',
+              senderPublicKey: (await LinkSecret.generate()).publicKey));
       await Future<void>.delayed(Duration.zero);
-      signal.pushDirective(const DirectLinkDirective.hostByReceiver());
+      signal.pushDirective(DirectLinkDirective.hostByReceiver(
+          senderPublicKey: (await LinkSecret.generate()).publicKey));
       final outcome = await pending;
 
       expect(outcome, isA<DirectLinkReady>());
@@ -456,12 +562,14 @@ void main() {
         ..joinPlan.add(const HotspotException('denied'))
         ..joinPlan.add(const HotspotException('denied'))
         ..joinPlan.add(const HotspotException('denied'));
-      final signal = _FakeSignal();
+      final signal = await _signalWithPeer(code);
+      final sender = await LinkSecret.generate();
 
       final pending = _coordinator(driver, signal).runReceiver(code);
       await Future<void>.delayed(Duration.zero);
-      signal.pushDirective(const DirectLinkDirective.hostBySender(
-          ssid: 'AndroidShare_4821', passphrase: 'X7K29DMQ41ZT'));
+      signal.pushDirective(await _sealedFromSender(
+          sender, signal.sentKeys.single,
+          sessionId: code.publicId));
       final outcome = await pending;
 
       expect(outcome, isA<DirectLinkUnavailable>());
@@ -516,21 +624,42 @@ void main() {
   });
 
   group('the directive on the wire', () {
-    test('both shapes round-trip through JSON', () {
+    test('every shape round-trips through JSON', () {
       const senderHosts = DirectLinkDirective.hostBySender(
-          ssid: 'AndroidShare_4821', passphrase: 'X7K29DMQ41ZT');
+          sealedCredentials: 'c2VhbGVkLWJsb2I', senderPublicKey: 'a-key');
       final parsedSender =
           DirectLinkDirective.fromJson(senderHosts.toJson())!;
       expect(parsedSender.receiverHosts, isFalse);
-      expect(parsedSender.ssid, equals('AndroidShare_4821'));
+      expect(parsedSender.sealedCredentials, equals('c2VhbGVkLWJsb2I'));
+      expect(parsedSender.senderPublicKey, equals('a-key'));
 
-      const receiverHosts = DirectLinkDirective.hostByReceiver();
+      const receiverHosts =
+          DirectLinkDirective.hostByReceiver(senderPublicKey: 'a-key');
       final parsedReceiver =
           DirectLinkDirective.fromJson(receiverHosts.toJson())!;
       expect(parsedReceiver.receiverHosts, isTrue);
-      // A sender-hosted directive without credentials is not a directive —
-      // the joiner would have nothing to dial.
+      expect(parsedReceiver.senderPublicKey, equals('a-key'));
+
+      const overLink = DirectLinkDirective.overPeerLink(
+          serviceName: 'dd-abc123', senderPublicKey: 'a-key');
+      final parsedLink = DirectLinkDirective.fromJson(overLink.toJson())!;
+      expect(parsedLink.peerLinkService, equals('dd-abc123'));
+      expect(parsedLink.senderPublicKey, equals('a-key'));
+    });
+
+    test('a sender-hosted directive missing either half is not one', () {
+      // Without the sealed pair the joiner has nothing to dial; without the
+      // public half it has nothing to open the pair with.
       expect(DirectLinkDirective.fromJson(const {'host': 'sender'}), isNull);
+      expect(
+        DirectLinkDirective.fromJson(
+            const {'host': 'sender', 'sealed': 'blob'}),
+        isNull,
+      );
+      expect(
+        DirectLinkDirective.fromJson(const {'host': 'sender', 'kex': 'a-key'}),
+        isNull,
+      );
       expect(DirectLinkDirective.fromJson(const {'host': 'nobody'}), isNull);
     });
   });

@@ -64,15 +64,37 @@ class BluetoothTransferTransport implements TransferTransport {
   /// start — the direct-link negotiation begins from here.
   final _receiverReadyController = StreamController<void>.broadcast();
 
-  /// Credentials of a network the receiver raised and offered over the
-  /// control channel (`AP:`), in arrival order.
-  final _apOfferController =
-      StreamController<({String ssid, String passphrase})>.broadcast();
+  /// Sealed credentials of a network the receiver raised, offered over the
+  /// control channel (`AP:`), in arrival order. Opaque here: only the
+  /// coordinator's `LinkSecret` can open one.
+  final _apOfferController = StreamController<String>.broadcast();
+
+  /// The receiver's public half for the negotiation, from its `KEX:` write.
+  final _peerKeyController = StreamController<String>.broadcast();
+
+  /// The last one seen, replayed to whoever subscribes next.
+  ///
+  /// The order on the wire is fixed and against us: a receiver writes its
+  /// key while connecting, and the coordinator that wants it does not exist
+  /// until the session is ready — which is announced afterwards. On a
+  /// broadcast stream that key is simply gone, and every negotiation would
+  /// end with "the other device did not answer".
+  String? _lastPeerKey;
 
   Stream<void> get receiverReady => _receiverReadyController.stream;
 
-  Stream<({String ssid, String passphrase})> get apOffers =>
-      _apOfferController.stream;
+  Stream<String> get apOffers => _apOfferController.stream;
+
+  Stream<String> get peerKeys async* {
+    final remembered = _lastPeerKey;
+    if (remembered != null) yield remembered;
+    yield* _peerKeyController.stream;
+  }
+
+  void _rememberPeerKey(String key) {
+    _lastPeerKey = key;
+    _peerKeyController.add(key);
+  }
 
   /// This transport as the coordinator's signal channel.
   DirectLinkSignal get linkSignal => _SenderLinkSignal(this);
@@ -173,11 +195,15 @@ class BluetoothTransferTransport implements TransferTransport {
           final generation = BleControlProtocol.parseCapabilities(command);
           if (generation != null) {
             _universalPeerGeneration = generation;
-          } else if (BleControlProtocol.parseApOffer(command)
-              case final offer?) {
-            // A receiver that raised the network itself says where.
+          } else if (BleControlProtocol.parseKeyExchange(command)
+              case final key?) {
             _universalClientId ??= deviceId;
-            _apOfferController.add(offer);
+            _rememberPeerKey(key);
+          } else if (BleControlProtocol.parseApOffer(command)
+              case final sealed?) {
+            // A receiver that raised the network itself says where — sealed.
+            _universalClientId ??= deviceId;
+            _apOfferController.add(sealed);
           } else if (BleControlProtocol.isStart(
               command, _universalSessionToken)) {
             _universalClientId = deviceId;
@@ -239,12 +265,13 @@ class BluetoothTransferTransport implements TransferTransport {
         _receiverReadyController.add(null);
         break;
       case 'apOffer':
-        // A receiver that raised the network itself says where.
-        final ssid = map['ssid'] as String?;
-        final passphrase = map['passphrase'] as String?;
-        if (ssid != null && passphrase != null) {
-          _apOfferController.add((ssid: ssid, passphrase: passphrase));
-        }
+        // A receiver that raised the network itself says where — sealed.
+        final sealed = map['sealed'] as String?;
+        if (sealed != null && sealed.isNotEmpty) _apOfferController.add(sealed);
+        break;
+      case 'peerKey':
+        final key = map['key'] as String?;
+        if (key != null && key.isNotEmpty) _rememberPeerKey(key);
         break;
       case 'senderProgress':
         final sent = map['sent'] as int;
@@ -348,8 +375,8 @@ class BluetoothTransferTransport implements TransferTransport {
               break;
           }
         },
-        onApOffer: (ssid, passphrase) =>
-            _apOfferController.add((ssid: ssid, passphrase: passphrase)),
+        onApOffer: _apOfferController.add,
+        onPeerKey: _rememberPeerKey,
       );
       return file.name;
     }
@@ -370,6 +397,7 @@ class BluetoothTransferTransport implements TransferTransport {
     }
 
     _universalSessionToken = token;
+    _lastPeerKey = null;
     _universalPeerGeneration = null;
     _universalClientId = null;
     _universalDataSubscribed = false;
@@ -505,10 +533,16 @@ class _SenderLinkSignal implements DirectLinkSignal {
   Stream<DirectLinkDirective> get directives => const Stream.empty();
 
   @override
-  Future<void> sendApOffer(String ssid, String passphrase) =>
+  Future<void> sendApOffer(String sealed) =>
       throw UnsupportedError('a sender makes no offers');
 
   @override
-  Stream<({String ssid, String passphrase})> get apOffers =>
-      _transport.apOffers;
+  Stream<String> get apOffers => _transport.apOffers;
+
+  @override
+  Future<void> sendKeyExchange(String publicKey) =>
+      throw UnsupportedError('a sender does not offer its key this way');
+
+  @override
+  Stream<String> get peerKeys => _transport.peerKeys;
 }

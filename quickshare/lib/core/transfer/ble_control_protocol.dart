@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 /// The commands a Bluetooth receiver writes to the sender's control
 /// characteristic.
 ///
@@ -82,49 +80,57 @@ class BleControlProtocol {
     return name;
   }
 
-  /// Receiver → sender: "the network is up at these credentials — join it".
+  /// Receiver → sender: "the network is up — here is how to join it, sealed".
   ///
-  /// Credentials travel only when they could not be derived from the session
-  /// code: Android's hotspot API names the network itself, so its name and
-  /// passphrase have to cross this channel. A host that chose its own name
-  /// took it from the session code, the joiner derives the same credentials
-  /// locally, and nothing is written.
+  /// Credentials travel at all because an Android host's network names
+  /// itself: `startLocalOnlyHotspot` picks the SSID and the passphrase, so
+  /// neither can be derived from anything the two devices already share.
+  ///
+  /// What crosses the wire is a sealed blob and nothing else. It used to be
+  /// the pair itself, percent-encoded, on a characteristic with no bonding
+  /// behind it — which put the WPA passphrase of a live network in a packet
+  /// anything in radio range could read. This layer no longer knows what is
+  /// inside: `LinkSecret` seals it against a key neither side transmitted,
+  /// and the 802.11 limits are checked there, after opening.
   static const String apPrefix = 'AP:';
 
-  static String apOffer(String ssid, String passphrase) =>
-      '$apPrefix${Uri.encodeComponent(ssid)}:${Uri.encodeComponent(passphrase)}';
+  static String apOffer(String sealed) => '$apPrefix$sealed';
 
-  /// The credentials an [apOffer] write carries, or null if [command] is
-  /// not one.
-  ///
-  /// The parts are percent-encoded, so a colon inside either of them cannot
-  /// be mistaken for the separator. The limits are the 802.11 ones — an SSID
-  /// is at most 32 bytes and a WPA passphrase 8 to 63 characters — so a
-  /// malformed write is dropped here rather than handed to the Wi-Fi stack
-  /// to fail less legibly.
-  static ({String ssid, String passphrase})? parseApOffer(String command) {
+  /// The sealed credentials an [apOffer] write carries, or null if [command]
+  /// is not one.
+  static String? parseApOffer(String command) {
     if (!command.startsWith(apPrefix)) return null;
-    final parts = command.substring(apPrefix.length).split(':');
-    if (parts.length != 2) return null;
-    final String ssid;
-    final String passphrase;
-    try {
-      ssid = Uri.decodeComponent(parts[0]);
-      passphrase = Uri.decodeComponent(parts[1]);
-      // decodeComponent reports bad percent-encoding as ArgumentError and
-      // bad UTF-8 as FormatException; both mean the write was malformed.
-    } on ArgumentError {
-      return null;
-    } on FormatException {
-      return null;
-    }
-    if (ssid.isEmpty ||
-        utf8.encode(ssid).length > 32 ||
-        passphrase.length < 8 ||
-        passphrase.length > 63) {
-      return null;
-    }
-    return (ssid: ssid, passphrase: passphrase);
+    final sealed = command.substring(apPrefix.length).trim();
+    // A ceiling rather than a shape: what is inside is opaque here, and a
+    // write far past the size of a sealed credential pair is not one.
+    if (sealed.isEmpty || sealed.length > 512) return null;
+    return sealed;
+  }
+
+  /// Either side → the other: "this is my public half for this negotiation".
+  ///
+  /// The receiver writes it on the control characteristic; the sender answers
+  /// with its own inside the link directive, which rides the metadata one.
+  /// Both are readable by anyone listening, and that is the point of a key
+  /// exchange: what is derived from the pair never crosses the wire.
+  ///
+  /// Sent even when a session code exists. The code would make a serviceable
+  /// key on the paths that have one, but a receiver picked off the sender's
+  /// list has none — the token reaches it only after the link is up — and one
+  /// mechanism that covers both is one fewer thing to get wrong than two.
+  static const String kexPrefix = 'KEX:';
+
+  static String keyExchange(String publicKey) => '$kexPrefix$publicKey';
+
+  /// The public half a [keyExchange] write carries, or null.
+  ///
+  /// An X25519 public key is 32 bytes, which is 44 characters of base64url.
+  /// Anything else is not one.
+  static String? parseKeyExchange(String command) {
+    if (!command.startsWith(kexPrefix)) return null;
+    final key = command.substring(kexPrefix.length).trim();
+    if (key.isEmpty || key.length > 64) return null;
+    return key;
   }
 
   /// The generation [command] announces, or null if it is not a CAPS write.
