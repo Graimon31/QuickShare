@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:universal_ble/universal_ble.dart';
 
 import 'package:quickshare/core/network/network_info_service.dart';
+import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
@@ -24,6 +25,18 @@ class _FakeNetwork extends NetworkInfoService {
   final bool wifi;
   @override
   Future<bool> hasWifiTransportNetwork() async => wifi;
+}
+
+class _FakePeerLink extends PeerLinkService {
+  _FakePeerLink({this.ready = false, this.canEnable = false});
+  final bool ready;
+  final bool canEnable;
+  @override
+  Future<bool> get wifiReady async => ready;
+  @override
+  Future<bool> enableWifi() async => canEnable;
+  @override
+  Future<bool> openWifiSettings() async => true;
 }
 
 class _FakeBle extends UniversalBlePlatform {
@@ -44,7 +57,11 @@ class _FakeBle extends UniversalBlePlatform {
 
 void main() {
   final realNetwork = TransportPreconditions.networkInfo;
-  tearDown(() => TransportPreconditions.networkInfo = realNetwork);
+  final realPeerLink = TransportPreconditions.peerLink;
+  tearDown(() {
+    TransportPreconditions.networkInfo = realNetwork;
+    TransportPreconditions.peerLink = realPeerLink;
+  });
 
   /// Pumps a host and hands its context back, so a test can call `ensure`
   /// against it and then drive whatever dialog it raises.
@@ -98,6 +115,7 @@ void main() {
   group('DD-15 — Bluetooth', () {
     Future<bool> refusedVia(WidgetTester tester, _FakeBle ble) async {
       UniversalBle.setInstance(ble);
+      TransportPreconditions.peerLink = _FakePeerLink(ready: true);
       final ctx = await host(tester);
 
       final pending =
@@ -110,6 +128,10 @@ void main() {
 
     testWidgets('a powered radio lets the mode through', (tester) async {
       UniversalBle.setInstance(_FakeBle(AvailabilityState.poweredOn));
+      // On Apple platforms the Bluetooth transfer also needs the Wi-Fi radio
+      // — that is DD-14, tested on its own below. Here the point is only the
+      // Bluetooth check, so Wi-Fi is already ready.
+      TransportPreconditions.peerLink = _FakePeerLink(ready: true);
       final ctx = await host(tester);
 
       expect(
@@ -140,6 +162,60 @@ void main() {
             tester, _FakeBle(AvailabilityState.poweredOn, throws: true)),
         isFalse,
       );
+    });
+  });
+
+  group('DD-14 — Bluetooth needs the Wi-Fi radio on Apple platforms', () {
+    // Since the direct-link generation the file crosses a Wi-Fi link, not
+    // Bluetooth. On iOS and macOS that link needs the Wi-Fi radio, and there
+    // is no transfer without it — so the gate refuses rather than letting a
+    // session start that cannot build a link. This runs only where
+    // PeerLinkService is supported (iOS/macOS); the test host is macOS.
+    testWidgets('a radio already on lets Bluetooth through', (tester) async {
+      if (!PeerLinkService.isSupported) return;
+      UniversalBle.setInstance(_FakeBle(AvailabilityState.poweredOn));
+      TransportPreconditions.peerLink = _FakePeerLink(ready: true);
+      final ctx = await host(tester);
+
+      expect(
+        await TransportPreconditions.ensure(ctx, TransportType.bluetooth),
+        isTrue,
+      );
+    });
+
+    testWidgets('a radio it can switch on silently lets Bluetooth through',
+        (tester) async {
+      if (!PeerLinkService.isSupported) return;
+      UniversalBle.setInstance(_FakeBle(AvailabilityState.poweredOn));
+      TransportPreconditions.peerLink =
+          _FakePeerLink(ready: false, canEnable: true);
+      final ctx = await host(tester);
+
+      expect(
+        await TransportPreconditions.ensure(ctx, TransportType.bluetooth),
+        isTrue,
+      );
+    });
+
+    testWidgets('a radio off that cannot be flipped refuses, and asks',
+        (tester) async {
+      if (!PeerLinkService.isSupported) return;
+      UniversalBle.setInstance(_FakeBle(AvailabilityState.poweredOn));
+      TransportPreconditions.peerLink =
+          _FakePeerLink(ready: false, canEnable: false);
+      final ctx = await host(tester);
+
+      final pending =
+          TransportPreconditions.ensure(ctx, TransportType.bluetooth);
+      await tester.pumpAndSettle();
+
+      // Asked, honestly — the dialog is about Wi-Fi, not Bluetooth.
+      expect(find.textContaining('Wi-Fi'), findsWidgets);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(await pending, isFalse,
+          reason: 'a session that cannot build a link must not start');
     });
   });
 }

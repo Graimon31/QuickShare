@@ -448,6 +448,22 @@ class AppLocalizationsRu extends AppLocalizations {
       'Передача невозможна, пока не включён Bluetooth.';
 
   @override
+  String get precondBluetoothNeedsWifi =>
+      'Для передачи по Bluetooth нужен включённый Wi-Fi';
+
+  @override
+  String get precondBluetoothNeedsWifiBody =>
+      'Сам файл идёт по прямому Wi-Fi-каналу между устройствами — Bluetooth только находит их. Включите Wi-Fi, к сети подключаться не нужно.';
+
+  @override
+  String get precondBluetoothNeedsWifiBodyApple =>
+      'Сам файл идёт по прямому Wi-Fi-каналу между устройствами — Bluetooth только находит их. iOS не даёт приложению открыть панель Wi-Fi, поэтому включите его сами в Настройках → Wi-Fi. К сети подключаться не нужно.';
+
+  @override
+  String get precondBluetoothWifiBlocked =>
+      'Передача по Bluetooth недоступна, пока не включён Wi-Fi.';
+
+  @override
   String get precondInternetBlocked =>
       'Нет активного сетевого подключения. Передача через интернет недоступна.';
 

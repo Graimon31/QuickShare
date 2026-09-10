@@ -15,7 +15,6 @@ import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/utils/byte_format.dart';
 import 'package:quickshare/features/sender/presentation/pages/media_picker_page.dart';
 import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
-import 'package:quickshare/features/sender/presentation/widgets/wifi_speed_prompt.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
@@ -167,9 +166,6 @@ class _FilePickerPageState extends State<FilePickerPage> {
       return;
     }
     setState(() => _selectedMode = type);
-    if (type == TransportType.bluetooth) {
-      await const WifiSpeedPrompt().ask(context);
-    }
   }
 
   /// Folders, on the platforms that cannot browse for both at once.

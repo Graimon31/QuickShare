@@ -836,6 +836,30 @@ abstract class AppLocalizations {
   /// **'Transfer is unavailable until Bluetooth is turned on.'**
   String get precondBluetoothBlocked;
 
+  /// No description provided for @precondBluetoothNeedsWifi.
+  ///
+  /// In en, this message translates to:
+  /// **'Bluetooth transfer needs Wi-Fi on'**
+  String get precondBluetoothNeedsWifi;
+
+  /// No description provided for @precondBluetoothNeedsWifiBody.
+  ///
+  /// In en, this message translates to:
+  /// **'The file itself crosses a direct Wi-Fi link between the two devices — Bluetooth only finds them. Switch Wi-Fi on; you do not need to join a network.'**
+  String get precondBluetoothNeedsWifiBody;
+
+  /// No description provided for @precondBluetoothNeedsWifiBodyApple.
+  ///
+  /// In en, this message translates to:
+  /// **'The file itself crosses a direct Wi-Fi link between the two devices — Bluetooth only finds them. iOS lets no app open the Wi-Fi pane, so switch it on yourself in Settings › Wi-Fi. You do not need to join a network.'**
+  String get precondBluetoothNeedsWifiBodyApple;
+
+  /// No description provided for @precondBluetoothWifiBlocked.
+  ///
+  /// In en, this message translates to:
+  /// **'Bluetooth transfer is unavailable until Wi-Fi is turned on.'**
+  String get precondBluetoothWifiBlocked;
+
   /// No description provided for @precondInternetBlocked.
   ///
   /// In en, this message translates to:

@@ -47,14 +47,28 @@ void main() {
       expect(servers.single['credential'], equals('c'));
     });
 
-    test('omits credentials when none were configured', () {
+    test('drops a TURN entry entirely when it has no credentials', () {
+      // DD-05. A TURN URL that cannot authenticate is not a fallback:
+      // libwebrtc dials it, fails the 401, and spends a native slot and a
+      // gathering query doing it. Without credentials there is simply no
+      // relay, and a session that needs one reaches the fallback screen.
       final servers = IceServers.build(
-        stunUrls: const [],
+        stunUrls: const ['stun:stun.example.com:3478'],
         turnUrls: ['turn:relay.example.com:443?transport=tcp'],
         username: '',
         credential: '',
       );
-      expect(servers.single.containsKey('username'), isFalse);
+      expect(servers, hasLength(1));
+      expect(servers.single['urls'], equals('stun:stun.example.com:3478'));
+    });
+
+    test('the release default carries no baked-in relay', () {
+      // No public TURN username or password ships in the binary, and the
+      // default URL is empty, so an unconfigured build gathers STUN only.
+      expect(AppConstants.turnUsername, isEmpty);
+      expect(AppConstants.turnCredential, isEmpty);
+      final servers = IceServers.build();
+      expect(servers.every((srv) => !srv.containsKey('credential')), isTrue);
     });
 
     test('keeps a direct path available rather than forcing relay', () {
@@ -65,10 +79,14 @@ void main() {
       // flutter_webrtc writes ice_servers[i] with no bounds check.
       // kMaxIceServerSize is 8; a ninth entry is a native overflow that
       // kills the Windows process inside createPeerConnection.
-      final uncapped = AppConstants.stunServers.length +
-          AppConstants.turnServerUrls.length;
-      expect(uncapped, greaterThan(IceServers.maxIceServers));
-      expect(IceServers.build().length, lessThanOrEqualTo(IceServers.maxIceServers));
+      final overflowing = IceServers.build(
+        stunUrls: const ['s1', 's2', 's3', 's4', 's5'],
+        turnUrls: List.generate(
+            6, (i) => 'turn:relay$i.example.com:443?transport=tcp'),
+        username: 'u',
+        credential: 'c',
+      );
+      expect(overflowing.length, lessThanOrEqualTo(IceServers.maxIceServers));
       expect(
         (IceServers.configuration()['iceServers'] as List).length,
         lessThanOrEqualTo(IceServers.maxIceServers),

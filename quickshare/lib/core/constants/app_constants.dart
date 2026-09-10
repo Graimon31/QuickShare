@@ -44,19 +44,22 @@ class AppConstants {
   /// TURN server URL for symmetric NAT traversal.
   /// Example: --dart-define=QUICKSHARE_TURN_URL=turn:turn.example.com:3478
   ///
-  /// The previous default, `turn:openrelay.metered.ca:80`, no longer resolves
-  /// at all — 1.1.1.1 and 8.8.8.8 both return NXDOMAIN for that name while
-  /// `metered.ca` itself resolves, so the host is gone rather than blocked.
-  /// Every build shipped with it had no relay path whatsoever, which is the
-  /// difference between "P2P sometimes fails" and "P2P fails with no fallback".
+  /// Empty by default, deliberately. A relay comes from one of two places: the
+  /// Worker's `/turn` endpoint, which hands back short-lived credentials at
+  /// connection time, or a private account wired in here at build time. A
+  /// baked-in public relay was neither — the last default,
+  /// `turn:openrelay.metered.ca:80`, stopped resolving entirely, and its
+  /// successor `standard.relay.metered.ca` answers TURN but was never
+  /// confirmed to honour the old open credentials. A dead relay entry is
+  /// worse than none: it eats a slot inside the 8-server native limit and a
+  /// query inside the 6-second gathering window, and it turns "no relay, here
+  /// is why" into "the relay silently did nothing".
   ///
-  /// `standard.relay.metered.ca` is the successor name and does answer TURN
-  /// (it issues a proper 401 challenge). Whether the old open credentials below
-  /// are still honoured there is NOT verified — supply your own with
-  /// `--dart-define` if relay candidates never appear in the logs.
+  /// With this empty and no Worker reachable, a transfer that needs a relay
+  /// fails to the fallback screen rather than pretending one might work.
   static const String turnServerUrl = String.fromEnvironment(
     'QUICKSHARE_TURN_URL',
-    defaultValue: 'turn:standard.relay.metered.ca:80',
+    defaultValue: '',
   );
   /// Comma-separated extra TURN hosts, e.g.
   /// `--dart-define=QUICKSHARE_TURN_HOSTS=turn:a.example.com,turn:b.example.com`
@@ -70,13 +73,17 @@ class AppConstants {
     defaultValue: '',
   );
 
+  /// No default: a release binary must not carry a public TURN
+  /// username/password, and an unauthenticated TURN entry is dead weight.
+  /// Supply real credentials with `--dart-define` for a private account, or
+  /// let the Worker issue short-lived ones.
   static const String turnUsername = String.fromEnvironment(
     'QUICKSHARE_TURN_USER',
-    defaultValue: 'openrelaymodule',
+    defaultValue: '',
   );
   static const String turnCredential = String.fromEnvironment(
     'QUICKSHARE_TURN_PASS',
-    defaultValue: 'openrelaymodule',
+    defaultValue: '',
   );
 
   /// Every TURN transport to offer ICE, best first.

@@ -444,6 +444,21 @@ class AppLocalizationsEn extends AppLocalizations {
       'Transfer is unavailable until Bluetooth is turned on.';
 
   @override
+  String get precondBluetoothNeedsWifi => 'Bluetooth transfer needs Wi-Fi on';
+
+  @override
+  String get precondBluetoothNeedsWifiBody =>
+      'The file itself crosses a direct Wi-Fi link between the two devices — Bluetooth only finds them. Switch Wi-Fi on; you do not need to join a network.';
+
+  @override
+  String get precondBluetoothNeedsWifiBodyApple =>
+      'The file itself crosses a direct Wi-Fi link between the two devices — Bluetooth only finds them. iOS lets no app open the Wi-Fi pane, so switch it on yourself in Settings › Wi-Fi. You do not need to join a network.';
+
+  @override
+  String get precondBluetoothWifiBlocked =>
+      'Bluetooth transfer is unavailable until Wi-Fi is turned on.';
+
+  @override
   String get precondInternetBlocked =>
       'No active network connection. Internet transfer is unavailable.';
 

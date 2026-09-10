@@ -46,12 +46,19 @@ class IceServers {
     final secret = credential ?? AppConstants.turnCredential;
 
     final turn = <Map<String, dynamic>>[];
-    for (final url in turnUrls ?? AppConstants.turnServerUrls) {
-      if (url.trim().isEmpty) continue;
-      final entry = <String, dynamic>{'urls': url.trim()};
-      if (user.isNotEmpty) entry['username'] = user;
-      if (secret.isNotEmpty) entry['credential'] = secret;
-      turn.add(entry);
+    // No credentials means no relay. A TURN URL that cannot authenticate is
+    // not a fallback — libwebrtc still dials it, fails the 401, and spends a
+    // slot and a gathering query doing it. Better to gather STUN only and let
+    // a session that genuinely needs a relay reach the fallback screen.
+    if (user.isNotEmpty && secret.isNotEmpty) {
+      for (final url in turnUrls ?? AppConstants.turnServerUrls) {
+        if (url.trim().isEmpty) continue;
+        turn.add(<String, dynamic>{
+          'urls': url.trim(),
+          'username': user,
+          'credential': secret,
+        });
+      }
     }
 
     return _fit(stun: stun, turn: turn);

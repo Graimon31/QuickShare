@@ -69,6 +69,10 @@ class TransportPreconditions {
     return false;
   }
 
+  /// The peer-link switches, injected so a test does not need a radio.
+  @visibleForTesting
+  static PeerLinkService peerLink = const PeerLinkService();
+
   static Future<bool> _ensureBluetooth(BuildContext context) async {
     AvailabilityState state;
     try {
@@ -81,19 +85,57 @@ class TransportPreconditions {
       // is a radio that is not ready.
       state = AvailabilityState.unknown;
     }
-    if (state == AvailabilityState.poweredOn) return true;
+    if (state != AvailabilityState.poweredOn) {
+      if (!context.mounted) return false;
+      final l10n = AppLocalizations.of(context);
+      final openSettings = await _askEnable(
+        context,
+        title: l10n.precondBluetoothTitle,
+        body: l10n.precondBluetoothBody,
+      );
+      if (!context.mounted) return false;
+      if (openSettings) {
+        await _openWirelessSettings();
+      } else {
+        _showBlocked(context, l10n.precondBluetoothBlocked);
+      }
+      return false;
+    }
+
+    // Since the direct-link generation the file never crosses Bluetooth: it
+    // finds the other device and the bytes take a Wi-Fi link raised between
+    // the two. On iOS and macOS that link needs the Wi-Fi radio awake, and
+    // there is no transfer without it — declining is not "slower over
+    // Bluetooth" any more, it is nothing. Elsewhere the link is a hotspot and
+    // that path manages its own radio.
+    if (!PeerLinkService.isSupported) return true;
     if (!context.mounted) return false;
+    return _ensureWifiRadioForBluetooth(context);
+  }
+
+  static Future<bool> _ensureWifiRadioForBluetooth(BuildContext context) async {
+    if (await peerLink.wifiReady) return true;
+
+    // macOS can flip the switch with nothing disturbed; do it and say nothing.
+    if (await peerLink.enableWifi()) return true;
+    if (!context.mounted) return false;
+
     final l10n = AppLocalizations.of(context);
+    final apple = Platform.isIOS;
     final openSettings = await _askEnable(
       context,
-      title: l10n.precondBluetoothTitle,
-      body: l10n.precondBluetoothBody,
+      title: l10n.precondBluetoothNeedsWifi,
+      body: apple
+          ? l10n.precondBluetoothNeedsWifiBodyApple
+          : l10n.precondBluetoothNeedsWifiBody,
+      confirmLabel:
+          apple ? l10n.precondOpenAppSettings : l10n.precondOpenSettings,
     );
     if (!context.mounted) return false;
     if (openSettings) {
       await _openWirelessSettings();
     } else {
-      _showBlocked(context, l10n.precondBluetoothBlocked);
+      _showBlocked(context, l10n.precondBluetoothWifiBlocked);
     }
     return false;
   }
