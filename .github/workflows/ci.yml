@@ -163,6 +163,9 @@ jobs:
           else
             echo "::warning::No keystore secret (expected on a fork PR) — building an unsigned APK; it will not be uploaded."
             echo "RELEASE_SIGNED=false" >> "$GITHUB_ENV"
+            # Gradle now fails an unsigned release unless this is set. This is
+            # the one path where an unsigned build is the point.
+            echo "ALLOW_UNSIGNED_RELEASE=1" >> "$GITHUB_ENV"
           fi
 
       # Per-ABI APKs rather than one fat binary. The universal APK is 102 MB

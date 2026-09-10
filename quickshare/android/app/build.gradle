@@ -21,9 +21,11 @@ def flutterVersionName = localProperties.getProperty('flutter.versionName') ?: '
 //
 // Neither the keystore nor the passwords live in the repository, and
 // key.properties is gitignored. When nothing is configured the release build
-// stays *unsigned* rather than silently falling back to the debug key: an
+// *fails* rather than falling back to the debug key or shipping unsigned: an
 // APK signed with the debug certificate cannot be published, cannot be
 // upgraded over a real release, and looks valid until the store rejects it.
+// The one exception is ALLOW_UNSIGNED_RELEASE=1, which CI sets on the fork-PR
+// path where the build only has to compile.
 def keystoreProperties = new Properties()
 def keystorePropertiesFile = rootProject.file('key.properties')
 if (keystorePropertiesFile.exists()) {
@@ -105,15 +107,45 @@ android {
             if (hasReleaseSigning) {
                 signingConfig signingConfigs.release
             } else {
-                // Unsigned on purpose — see the note above.
+                // No key material. The build is not stopped here — that would
+                // also break a debug build, which configures this block too —
+                // it is stopped below, only when a task that actually
+                // produces a release artifact is scheduled.
                 signingConfig null
-                println("DirectDrop: no release signing configured, building " +
-                        "an UNSIGNED release. Set QUICKSHARE_KEYSTORE / " +
-                        "QUICKSHARE_KEYSTORE_PASSWORD / QUICKSHARE_KEY_ALIAS / " +
-                        "QUICKSHARE_KEY_PASSWORD, or create android/key.properties " +
-                        "from key.properties.example.")
             }
         }
+    }
+}
+
+// Fail a release build that has no signing, unless it was asked for unsigned
+// on purpose.
+//
+// A plain `flutter build apk --release` with no keys used to print a note and
+// hand back an unsigned APK — valid-looking until Play rejects it, upgradable
+// over nothing. The only legitimate unsigned release is a fork PR in CI,
+// which cannot read the signing secrets and sets ALLOW_UNSIGNED_RELEASE=1.
+//
+// The check runs at task-graph time rather than configuration time so it sees
+// which build was requested and leaves debug builds alone.
+gradle.taskGraph.whenReady { graph ->
+    def wantsRelease = graph.allTasks.any { task ->
+        def n = task.name
+        (n.contains('Release') || n.contains('release')) &&
+            (n.startsWith('assemble') || n.startsWith('bundle') ||
+             n.startsWith('package') || n.startsWith('lintVital'))
+    }
+    def allowUnsigned = System.getenv('ALLOW_UNSIGNED_RELEASE') == '1'
+    if (wantsRelease && !hasReleaseSigning && !allowUnsigned) {
+        throw new GradleException(
+                "No release signing configured. Set QUICKSHARE_KEYSTORE / " +
+                "QUICKSHARE_KEYSTORE_PASSWORD / QUICKSHARE_KEY_ALIAS / " +
+                "QUICKSHARE_KEY_PASSWORD, or create android/key.properties " +
+                "from key.properties.example. To build unsigned on purpose, " +
+                "set ALLOW_UNSIGNED_RELEASE=1.")
+    }
+    if (wantsRelease && !hasReleaseSigning && allowUnsigned) {
+        println("DirectDrop: ALLOW_UNSIGNED_RELEASE=1 — building an UNSIGNED " +
+                "release deliberately.")
     }
 }
 
