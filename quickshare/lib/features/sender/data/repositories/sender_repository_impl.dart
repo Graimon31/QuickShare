@@ -45,6 +45,9 @@ class SenderRepositoryImpl implements SenderRepository {
   InternetAddress? get lastQhtpClientAddress => localServer.lastClientAddress;
 
   @override
+  String? get sessionTlsFingerprint => localServer.tlsFingerprint;
+
+  @override
   Stream<TransferStatus> get statusStream => _statusController.stream;
 
   void dispose() {

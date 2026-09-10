@@ -941,6 +941,20 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       return;
     }
 
+    // The session speaks TLS with a certificate signed by nobody, so the
+    // receiver has to be told what to pin — the QR path names it and this one
+    // has no QR. Without it the pull is refused outright, which is how a
+    // Bluetooth transfer could complete its rendezvous and still move no
+    // bytes at all.
+    final fingerprint = repository.sessionTlsFingerprint;
+    if (fingerprint == null || fingerprint.isEmpty) {
+      await repository.stopServer(force: true);
+      add(const TransferFailed(
+          'The session started without a certificate, so the other device '
+          'has nothing to trust. Try again.'));
+      return;
+    }
+
     /// Hands the receiver the address to pull from and starts reporting
     /// progress, so the sender's own screen leaves the QR code behind.
     Future<void> serveAt(String ip) async {
@@ -952,8 +966,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       });
       await transport.sendLinkFrame({
         'serve': LinkServeInfo(
-                ip: ip, port: session.serverPort, token: code.sessionToken)
-            .toJson(),
+          ip: ip,
+          port: session.serverPort,
+          token: code.sessionToken,
+          tlsFingerprint: fingerprint,
+        ).toJson(),
       });
       AppLogger.info(
           'Bluetooth rendezvous done; serving on the direct Wi-Fi link at '

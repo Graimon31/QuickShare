@@ -122,6 +122,10 @@ void main() {
     when(() => repository.transferProgress)
         .thenAnswer((_) => const Stream.empty());
     when(() => repository.statusStream).thenAnswer((_) => const Stream.empty());
+    // What the serve frame pins the receiver's pull to. Without one the
+    // session refuses to hand out an address at all — see DD-01.
+    when(() => repository.sessionTlsFingerprint)
+        .thenReturn('K_Ro4-N-V4udoTFvW8VYS_sPoXq4aCH465');
     when(repository.stopServer).thenAnswer((_) async => const Right(null));
   });
 

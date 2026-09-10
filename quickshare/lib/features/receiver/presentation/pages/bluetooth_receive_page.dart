@@ -163,6 +163,9 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         token: serve.token,
         sessionId: serve.token,
         mode: 'http-lan',
+        // What the pull is pinned to. The sender names it in the serve frame
+        // because this path never showed a QR to carry it.
+        tlsFingerprint: serve.tlsFingerprint,
       ),
       targetBaseDir: session.path,
       onProgress: (progress) {

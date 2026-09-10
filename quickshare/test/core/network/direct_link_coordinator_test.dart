@@ -469,6 +469,52 @@ void main() {
     });
   });
 
+  group('the serve frame on the wire', () {
+    // DD-01. The rendezvous finished and the file never moved: the frame
+    // named an address and a token, the session speaks TLS with a
+    // certificate signed by nobody, and the receiver refuses a pull it
+    // cannot pin rather than dropping to plaintext. So the fingerprint is
+    // part of the frame, not an extra.
+    test('carries what the pull is pinned to', () {
+      const serve = LinkServeInfo(
+          ip: '192.168.49.1',
+          port: 8000,
+          token: 'session-token',
+          tlsFingerprint: 'K_Ro4-N-V4udoTFvW8VYS_sPoXq4aCH465');
+
+      final read = LinkServeInfo.fromJson(serve.toJson());
+
+      expect(read, isNotNull);
+      expect(read!.tlsFingerprint, equals(serve.tlsFingerprint));
+      expect(read.ip, equals(serve.ip));
+      expect(read.port, equals(serve.port));
+      expect(read.token, equals(serve.token));
+    });
+
+    test('a frame with no fingerprint is not a frame', () {
+      // Refused at the edge. Accepting it would hand the receiver an address
+      // and a token it has no way to check, and the failure would surface
+      // halfway through a transfer instead of here.
+      expect(
+        LinkServeInfo.fromJson(const {
+          'ip': '192.168.49.1',
+          'port': 8000,
+          'token': 'session-token',
+        }),
+        isNull,
+      );
+      expect(
+        LinkServeInfo.fromJson(const {
+          'ip': '192.168.49.1',
+          'port': 8000,
+          'token': 'session-token',
+          'tf': '',
+        }),
+        isNull,
+      );
+    });
+  });
+
   group('the directive on the wire', () {
     test('both shapes round-trip through JSON', () {
       const senderHosts = DirectLinkDirective.hostBySender(

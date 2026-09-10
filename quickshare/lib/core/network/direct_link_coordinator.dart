@@ -168,19 +168,41 @@ class LinkServeInfo {
   final int port;
   final String token;
 
-  const LinkServeInfo(
-      {required this.ip, required this.port, required this.token});
+  /// The session certificate's fingerprint, to pin the pull to.
+  ///
+  /// Carried for the same reason the QR carries it: the session speaks TLS
+  /// with a certificate signed by nobody, so the only thing that says the
+  /// server on the other end is the one that raised this link is the
+  /// fingerprint the sender names here. Without it the receiver has an
+  /// address and a token and no way to check either — and it refuses rather
+  /// than falling back to plaintext, so a frame without this reaches the
+  /// person as "update the sending device" and no file at all.
+  final String tlsFingerprint;
 
-  Map<String, Object?> toJson() => {'ip': ip, 'port': port, 'token': token};
+  const LinkServeInfo({
+    required this.ip,
+    required this.port,
+    required this.token,
+    required this.tlsFingerprint,
+  });
+
+  Map<String, Object?> toJson() =>
+      {'ip': ip, 'port': port, 'token': token, 'tf': tlsFingerprint};
 
   static LinkServeInfo? fromJson(Map<String, Object?> json) {
     final ip = json['ip'];
     final port = json['port'];
     final token = json['token'];
+    final fingerprint = json['tf'];
     if (ip is! String || ip.isEmpty) return null;
     if (port is! int || port <= 0) return null;
     if (token is! String || token.isEmpty) return null;
-    return LinkServeInfo(ip: ip, port: port, token: token);
+    // Absent is refused here rather than downstream: a frame with no
+    // fingerprint cannot open a session, so treating it as unreadable says
+    // so at the edge instead of halfway through a transfer.
+    if (fingerprint is! String || fingerprint.isEmpty) return null;
+    return LinkServeInfo(
+        ip: ip, port: port, token: token, tlsFingerprint: fingerprint);
   }
 }
 

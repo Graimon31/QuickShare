@@ -57,6 +57,15 @@ abstract class SenderRepository {
   /// to which one was merely offered. Null until something has connected.
   InternetAddress? get lastQhtpClientAddress;
 
+  /// The running session's certificate fingerprint, or null when no session
+  /// is serving.
+  ///
+  /// The QR carries this so a scanner can pin the connection; a transfer that
+  /// hands its address over some other way — the Bluetooth rendezvous, which
+  /// never shows a QR — needs the same value by the same reasoning, and has
+  /// nowhere else to read it from.
+  String? get sessionTlsFingerprint;
+
   /// A stream of transfer progress values from 0.0 to 1.0.
   Stream<double> get transferProgress;
 

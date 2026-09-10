@@ -414,9 +414,11 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     senderPeerGeneration = nil
     senderFileHandle = nil
 
-    // Opened here rather than at START so an unreadable file is reported while
-    // the sender is still looking at their own screen.
-    guard openCurrentSenderItem() else { return }
+    // The file is not opened here any more. It was, so that an unreadable
+    // one was reported while the sender still had their own screen up — but
+    // since generation 4 no file crosses this characteristic at all, and
+    // holding a handle open for the length of an advertisement bought
+    // nothing.
 
     let control = CBMutableCharacteristic(
       type: QuickShareBluetoothIDs.control,
@@ -532,7 +534,23 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   /// and `peripheralManagerIsReady(toUpdateSubscribers:)` calls it again —
   /// which is why the pending metadata and the file offset are both state and
   /// not locals.
+  /// True once the far side has said it understands the direct link, which is
+  /// every peer this build will transfer with.
+  ///
+  /// Gates the file pump. Since generation 4 the file never crosses this
+  /// characteristic — the rendezvous does — and the two share a queue: a
+  /// negotiation frame that came back BUSY is retried by the caller, while
+  /// `peripheralManagerIsReady` would meanwhile push file bytes into the same
+  /// channel. The receiver writes whatever arrives there straight to a
+  /// partial and renames it with none of QHTP's checks, so this is not only a
+  /// wasted radio.
+  private var senderUsesDirectLink: Bool {
+    (senderPeerGeneration ?? 1) >= QuickShareBleControl.generation
+  }
+
   private func pumpSenderQueue() {
+    // Generation 4 and up gets the Wi-Fi link, never the file over BLE.
+    guard !senderUsesDirectLink else { return }
     guard let manager = peripheralManager,
           let dataCharacteristic = senderData,
           let metadataCharacteristic = senderMetadata else { return }
