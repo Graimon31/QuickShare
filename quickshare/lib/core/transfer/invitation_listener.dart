@@ -65,17 +65,30 @@ class InvitationListener {
 
   bool get isListening => _server != null;
 
-  /// Starts listening on an ephemeral port.
+  /// The preferred port to listen for invitations on.
   ///
-  /// The port is whatever the system hands out and is published through
-  /// discovery, so nothing has to agree on a number in advance.
-  Future<int> start() async {
+  /// Using a stable port allows peers to reach this device even if Multicast DNS
+  /// caches the record across app restarts or background transitions.
+  static const int defaultPort = 53317;
+
+  /// Starts listening on a port for invitations.
+  ///
+  /// Attempts [preferredPort] or [defaultPort] first so peers can reliably reach
+  /// this device without being blocked by stale Multicast DNS cache. If occupied,
+  /// falls back to any available ephemeral port.
+  Future<int> start({int? preferredPort}) async {
     if (_server != null) return _server!.port;
 
     final handler = const Pipeline().addHandler(_handle);
     // Bound to every interface on purpose: the sender reaches this over the
     // LAN, which may be Wi-Fi, Ethernet, or a network one of them raised.
-    final server = await shelf_io.serve(handler, InternetAddress.anyIPv4, 0);
+    final targetPort = preferredPort ?? defaultPort;
+    HttpServer server;
+    try {
+      server = await shelf_io.serve(handler, InternetAddress.anyIPv4, targetPort);
+    } catch (_) {
+      server = await shelf_io.serve(handler, InternetAddress.anyIPv4, 0);
+    }
     _server = server;
     AppLogger.info('Listening for invitations on :${server.port}',
         tag: 'INVITE');

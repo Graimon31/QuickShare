@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:quickshare/core/transfer/invitation_listener.dart';
 import 'package:quickshare/core/transfer/transfer_invitation.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
@@ -102,6 +103,18 @@ class InvitationSender {
       return const InvitationResult(
           InvitationOutcome.unreachable, 'no answer in time');
     } on SocketException catch (e) {
+      if (port != InvitationListener.defaultPort) {
+        AppLogger.info(
+          'Invitation to $address:$port unreachable ($e), retrying on default port ${InvitationListener.defaultPort}',
+          tag: 'INVITE',
+        );
+        client?.close(force: true);
+        return invite(
+          address: address,
+          port: InvitationListener.defaultPort,
+          invitation: invitation,
+        );
+      }
       return InvitationResult(InvitationOutcome.unreachable, e.message);
     } catch (e) {
       AppLogger.warning('Invitation could not be sent: $e', tag: 'INVITE');

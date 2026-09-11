@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -11,7 +12,10 @@ import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/network/app_presence.dart';
 import 'package:quickshare/core/network/lan_discovery.dart';
+import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
+import 'package:quickshare/core/network/session_tls_identity.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
@@ -108,29 +112,106 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
   /// from it — a public identifier, which the sender advertises, and the
   /// session token, which authenticates the fetch — so matching one against
   /// the network is enough to open a session that nobody else can.
+  /// Finds the device offering [code] and starts collecting from it.
+  ///
+  /// The code is never sent anywhere. Each side derives the same two things
+  /// from it — a public identifier, which the sender advertises, and the
+  /// session token, which authenticates the fetch — so matching one against
+  /// the network is enough to open a session that nobody else can.
+  ///
+  /// If mDNS TXT record is delayed, stale, or cached, this falls back to probing
+  /// candidate peers directly over LAN with the bearer token to verify authorship.
   Future<void> _startFromCode(SessionCode code) async {
     final l10n = AppLocalizations.of(context);
-    DiscoveredPeer? match = (AppPresence.instance.presence?.current ?? const [])
+    AppLogger.info('Resolving session code: publicId=${code.publicId}', tag: 'CODE');
+
+    final presence = AppPresence.instance.presence;
+    DiscoveredPeer? match = (presence?.current ?? const [])
         .where((peer) => peer.sessionPublicId == code.publicId)
         .firstOrNull;
 
-    if (match == null && AppPresence.instance.presence != null) {
-      final presence = AppPresence.instance.presence!;
-      unawaited(presence.refresh());
-
-      try {
-        match = await presence.peers
-            .map((peers) => peers
-                .where((peer) => peer.sessionPublicId == code.publicId)
-                .firstOrNull)
-            .where((peer) => peer != null)
-            .first
-            .timeout(const Duration(seconds: 4));
-      } catch (_) {
-        // Timed out waiting for LAN discovery
+    if (match == null) {
+      if (presence != null) {
+        unawaited(presence.refresh());
       }
 
-      match ??= presence.current
+      // Collect candidate IP addresses and ports to probe
+      final candidateAddresses = <InternetAddress>{};
+      final candidatePorts = <InternetAddress, Set<int>>{};
+
+      for (final peer in presence?.current ?? const <DiscoveredPeer>[]) {
+        if (!peer.address.isLoopback) {
+          candidateAddresses.add(peer.address);
+          candidatePorts.putIfAbsent(peer.address, () => {}).addAll([
+            if (peer.port > 0) peer.port,
+            AppConstants.serverPortMin, // 8000
+            AppConstants.serverPortMin + 1, // 8001
+          ]);
+        }
+      }
+
+      // Also gather the local subnet candidate IPs (e.g. 192.168.3.1)
+      try {
+        final localIp = await NetworkInfoService().getLocalIpAddress();
+        if (localIp != null && localIp.isNotEmpty) {
+          final lastDot = localIp.lastIndexOf('.');
+          if (lastDot != -1) {
+            final prefix = localIp.substring(0, lastDot);
+            final gw = InternetAddress.tryParse('$prefix.1');
+            if (gw != null && !candidateAddresses.contains(gw)) {
+              candidateAddresses.add(gw);
+              candidatePorts.putIfAbsent(gw, () => {}).add(AppConstants.serverPortMin);
+            }
+          }
+        }
+      } catch (_) {}
+
+      QRPayload? directPayload;
+
+      Future<QRPayload?> probeCandidates() async {
+        for (final addr in candidateAddresses) {
+          final ports = candidatePorts[addr] ?? {AppConstants.serverPortMin};
+          for (final port in ports) {
+            final payload = await _probeCandidate(addr, port, code);
+            if (payload != null) return payload;
+          }
+        }
+        return null;
+      }
+
+      try {
+        final results = await Future.wait([
+          if (presence != null)
+            presence.peers
+                .map((peers) => peers
+                    .where((peer) => peer.sessionPublicId == code.publicId)
+                    .firstOrNull)
+                .where((peer) => peer != null)
+                .first
+                .timeout(const Duration(seconds: 4))
+                .catchError((_) => null)
+          else
+            Future.value(null),
+          probeCandidates(),
+        ]);
+
+        match = results[0] as DiscoveredPeer?;
+        directPayload = results[1] as QRPayload?;
+      } catch (_) {}
+
+      if (directPayload != null) {
+        if (!mounted) return;
+        AppLogger.info(
+          'Direct LAN probe matched session code with ${directPayload.ip}:${directPayload.port}',
+          tag: 'CODE',
+        );
+        context
+            .read<ReceiverBloc>()
+            .add(QRCodeScanned(directPayload.encode(), fromPaste: true));
+        return;
+      }
+
+      match ??= presence?.current
           .where((peer) => peer.sessionPublicId == code.publicId)
           .firstOrNull;
     }
@@ -138,6 +219,10 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     if (!mounted) return;
 
     if (match == null) {
+      AppLogger.warning(
+        'Sender with code ${code.publicId} not found via mDNS or direct probe',
+        tag: 'CODE',
+      );
       setState(() {
         _isSubmitting = false;
         _failedCode = code;
@@ -146,6 +231,10 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       return;
     }
 
+    AppLogger.info(
+      'Session code ${code.publicId} matched peer: ${match.name} at ${match.address.address}:${match.port}',
+      tag: 'CODE',
+    );
     final payload = QRPayload(
       version: AppConstants.qhtpPayloadVersion,
       ip: match.address.address,
@@ -160,6 +249,46 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     context
         .read<ReceiverBloc>()
         .add(QRCodeScanned(payload.encode(), fromPaste: true));
+  }
+
+  Future<QRPayload?> _probeCandidate(
+    InternetAddress address,
+    int port,
+    SessionCode code,
+  ) async {
+    final client = HttpClient(context: SecurityContext(withTrustedRoots: false));
+    client.connectionTimeout = const Duration(milliseconds: 1500);
+    String? tlsFingerprint;
+    client.badCertificateCallback = (X509Certificate cert, String host, int p) {
+      tlsFingerprint = SessionTlsIdentity.fingerprintOf(cert.der);
+      return true;
+    };
+
+    try {
+      final uri = Uri.parse('https://${address.address}:$port/v2/session');
+      final request =
+          await client.getUrl(uri).timeout(const Duration(milliseconds: 1500));
+      request.headers
+          .set(HttpHeaders.authorizationHeader, 'Bearer ${code.sessionToken}');
+      final response =
+          await request.close().timeout(const Duration(milliseconds: 1500));
+      if (response.statusCode == HttpStatus.ok && tlsFingerprint != null) {
+        return QRPayload(
+          version: AppConstants.qhtpPayloadVersion,
+          ip: address.address,
+          port: port,
+          token: code.sessionToken,
+          sessionId: code.sessionToken,
+          mode: 'http-lan',
+          tlsFingerprint: tlsFingerprint!,
+        );
+      }
+    } catch (_) {
+      // Not a matching QHTP server or port unreachable
+    } finally {
+      client.close(force: true);
+    }
+    return null;
   }
 
   @override

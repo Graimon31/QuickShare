@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:nsd/nsd.dart' as nsd;
 
+import 'package:quickshare/core/transfer/invitation_listener.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// A device that has announced itself on this network, as last heard.
@@ -70,6 +71,28 @@ class DiscoveredPeer {
 
   /// Whether this peer can be asked to accept a transfer.
   bool get acceptsInvitations => invitePort > 0;
+
+  DiscoveredPeer copyWith({
+    String? id,
+    String? name,
+    String? platform,
+    InternetAddress? address,
+    int? port,
+    String? tlsFingerprint,
+    int? invitePort,
+    String? sessionPublicId,
+  }) {
+    return DiscoveredPeer(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      platform: platform ?? this.platform,
+      address: address ?? this.address,
+      port: port ?? this.port,
+      tlsFingerprint: tlsFingerprint ?? this.tlsFingerprint,
+      invitePort: invitePort ?? this.invitePort,
+      sessionPublicId: sessionPublicId ?? this.sessionPublicId,
+    );
+  }
 
   @override
   String toString() =>
@@ -556,6 +579,7 @@ class LanDiscoveryService {
     final gone = _peers.keys.where((id) => !seen.contains(id)).toList();
     for (final id in gone) {
       final gonePeer = _peers.remove(id);
+      _strikes.remove(id);
       if (gonePeer != null) {
         AppLogger.info('Peer left: "${gonePeer.name}"', tag: 'DISCOVERY');
       }
@@ -585,6 +609,8 @@ class LanDiscoveryService {
       reachable = true;
     } else if (peer.invitePort > 0 &&
         await _answersOn(peer.address, peer.invitePort)) {
+      reachable = true;
+    } else if (await _answersOn(peer.address, InvitationListener.defaultPort)) {
       reachable = true;
     }
 
@@ -661,12 +687,25 @@ class LanDiscoveryService {
           addresses: resolved.addresses,
         );
       }
-      final peer = DiscoveryAnnouncement.peerFrom(resolved);
-      if (peer != null) return peer;
+      var peer = DiscoveryAnnouncement.peerFrom(resolved);
+      if (peer != null) {
+        if (peer.invitePort > 0 && !(await _answersOn(peer.address, peer.invitePort))) {
+          if (await _answersOn(peer.address, InvitationListener.defaultPort)) {
+            peer = peer.copyWith(invitePort: InvitationListener.defaultPort);
+          }
+        }
+        return peer;
+      }
     } catch (_) {
       // Gone again, or the responder is busy.
     }
-    return DiscoveryAnnouncement.peerFrom(service);
+    var fallback = DiscoveryAnnouncement.peerFrom(service);
+    if (fallback != null && fallback.invitePort > 0 && !(await _answersOn(fallback.address, fallback.invitePort))) {
+      if (await _answersOn(fallback.address, InvitationListener.defaultPort)) {
+        fallback = fallback.copyWith(invitePort: InvitationListener.defaultPort);
+      }
+    }
+    return fallback;
   }
 
   Future<void> stop() async {
