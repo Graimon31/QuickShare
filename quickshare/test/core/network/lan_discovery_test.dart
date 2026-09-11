@@ -122,6 +122,15 @@ void main() {
       expect(peer!.address.address, equals('192.168.3.200'));
     });
 
+    test('real address in service.addresses is preferred over conflicting TXT "a" record', () {
+      final txt = announcement.toTxt()..['a'] = bytes('10.99.99.99');
+      final peer = DiscoveryAnnouncement.peerFrom(
+        service(txt: txt, addresses: [InternetAddress('192.168.3.200')]),
+      );
+      expect(peer, isNotNull);
+      expect(peer!.address.address, equals('192.168.3.200'));
+    });
+
     test('IPv4 is preferred when a device answers on both', () {
       final peer = DiscoveryAnnouncement.peerFrom(service(addresses: [
         InternetAddress('fe80::1'),

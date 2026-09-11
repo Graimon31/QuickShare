@@ -38,7 +38,7 @@ class AppPresence {
   /// list it against itself.
   DevicePresence? get presence => _presence;
 
-  bool get isRunning => _presence != null;
+  bool get isRunning => _presence?.isRunning ?? false;
 
   /// Begins announcing this device and listening for invitations.
   ///
@@ -46,10 +46,8 @@ class AppPresence {
   /// stopping for: the code and QR paths work regardless, and the panel says
   /// as much on screen.
   Future<bool> start() async {
-    if (_presence != null) return true;
-
-    final presence = DevicePresence();
-    _presence = presence;
+    final presence = _presence ??= DevicePresence();
+    if (presence.isRunning) return true;
 
     final announcing = await presence.start(onInvitation: _ask);
     if (!announcing) {
@@ -129,6 +127,10 @@ class AppPresence {
   Future<void> refresh() async => _presence?.refresh();
 
   Future<void> stop() async {
+    await _presence?.stop();
+  }
+
+  Future<void> dispose() async {
     final presence = _presence;
     _presence = null;
     await presence?.dispose();

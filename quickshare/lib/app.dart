@@ -67,7 +67,7 @@ class _DirectDropAppState extends State<DirectDropApp>
     WidgetsBinding.instance.removeObserver(this);
     _payloadSub?.cancel();
     _hotspotGuard.detach();
-    unawaited(AppPresence.instance.stop());
+    unawaited(AppPresence.instance.dispose());
     _deepLinks.dispose();
     super.dispose();
   }

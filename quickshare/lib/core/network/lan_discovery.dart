@@ -185,33 +185,36 @@ class DiscoveryAnnouncement {
     if (name == null || name.isEmpty) return null;
     if (platform == null || platform.isEmpty) return null;
 
-    // Prefer IP address published directly in TXT record (key 'a').
-    // On iOS and macOS, nsd omits service.addresses and getaddrinfo fails for .local mDNS names.
+    // Prefer the actual network address resolved by the mDNS responder over
+    // the self-reported 'a' TXT record. Fall back to 'a' only when
+    // service.addresses is omitted by the platform responder (e.g. iOS/macOS nsd).
     InternetAddress? address;
-    final txtIp = _text(txt, 'a');
-    if (txtIp != null && txtIp.isNotEmpty) {
-      final parsed = InternetAddress.tryParse(txtIp);
-      if (parsed != null && !parsed.isLoopback) {
-        address = parsed;
+    final addresses = service.addresses;
+    if (addresses != null && addresses.isNotEmpty) {
+      final nonLoopbackIpv4 = addresses.where(
+        (a) => a.type == InternetAddressType.IPv4 && !a.isLoopback,
+      ).toList();
+      if (nonLoopbackIpv4.isNotEmpty) {
+        address = nonLoopbackIpv4.first;
+      } else {
+        final nonLoopback = addresses.where((a) => !a.isLoopback).toList();
+        if (nonLoopback.isNotEmpty) {
+          address = nonLoopback.first;
+        }
       }
     }
 
     if (address == null) {
-      final addresses = service.addresses;
-      if (addresses == null || addresses.isEmpty) return null;
-      final nonLoopbackIpv4 = addresses.where(
-        (a) => a.type == InternetAddressType.IPv4 && !a.isLoopback,
-      ).toList();
-      address = nonLoopbackIpv4.isNotEmpty
-          ? nonLoopbackIpv4.first
-          : addresses.firstWhere(
-              (a) => !a.isLoopback,
-              orElse: () => addresses.firstWhere(
-                (a) => a.type == InternetAddressType.IPv4,
-                orElse: () => addresses.first,
-              ),
-            );
+      final txtIp = _text(txt, 'a');
+      if (txtIp != null && txtIp.isNotEmpty) {
+        final parsed = InternetAddress.tryParse(txtIp);
+        if (parsed != null && !parsed.isLoopback) {
+          address = parsed;
+        }
+      }
     }
+
+    if (address == null) return null;
 
     return DiscoveredPeer(
       id: id,
@@ -568,6 +571,28 @@ class LanDiscoveryService {
       if (!answered[i]) continue;
       final peer = candidates[i];
 
+      // Deduplicate: if an existing peer has the same IP and port but different ID,
+      // the remote app restarted under a fresh ID. Replace the stale entry.
+      final targetEndpoint =
+          '${peer.address.address}:${peer.port > 0 ? peer.port : peer.invitePort}';
+      final staleKeys = _peers.entries
+          .where((e) =>
+              e.key != peer.id &&
+              '${e.value.address.address}:${e.value.port > 0 ? e.value.port : e.value.invitePort}' ==
+                  targetEndpoint)
+          .map((e) => e.key)
+          .toList();
+      for (final staleKey in staleKeys) {
+        final stalePeer = _peers.remove(staleKey);
+        _strikes.remove(staleKey);
+        if (stalePeer != null) {
+          AppLogger.info(
+              'Deduplicated stale peer: "${stalePeer.name}" ($staleKey)',
+              tag: 'DISCOVERY');
+        }
+        changed = true;
+      }
+
       seen.add(peer.id);
       final existing = _peers[peer.id];
       if (existing == null ||
@@ -598,13 +623,27 @@ class LanDiscoveryService {
     // Before removing any peer that wasn't seen in this pass, verify if it is
     // still answering on TCP. A dropped mDNS resolve or busy responder must not
     // drop a device that is right here and answering on its socket.
+    final activeEndpoints = seen
+        .map((id) => _peers[id])
+        .whereType<DiscoveredPeer>()
+        .map((p) => '${p.address.address}:${p.port > 0 ? p.port : p.invitePort}')
+        .toSet();
+
     final candidateIds = candidates.map((c) => c.id).toSet();
     final gone = <String>[];
     for (final id in _peers.keys) {
       if (seen.contains(id)) continue;
       final peer = _peers[id];
-      if (!candidateIds.contains(id) && peer != null && await stillThere(peer)) {
+      final endpoint = peer != null
+          ? '${peer.address.address}:${peer.port > 0 ? peer.port : peer.invitePort}'
+          : null;
+      if (!candidateIds.contains(id) &&
+          peer != null &&
+          endpoint != null &&
+          !activeEndpoints.contains(endpoint) &&
+          await stillThere(peer)) {
         seen.add(id);
+        activeEndpoints.add(endpoint);
         continue;
       }
       gone.add(id);

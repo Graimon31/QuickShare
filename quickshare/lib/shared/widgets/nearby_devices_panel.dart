@@ -84,13 +84,8 @@ class NearbyDevicesPanel extends StatefulWidget {
 }
 
 class _NearbyDevicesPanelState extends State<NearbyDevicesPanel> {
-  late final DevicePresence _presence;
-
-  /// Whether this panel created the presence and therefore has to clean it up.
-  /// An injected one belongs to the screen, which may still need it after the
-  /// panel is gone — the code-entry field on the receiving screen resolves
-  /// against the same list.
-  late final bool _ownsPresence;
+  late DevicePresence _presence;
+  late bool _ownsPresence;
 
   StreamSubscription<List<DiscoveredPeer>>? _subscription;
 
@@ -125,6 +120,21 @@ class _NearbyDevicesPanelState extends State<NearbyDevicesPanel> {
   @override
   void didUpdateWidget(NearbyDevicesPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.presence != widget.presence) {
+      if (_ownsPresence) unawaited(_presence.dispose());
+      _subscription?.cancel();
+      _ownsPresence = widget.presence == null;
+      _presence = widget.presence ?? DevicePresence();
+      _subscription = _presence.peers.listen((peers) {
+        if (mounted) setState(() => _peers = peers);
+      });
+      _announceServing();
+      if (mounted) {
+        setState(() {
+          _peers = _presence.current;
+        });
+      }
+    }
     // The session usually opens a moment after the panel is first drawn, so
     // what this device advertises has to be able to change under it.
     if (oldWidget.serving?.publicId != widget.serving?.publicId ||
