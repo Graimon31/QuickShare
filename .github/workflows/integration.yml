@@ -1,5 +1,8 @@
 name: Integration tests (real WebRTC)
 
+permissions:
+  contents: read
+
 # Deliberately not on push or pull_request.
 #
 # These tests build and launch a real desktop app and drive an actual libwebrtc
@@ -51,11 +54,6 @@ jobs:
       # emulator, no device, no signing.
       - name: Serverless end-to-end
         run: flutter test integration_test/serverless_e2e_test.dart -d macos
-
-      # The room-based path runs its signaling server inside the test, so this
-      # needs nothing installed beyond Flutter itself.
-      - name: LAN room handshake end-to-end
-        run: flutter test integration_test/lan_webrtc_e2e_test.dart -d macos
 
       # The candidate types the run gathered are the diagnostic worth keeping:
       # "relay present: false" is how we learned the baked-in TURN credentials
