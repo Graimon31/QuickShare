@@ -182,10 +182,20 @@ class UniversalBleReceiverTransport {
 
   bool _filterDevice(BleDevice device) {
     final name = device.name ?? '';
+
+    // The scan already filters by our GATT service UUID, so every device that
+    // arrives here is running DirectDrop.  Windows senders cannot set a custom
+    // advertising name (WinRT GattServiceProvider limitation) and advertise
+    // with the machine hostname or an empty string — accept them outright.
+    if (name.isEmpty || (!name.contains('QuickShare') && !name.startsWith('QuickShare-'))) {
+      // No QuickShare tag → accept anyway; the service UUID match is proof
+      // enough that this is our sender.  The session token written in the
+      // START command after connection provides the real authentication.
+      return true;
+    }
+
     final publicId = _publicId;
     if (publicId != null && publicId.isNotEmpty) {
-      // The name carries this and nothing secret. A sender too old to publish
-      // it still answers to the token match below.
       return name.contains('QuickShare-$publicId') || name.contains('QuickShare');
     }
     if (_sessionToken == null) return true;
