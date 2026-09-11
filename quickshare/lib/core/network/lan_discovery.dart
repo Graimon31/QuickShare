@@ -294,20 +294,20 @@ class LanDiscoveryService {
 
   /// How often to go back over the browser's list. Fast enough that a device
   /// somebody just opened shows up while they are still looking at the screen.
-  static const Duration reconcileInterval = Duration(seconds: 3);
+  static const Duration reconcileInterval = Duration(seconds: 2);
   final StreamController<List<DiscoveredPeer>> _peersController =
       StreamController<List<DiscoveredPeer>>.broadcast();
 
   /// How long a device has to accept a connection before it is not counted as
   /// answering. A listening socket on the same network answers in about a
   /// millisecond; this is the budget for a lost packet, not for a slow device.
-  static const Duration reachabilityBudget = Duration(milliseconds: 2500);
+  static const Duration reachabilityBudget = Duration(milliseconds: 800);
 
   /// Missed answers before a device leaves the list.
   ///
   /// More than one because Wi-Fi drops packets, and a device blinking out of
   /// the list and back is worse than one that lingers a couple of seconds.
-  static const int strikesBeforeGone = 8;
+  static const int strikesBeforeGone = 2;
 
   /// Consecutive probes a device has failed, by id.
   final Map<String, int> _strikes = {};
@@ -577,11 +577,12 @@ class LanDiscoveryService {
     // Before removing any peer that wasn't seen in this pass, verify if it is
     // still answering on TCP. A dropped mDNS resolve or busy responder must not
     // drop a device that is right here and answering on its socket.
+    final candidateIds = candidates.map((c) => c.id).toSet();
     final gone = <String>[];
     for (final id in _peers.keys) {
       if (seen.contains(id)) continue;
       final peer = _peers[id];
-      if (peer != null && await stillThere(peer)) {
+      if (!candidateIds.contains(id) && peer != null && await stillThere(peer)) {
         seen.add(id);
         continue;
       }
@@ -621,7 +622,8 @@ class LanDiscoveryService {
     } else if (peer.invitePort > 0 &&
         await _answersOn(peer.address, peer.invitePort)) {
       reachable = true;
-    } else if (await _answersOn(peer.address, InvitationListener.defaultPort)) {
+    } else if (peer.invitePort != InvitationListener.defaultPort &&
+        await _answersOn(peer.address, InvitationListener.defaultPort)) {
       reachable = true;
     }
 

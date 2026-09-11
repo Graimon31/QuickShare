@@ -56,6 +56,9 @@ class _DirectDropAppState extends State<DirectDropApp>
       } else {
         unawaited(AppPresence.instance.refresh());
       }
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      unawaited(AppPresence.instance.stop());
     }
   }
 
