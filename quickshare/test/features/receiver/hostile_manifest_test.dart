@@ -127,4 +127,23 @@ void main() {
     expect(message, isNot(equals('DELIVERED')));
     expect(target.listSync(), isEmpty);
   });
+
+  test('a lying session header claiming 1 item is rejected if manifest has too many items',
+      () async {
+    final manyItems = List.generate(
+      AppConstants.qhtpMaxFileCount + 1,
+      (i) => {'id': '$i'.padLeft(6, '0'), 'path': 'item_$i.bin', 'size': 1},
+    );
+    manifestBody = jsonEncode({
+      'sessionId': 'hostile',
+      'itemCount': 1,
+      'totalBytes': 1,
+      'items': manyItems,
+    });
+
+    final message = await download();
+
+    expect(message.toLowerCase(), contains('100000'));
+    expect(target.listSync(), isEmpty);
+  });
 }

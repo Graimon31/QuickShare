@@ -479,28 +479,45 @@ class QhtpReceiverClient {
         speedBps: 0,
       ));
 
-      final manifestRes = await dio.get<String>(
+      final manifestRes = await dio.get<ResponseBody>(
         'https://$host:$port/v2/manifest',
-        // As text, not a decoded map: the guard below checks the byte length
-        // before anything parses it, which is the point of checking at all —
-        // a manifest built to be expensive to parse must not be parsed.
-        options: options.copyWith(responseType: ResponseType.plain),
+        // Stream the manifest so a multi-gigabyte hostile response cannot OOM the receiver.
+        options: options.copyWith(responseType: ResponseType.stream),
       );
       if (manifestRes.statusCode != 200) {
         return const Left(NetworkFailure('Failed to fetch session manifest'));
       }
 
-      final manifestBody = manifestRes.data ?? '';
+      final responseBody = manifestRes.data;
+      if (responseBody == null) {
+        return const Left(NetworkFailure('Failed to fetch session manifest'));
+      }
+
+      final builder = BytesBuilder(copy: false);
+      int downloadedBytes = 0;
       const guard = ManifestGuard();
+      try {
+        await for (final chunk in responseBody.stream) {
+          downloadedBytes += chunk.length;
+          if (downloadedBytes > AppConstants.qhtpManifestMaxBytes) {
+            guard.checkSize(downloadedBytes);
+          }
+          builder.add(chunk);
+        }
+      } on ManifestRejected catch (e) {
+        return Left(FileFailure(e.message));
+      }
+
+      final manifestBytes = builder.takeBytes();
       final QhtpManifest manifest;
       try {
-        guard.checkSize(utf8.encode(manifestBody).length);
+        guard.checkSize(manifestBytes.length);
+        final manifestBody = utf8.decode(manifestBytes);
         manifest = QhtpManifest.fromJson(
             jsonDecode(manifestBody) as Map<String, dynamic>);
-        // Paths after the parse: the same limits the sender's indexer applies
-        // while it walks a selection, applied here where the sender is not
-        // trusted. A tree thousands deep, or a path no filesystem accepts,
-        // is refused before the loop that creates directories runs.
+        // Check actual items against count and size ceilings (DD-21), not just
+        // the unverified self-reported session header.
+        guard.checkLimits(manifest);
         guard.checkPaths(manifest);
       } on ManifestRejected catch (e) {
         return Left(FileFailure(e.message));

@@ -124,4 +124,62 @@ void main() {
       );
     });
   });
+
+  group('the item count and size limits', () {
+    test('a manifest within limits passes', () {
+      final manifest = QhtpManifest(
+        sessionId: 's',
+        createdAt: 0,
+        itemCount: 2,
+        totalBytes: 200,
+        items: [
+          QhtpItem(id: '01', path: 'a.txt', size: 100),
+          QhtpItem(id: '02', path: 'b.txt', size: 100),
+        ],
+      );
+      expect(() => guard.checkLimits(manifest), returnsNormally);
+    });
+
+    test('a manifest with too many items is rejected', () {
+      final items = List.generate(
+        AppConstants.qhtpMaxFileCount + 1,
+        (i) => QhtpItem(id: '$i', path: '$i.txt', size: 1),
+      );
+      final manifest = QhtpManifest(
+        sessionId: 's',
+        createdAt: 0,
+        itemCount: items.length,
+        totalBytes: items.length,
+        items: items,
+      );
+      expect(() => guard.checkLimits(manifest), throwsA(isA<ManifestRejected>()));
+    });
+
+    test('a manifest with negative item size is rejected', () {
+      final manifest = QhtpManifest(
+        sessionId: 's',
+        createdAt: 0,
+        itemCount: 1,
+        totalBytes: -1,
+        items: [
+          QhtpItem(id: '01', path: 'a.txt', size: -1),
+        ],
+      );
+      expect(() => guard.checkLimits(manifest), throwsA(isA<ManifestRejected>()));
+    });
+
+    test('a manifest with aggregate size over session limit is rejected', () {
+      final manifest = QhtpManifest(
+        sessionId: 's',
+        createdAt: 0,
+        itemCount: 2,
+        totalBytes: AppConstants.qhtpMaxSessionBytes + 1,
+        items: [
+          QhtpItem(id: '01', path: 'a.txt', size: AppConstants.qhtpMaxSessionBytes),
+          QhtpItem(id: '02', path: 'b.txt', size: 1),
+        ],
+      );
+      expect(() => guard.checkLimits(manifest), throwsA(isA<ManifestRejected>()));
+    });
+  });
 }

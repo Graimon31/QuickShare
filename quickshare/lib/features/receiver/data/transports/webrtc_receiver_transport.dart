@@ -448,8 +448,11 @@ class WebRtcReceiverTransport {
           // need this are folders, and a folder half-announced is worse than
           // none: nothing opens until the last part lands.
           final parts = data['parts'] as int?;
-          if (parts == null || parts <= 0) {
-            _fail('manifest-begin announced $parts parts');
+          if (parts == null ||
+              parts <= 0 ||
+              parts * TransferProtocol.maxManifestFrameBytes >
+                  AppConstants.qhtpManifestMaxBytes) {
+            _fail('manifest-begin announced $parts parts (limit exceeded)');
             return;
           }
           _partialManifest = <TransferItem>[];
@@ -463,7 +466,14 @@ class WebRtcReceiverTransport {
             _fail('a manifest part arrived before the manifest it belongs to');
             return;
           }
-          pending.addAll(TransferProtocol.parseManifest(data));
+          final parsed = TransferProtocol.parseManifest(data);
+          if (pending.length + parsed.length >
+              AppConstants.qhtpMaxFileCount) {
+            _fail(
+                'Manifest item count exceeds the limit of ${AppConstants.qhtpMaxFileCount}');
+            return;
+          }
+          pending.addAll(parsed);
           _manifestPartsSeen++;
           _armIdleWatchdog();
           if (_manifestPartsSeen >= _manifestPartsExpected) {
@@ -573,8 +583,18 @@ class WebRtcReceiverTransport {
   /// Starts a session from the manifest it opened with, however many frames
   /// that manifest took to arrive.
   void _openSession(List<TransferItem> items) {
+    if (items.length > AppConstants.qhtpMaxFileCount) {
+      _fail(
+          'Manifest item count (${items.length}) exceeds the limit of ${AppConstants.qhtpMaxFileCount}');
+      return;
+    }
+    final totalBytes = items.fold<int>(0, (sum, i) => sum + i.size);
+    if (totalBytes > AppConstants.qhtpMaxSessionBytes) {
+      _fail('Manifest total size exceeds the maximum session limit');
+      return;
+    }
     _manifest = items;
-    _sessionTotalBytes = items.fold<int>(0, (sum, i) => sum + i.size);
+    _sessionTotalBytes = totalBytes;
     _sessionReceivedBytes = 0;
     _writtenPaths.clear();
     _lastBytes = 0;

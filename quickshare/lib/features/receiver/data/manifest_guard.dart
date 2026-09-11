@@ -83,10 +83,32 @@ class ManifestGuard {
     }
   }
 
-  /// Both checks, in the order they get cheaper to run: size first, since it
+  /// Throws [ManifestRejected] if the item count or aggregate size of the items
+  /// in the manifest exceeds session limits, or if any item specifies a negative size.
+  void checkLimits(QhtpManifest manifest) {
+    if (manifest.items.length > AppConstants.qhtpMaxFileCount) {
+      throw ManifestRejected(
+          'Manifest contains ${manifest.items.length} items; this transfer '
+          'accepts at most ${AppConstants.qhtpMaxFileCount}.');
+    }
+    int totalBytes = 0;
+    for (final item in manifest.items) {
+      if (item.size < 0) {
+        throw const ManifestRejected('An item in the manifest has a negative size.');
+      }
+      totalBytes += item.size;
+      if (totalBytes > AppConstants.qhtpMaxSessionBytes) {
+        throw const ManifestRejected(
+            'The total size of items in the manifest exceeds the maximum session limit.');
+      }
+    }
+  }
+
+  /// All checks, in the order they get cheaper to run: size first, since it
   /// runs on bytes and short-circuits parsing entirely.
   void check({required int bodyBytes, required QhtpManifest manifest}) {
     checkSize(bodyBytes);
+    checkLimits(manifest);
     checkPaths(manifest);
   }
 }
