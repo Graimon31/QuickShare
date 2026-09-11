@@ -103,7 +103,7 @@ class InvitationSender {
       return const InvitationResult(
           InvitationOutcome.unreachable, 'no answer in time');
     } on SocketException catch (e) {
-      if (port != InvitationListener.defaultPort) {
+      if (port != InvitationListener.defaultPort && !address.isLoopback) {
         AppLogger.info(
           'Invitation to $address:$port unreachable ($e), retrying on default port ${InvitationListener.defaultPort}',
           tag: 'INVITE',

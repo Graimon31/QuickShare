@@ -294,7 +294,7 @@ class LanDiscoveryService {
 
   /// How often to go back over the browser's list. Fast enough that a device
   /// somebody just opened shows up while they are still looking at the screen.
-  static const Duration reconcileInterval = Duration(seconds: 2);
+  static const Duration reconcileInterval = Duration(seconds: 3);
   final StreamController<List<DiscoveredPeer>> _peersController =
       StreamController<List<DiscoveredPeer>>.broadcast();
 
@@ -574,9 +574,20 @@ class LanDiscoveryService {
       }
     }
 
-    // Anything the browser has dropped goes too, in case a "lost" event was
-    // missed while a resolve was in flight.
-    final gone = _peers.keys.where((id) => !seen.contains(id)).toList();
+    // Before removing any peer that wasn't seen in this pass, verify if it is
+    // still answering on TCP. A dropped mDNS resolve or busy responder must not
+    // drop a device that is right here and answering on its socket.
+    final gone = <String>[];
+    for (final id in _peers.keys) {
+      if (seen.contains(id)) continue;
+      final peer = _peers[id];
+      if (peer != null && await stillThere(peer)) {
+        seen.add(id);
+        continue;
+      }
+      gone.add(id);
+    }
+
     for (final id in gone) {
       final gonePeer = _peers.remove(id);
       _strikes.remove(id);
@@ -699,6 +710,15 @@ class LanDiscoveryService {
     } catch (_) {
       // Gone again, or the responder is busy.
     }
+    // If resolve failed, check if we already have this peer resolved in _peers
+    for (final existing in _peers.values) {
+      final prefix = existing.id.length >= 6 ? existing.id.substring(0, 6) : existing.id;
+      final sName = service.name ?? '';
+      if (sName.startsWith(existing.name) || sName.contains(prefix)) {
+        return existing;
+      }
+    }
+
     var fallback = DiscoveryAnnouncement.peerFrom(service);
     if (fallback != null && fallback.invitePort > 0 && !(await _answersOn(fallback.address, fallback.invitePort))) {
       if (await _answersOn(fallback.address, InvitationListener.defaultPort)) {
