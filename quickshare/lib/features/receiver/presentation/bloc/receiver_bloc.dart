@@ -3,6 +3,7 @@ import 'dart:io'
     show Directory, File, FileSystemEntity, FileSystemException;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:meta/meta.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:quickshare/core/errors/failures.dart';
@@ -213,6 +214,14 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   /// already displayed is noise, not news.
   double _progressFloor = 0;
   int _transferAttempt = 0;
+  WebRtcReceiverTransport? _serverlessTransport;
+  final WebRtcReceiverTransport Function()? _serverlessTransportFactory;
+
+  @visibleForTesting
+  WebRtcReceiverTransport? get serverlessTransport => _serverlessTransport;
+  @visibleForTesting
+  set serverlessTransport(WebRtcReceiverTransport? value) =>
+      _serverlessTransport = value;
 
   /// Holds the transfer's place while the user is looking at something else.
   final TransferInterruptionGuard _interruption;
@@ -252,7 +261,9 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     required this.downloadFileUseCase,
     required this.repository,
     TransferInterruptionGuard? interruptionGuard,
-  })  : _interruption = interruptionGuard ?? TransferInterruptionGuard(),
+    WebRtcReceiverTransport Function()? serverlessTransportFactory,
+  })  : _serverlessTransportFactory = serverlessTransportFactory,
+        _interruption = interruptionGuard ?? TransferInterruptionGuard(),
         super(ReceiverInitial()) {
     on<StartScanning>((event, emit) => emit(Scanning()));
 
@@ -516,6 +527,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     on<CancelDownload>((event, emit) {
       _transferAttempt++;
       repository.cancelDownload();
+      unawaited(_serverlessTransport?.cancel());
+      _serverlessTransport = null;
       _currentPayload = null;
       emit(ReceiverInitial());
     });
@@ -554,14 +567,19 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     final channel = buildRendezvousChannel();
     StreamSubscription<WebRtcReceiveProgress>? progressSub;
     ReceiveDestination? dest;
+    WebRtcReceiverTransport? transport;
+    final attempt = _transferAttempt;
     try {
       final qr = ServerlessQr.decode(payload.sdpOffer!);
       final topic = await qr.topic;
-      final transport = WebRtcReceiverTransport();
+      transport =
+          _serverlessTransportFactory?.call() ?? WebRtcReceiverTransport();
+      _serverlessTransport = transport;
 
       // Without this the screen sat on "Connecting" for the whole transfer:
       // the transport reported progress and nobody was listening.
       progressSub = transport.progressStream.listen((p) {
+        if (attempt != _transferAttempt) return;
         if (p.phase == 'transferring') {
           add(DownloadProgressUpdate(p.received, p.total, p.fileName));
         }
@@ -577,6 +595,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       // is nothing a staging copy would buy. A phone has no such folder and
       // still lands in the cache for the completion screen to place.
       dest = await ReceiveDestination.resolve();
+      if (attempt != _transferAttempt) return;
 
       await transport.receiveWithSdpOffer(
         qr.offer.toSdp(isOffer: true),
@@ -591,6 +610,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
           await channel.publish(topic, sealed);
         },
       );
+
+      if (attempt != _transferAttempt || _currentPayload == null) return;
 
       if (dest.placed) {
         // Already at its final home: report what the transport wrote, don't
@@ -616,6 +637,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         ));
       }
     } catch (e, st) {
+      if (attempt != _transferAttempt) return;
       // A cancellation is not a fault, and calling it one sends the user
       // looking for a network problem that never existed. A genuine
       // connection failure still reads as one.
@@ -629,6 +651,9 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         emit(ReceiverError('Serverless transfer failed: $e'));
       }
     } finally {
+      if (_serverlessTransport == transport) {
+        _serverlessTransport = null;
+      }
       await progressSub?.cancel();
       await channel.close();
       await dest?.release();

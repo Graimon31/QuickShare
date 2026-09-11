@@ -7,8 +7,11 @@ import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/core/errors/failures.dart';
 
+import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
+
 class MockDownloadFileUseCase extends Mock implements DownloadFileUseCase {}
 class MockReceiverRepository extends Mock implements ReceiverRepository {}
+class MockWebRtcReceiverTransport extends Mock implements WebRtcReceiverTransport {}
 
 void main() {
   late ReceiverBloc receiverBloc;
@@ -135,5 +138,22 @@ void main() {
 
     await expectation;
     verify(() => mockReceiverRepository.cancelDownload()).called(1);
+  });
+
+  test('CancelDownload cancels active serverless transport', () async {
+    final mockTransport = MockWebRtcReceiverTransport();
+    when(() => mockTransport.cancel()).thenAnswer((_) async {});
+    when(() => mockReceiverRepository.cancelDownload()).thenReturn(null);
+
+    receiverBloc.serverlessTransport = mockTransport;
+    receiverBloc.add(CancelDownload());
+
+    await expectLater(
+      receiverBloc.stream,
+      emits(ReceiverInitial()),
+    );
+
+    verify(() => mockTransport.cancel()).called(1);
+    expect(receiverBloc.serverlessTransport, isNull);
   });
 }
