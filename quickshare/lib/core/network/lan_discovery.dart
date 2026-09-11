@@ -301,7 +301,7 @@ class LanDiscoveryService {
   /// How long a device has to accept a connection before it is not counted as
   /// answering. A listening socket on the same network answers in about a
   /// millisecond; this is the budget for a lost packet, not for a slow device.
-  static const Duration reachabilityBudget = Duration(milliseconds: 800);
+  static const Duration reachabilityBudget = Duration(milliseconds: 600);
 
   /// Missed answers before a device leaves the list.
   ///
@@ -312,8 +312,6 @@ class LanDiscoveryService {
   /// Consecutive probes a device has failed, by id.
   final Map<String, int> _strikes = {};
 
-  /// Asks whether anything is listening. Injected by tests; the real one opens
-  /// a socket and closes it again.
   final Future<bool> Function(InternetAddress address, int port) _answersOn;
 
   LanDiscoveryService({
@@ -366,7 +364,7 @@ class LanDiscoveryService {
 
   bool get isRunning => _discovery != null;
 
-  /// Triggers an immediate reconcile pass to refresh the peer list.
+  /// Triggers an immediate discovery refresh across the network.
   Future<void> refresh() => _reconcileNow();
 
   /// Starts browsing, and announces [self] until [stop].
@@ -484,11 +482,15 @@ class LanDiscoveryService {
 
     switch (status) {
       case nsd.ServiceStatus.found:
-        _peers[peer.id] = peer;
+        // Stale mDNS records on discovery start fire 'found' events.
+        // Never put an unverified service directly into _peers without checking
+        // TCP reachability first; schedule a reconcile pass to probe it.
+        unawaited(_reconcileNow());
       case nsd.ServiceStatus.lost:
         _peers.remove(peer.id);
+        _strikes.remove(peer.id);
+        _emit();
     }
-    _emit();
   }
 
   /// True while a pass is in flight, so a responder slower than
@@ -541,7 +543,26 @@ class LanDiscoveryService {
     // So each one is asked. A device that answers on the port it published is
     // there; a device that does not is a leftover record, whatever the
     // responder still believes.
-    final answered = await Future.wait(candidates.map(stillThere));
+    final answered = await Future.wait(candidates.map((c) async {
+      // If we don't already have this peer active in _peers, it is a new or
+      // previously-dropped candidate. Require it to actually answer TCP right
+      // now before admitting it. Never grant grace strikes to dead candidates.
+      if (!_peers.containsKey(c.id)) {
+        final port = c.port > 0 ? c.port : c.invitePort;
+        if (port <= 0) return true;
+        if (c.address.isLoopback) return false;
+        final ok = (c.port > 0 && await _answersOn(c.address, c.port)) ||
+            (c.invitePort > 0 && await _answersOn(c.address, c.invitePort)) ||
+            (c.invitePort != InvitationListener.defaultPort &&
+                await _answersOn(c.address, InvitationListener.defaultPort));
+        if (ok) {
+          _strikes.remove(c.id);
+          return true;
+        }
+        return false;
+      }
+      return stillThere(c);
+    }));
 
     for (var i = 0; i < candidates.length; i++) {
       if (!answered[i]) continue;
@@ -700,13 +721,8 @@ class LanDiscoveryService {
           addresses: resolved.addresses,
         );
       }
-      var peer = DiscoveryAnnouncement.peerFrom(resolved);
+      final peer = DiscoveryAnnouncement.peerFrom(resolved);
       if (peer != null) {
-        if (peer.invitePort > 0 && !(await _answersOn(peer.address, peer.invitePort))) {
-          if (await _answersOn(peer.address, InvitationListener.defaultPort)) {
-            peer = peer.copyWith(invitePort: InvitationListener.defaultPort);
-          }
-        }
         return peer;
       }
     } catch (_) {
@@ -721,13 +737,7 @@ class LanDiscoveryService {
       }
     }
 
-    var fallback = DiscoveryAnnouncement.peerFrom(service);
-    if (fallback != null && fallback.invitePort > 0 && !(await _answersOn(fallback.address, fallback.invitePort))) {
-      if (await _answersOn(fallback.address, InvitationListener.defaultPort)) {
-        fallback = fallback.copyWith(invitePort: InvitationListener.defaultPort);
-      }
-    }
-    return fallback;
+    return DiscoveryAnnouncement.peerFrom(service);
   }
 
   Future<void> stop() async {
