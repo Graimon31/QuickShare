@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:path/path.dart' as p;
 
+import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
 
 void main() {
@@ -116,6 +119,54 @@ void main() {
     test('a path of nothing usable still lands somewhere', () {
       expect(p.basename(transport.resolveTargetPath('../../..', base.path)),
           equals('received_file'));
+    });
+  });
+
+  group('Important 11 & 16: discardInFlight and late cancellation', () {
+    late WebRtcReceiverTransport transport;
+    late Directory base;
+
+    setUp(() {
+      transport = WebRtcReceiverTransport();
+      base = Directory.systemTemp.createTempSync('qs_discard_test_');
+    });
+
+    tearDown(() {
+      try {
+        base.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+
+    test('_discardInFlight deletes only partial, never the completed final file', () async {
+      final finalFile = File(p.join(base.path, 'video.mp4'));
+      final partialFile = File(p.join(base.path, 'video.mp4.qs.partial'));
+
+      finalFile.writeAsStringSync('final video content');
+      partialFile.writeAsStringSync('partial content');
+
+      transport.setTargetPathForTesting(finalFile.path);
+
+      await transport.discardInFlightForTesting();
+
+      // Partial must be removed
+      expect(partialFile.existsSync(), isFalse);
+      // Final file MUST survive
+      expect(finalFile.existsSync(), isTrue);
+      expect(finalFile.readAsStringSync(), equals('final video content'));
+    });
+
+    test('cancelled message after session completion is ignored and does not fail', () {
+      transport.setSessionFinishedForTesting(true);
+
+      // Sending a cancelled frame when session is already finished
+      final cancelledMsg = RTCDataChannelMessage(
+        jsonEncode({'type': TransferProtocol.cancelled}),
+      );
+
+      transport.handleMessageForTesting(cancelledMsg);
+
+      // State must remain finished, not switched to failed
+      expect(transport.isSessionFinishedForTesting, isTrue);
     });
   });
 }

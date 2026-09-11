@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:universal_ble/universal_ble.dart';
@@ -414,18 +415,30 @@ class UniversalBleReceiverTransport {
     final raf = _raf;
     final partial = _partialPath;
     final finalPath = _targetPath;
+    final received = _fileReceivedBytes;
+    final total = _fileTotalBytes;
     _raf = null;
     _partialPath = null;
+    _targetPath = null;
     if (raf == null || partial == null || finalPath == null) return;
-    if (!_writtenPaths.contains(finalPath)) _writtenPaths.add(finalPath);
     try {
       raf.flushSync(); // fsync the bytes onto the device
       raf.closeSync();
+      if (total > 0 && received != total) {
+        throw StateError(
+            'Incomplete file: received $received of $total bytes for $finalPath');
+      }
       File(partial).renameSync(finalPath);
       await syncDirectory(p.dirname(finalPath));
+      if (!_writtenPaths.contains(finalPath)) _writtenPaths.add(finalPath);
     } catch (e) {
       AppLogger.warning('UniversalBleReceiver: could not seal $finalPath: $e',
           tag: 'BLE_RECEIVER');
+      try {
+        final f = File(partial);
+        if (f.existsSync()) f.deleteSync();
+      } catch (_) {}
+      rethrow;
     }
   }
 
@@ -438,7 +451,7 @@ class UniversalBleReceiverTransport {
         tag: 'BLE_RECEIVER');
     if (!_completion.isCompleted) {
       _completion.complete(
-          _writtenPaths.isNotEmpty ? _writtenPaths.first : (_targetPath ?? ''));
+          _writtenPaths.isNotEmpty ? _writtenPaths.first : '');
     }
     if (_targetDeviceId != null) {
       await _cleanup(_targetDeviceId!);
@@ -513,18 +526,19 @@ class UniversalBleReceiverTransport {
       _raf?.closeSync();
     } catch (_) {}
     _raf = null;
-    // A cancelled transfer leaves no debris: the in-flight partial and any
-    // final name it might already carry both go.
-    for (final path in [_partialPath, _targetPath]) {
-      if (path == null) continue;
-      final f = File(path);
+    // A cancelled transfer leaves no debris: only the in-flight partial is removed.
+    // Finished files that were already sealed belong to the user and are never deleted.
+    final partial = _partialPath;
+    _partialPath = null;
+    _targetPath = null;
+    if (partial != null) {
+      final f = File(partial);
       if (f.existsSync()) {
         try {
           f.deleteSync();
         } catch (_) {}
       }
     }
-    _partialPath = null;
     // Only a connect actually in flight has anyone listening on this future;
     // erroring it otherwise is an unhandled async error, not a cancellation
     // anyone can act on.
@@ -534,6 +548,24 @@ class UniversalBleReceiverTransport {
     if (_targetDeviceId != null) {
       await _cleanup(_targetDeviceId!);
     }
+  }
+
+  @visibleForTesting
+  Future<void> sealCurrentFileForTesting() => _sealCurrentFile();
+
+  @visibleForTesting
+  void setPathsForTesting({
+    RandomAccessFile? raf,
+    String? partialPath,
+    String? targetPath,
+    int fileReceivedBytes = 0,
+    int fileTotalBytes = 0,
+  }) {
+    _raf = raf;
+    _partialPath = partialPath;
+    _targetPath = targetPath;
+    _fileReceivedBytes = fileReceivedBytes;
+    _fileTotalBytes = fileTotalBytes;
   }
 
   Future<void> dispose() async {

@@ -48,3 +48,5 @@ yarn-error.log*
 
 # Environment & Temporary files
 *.log
+.qwen/
+*_result.txt

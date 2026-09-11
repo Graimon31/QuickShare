@@ -437,6 +437,8 @@ class WebRtcReceiverTransport {
       final data = jsonDecode(message.text) as Map<String, dynamic>;
       final type = data['type'] as String?;
 
+      if (_sessionFinished && type != TransferProtocol.complete) return;
+
       switch (type) {
         case TransferProtocol.manifest:
           _openSession(TransferProtocol.parseManifest(data));
@@ -672,13 +674,11 @@ class WebRtcReceiverTransport {
         } catch (_) {}
       }
     } else if (_targetPath != null) {
-      for (final path in [_targetPath!, '$_targetPath$kPartialSuffix']) {
-        final f = File(path);
-        if (f.existsSync()) {
-          try {
-            await f.delete();
-          } catch (_) {}
-        }
+      final partial = File('$_targetPath$kPartialSuffix');
+      if (partial.existsSync()) {
+        try {
+          await partial.delete();
+        } catch (_) {}
       }
     }
   }
@@ -869,6 +869,7 @@ class WebRtcReceiverTransport {
 
   void _fail(String reason) {
     debugPrint('WebRTC receive failed: $reason');
+    unawaited(_discardInFlight());
     _statusController.add(TransferStatus.failed);
     _emit('failed', detail: reason);
     if (!_completion.isCompleted) {
@@ -902,4 +903,24 @@ class WebRtcReceiverTransport {
     }
     await _cleanup();
   }
+
+  @visibleForTesting
+  Future<void> discardInFlightForTesting() => _discardInFlight();
+
+  @visibleForTesting
+  void setTargetPathForTesting(String? path) {
+    _targetPath = path;
+  }
+
+  @visibleForTesting
+  void setSessionFinishedForTesting(bool finished) {
+    _sessionFinished = finished;
+  }
+
+  @visibleForTesting
+  bool get isSessionFinishedForTesting => _sessionFinished;
+
+  @visibleForTesting
+  void handleMessageForTesting(RTCDataChannelMessage message) =>
+      _processMessage(message);
 }

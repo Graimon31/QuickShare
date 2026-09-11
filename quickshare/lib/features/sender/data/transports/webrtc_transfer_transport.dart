@@ -386,15 +386,19 @@ class WebRtcTransferTransport implements TransferTransport {
                 ? (item.size - fileSent)
                 : chunkSize;
             final chunk = await raf.read(bytesToRead);
+            if (chunk.isEmpty) {
+              throw StateError('${files[index].path} changed while sending '
+                  '($fileSent of ${item.size} bytes read)');
+            }
 
             final payload = item.compressed
                 ? Uint8List.fromList(GZipEncoder().encode(chunk)!)
-                : Uint8List.fromList(chunk);
+                : chunk;
 
             _dataChannel!.send(RTCDataChannelMessage.fromBinary(payload));
             _queuedBytes += payload.length;
-            fileSent += bytesToRead;
-            sessionSent += bytesToRead;
+            fileSent += chunk.length;
+            sessionSent += chunk.length;
 
             if (sessionBytes > 0 && _progressThrottle.allow()) {
               _progressController.add(sessionSent / sessionBytes);
