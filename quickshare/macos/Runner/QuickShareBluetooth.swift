@@ -430,10 +430,8 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         // never a slice of the token.
         if let publicId, !publicId.isEmpty {
             pendingDeviceName = "QuickShare-\(publicId)"
-        } else if let sessionToken, !sessionToken.isEmpty {
-            pendingDeviceName = "QuickShare-\(String(sessionToken.prefix(8)))"
         } else {
-            pendingDeviceName = (fileName as NSString).lastPathComponent
+            pendingDeviceName = "QuickShare-directdrop"
         }
     }
 

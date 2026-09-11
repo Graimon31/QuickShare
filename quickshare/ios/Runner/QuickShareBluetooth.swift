@@ -455,7 +455,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     if let publicId, !publicId.isEmpty {
       pendingDeviceName = "QuickShare-\(publicId)"
     } else {
-      pendingDeviceName = sessionToken.map { "QuickShare-\(String($0.prefix(8)))" } ?? "QuickShare"
+      pendingDeviceName = "QuickShare-directdrop"
     }
     peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
   }

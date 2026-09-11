@@ -39,6 +39,13 @@ class BluetoothTransferTransport implements TransferTransport {
   static const _dataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
   static const _cccdUuid = '00002902-0000-1000-8000-00805F9B34FB';
 
+  /// The peripheral local name to advertise over BLE.
+  ///
+  /// Safe to broadcast: carries only the non-secret public identifier, never the
+  /// authorization token or its prefix.
+  static String bleAdvertisedName({String publicId = ''}) =>
+      'QuickShare-${publicId.isNotEmpty ? publicId : 'directdrop'}';
+
   final _progressController = StreamController<double>.broadcast();
   final _statusController = StreamController<TransferStatus>.broadcast();
   final _universalSubscriptions = <StreamSubscription<dynamic>>[];
@@ -366,6 +373,7 @@ class BluetoothTransferTransport implements TransferTransport {
       await _linuxSender!.start(
         session,
         token,
+        publicId: publicId,
         onProgress: (sent, total) {
           if (total > 0) _progressController.add(sent / total);
         },
@@ -460,9 +468,7 @@ class BluetoothTransferTransport implements TransferTransport {
     final isWindows = defaultTargetPlatform == TargetPlatform.windows;
     await UniversalBlePeripheral.startAdvertising(
       services: [_serviceUuid],
-      localName: isWindows
-          ? null
-          : 'QuickShare-${publicId.isNotEmpty ? publicId : token.substring(0, 8)}',
+      localName: isWindows ? null : bleAdvertisedName(publicId: publicId),
       platformConfig: PeripheralPlatformConfig(
         android: PeripheralAndroidOptions(
           addServicesInScanResponse: false,

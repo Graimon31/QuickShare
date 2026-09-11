@@ -103,13 +103,15 @@ class SessionCode {
     return buffer.toString();
   }
 
-  /// A public name for this session, safe to broadcast.
+  /// A public name for this session, used as a locator.
   ///
-  /// The code itself must never go on the wire: it derives the session token,
-  /// so publishing it would hand the session to everyone in range. This is a
-  /// separate derivation with no way back to the code, which lets a receiver
-  /// who *was* told the code recognise the right sender among several without
-  /// telling anyone who was not.
+  /// Note on threat model: with 10 decimal digits (~33.2 bits of entropy),
+  /// a public identifier derived via SHA-256 can be brute-forced offline in seconds
+  /// if observed by an attacker on the same L2 network. Therefore, [publicId] acts
+  /// strictly as a discovery locator. For high-security channels (such as QR flow),
+  /// the session token must be generated independently using 128-bit cryptographically
+  /// secure randomness, breaking the link between the advertised code/locator and the
+  /// authentication token.
   String get publicId => _deriveString('cid', 8);
 
   /// What every network this app raises is called, before the derived part.

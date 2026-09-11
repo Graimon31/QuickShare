@@ -5,10 +5,13 @@
 // token. Earlier builds advertised `QuickShare-<first eight characters of the
 // token>`, which put part of the session's own secret in a packet anyone in
 // radio range can read — and it only worked as a filter because of that.
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 
 void main() {
@@ -41,24 +44,38 @@ void main() {
   });
 
   group('the advertised name', () {
-    /// Exactly what the transport and both native bridges build.
-    String advertisedName(String token, String publicId) =>
-        'QuickShare-${publicId.isNotEmpty ? publicId : token.substring(0, 8)}';
-
     test('carries the public half, not the token', () {
       final code = SessionCode.generate();
-      final name = advertisedName(code.sessionToken, code.publicId);
+      final name = BluetoothTransferTransport.bleAdvertisedName(
+          publicId: code.publicId);
 
       expect(name, equals('QuickShare-${code.publicId}'));
       expect(name.contains(code.sessionToken.substring(0, 8)), isFalse,
           reason: 'the token must not be readable off the air');
     });
 
-    test('falls back to the token for a session without a code', () {
-      // What an older sender still does. The receiver has to keep matching it
-      // or this build simply cannot see those devices.
-      final name = advertisedName('0123456789abcdef', '');
-      expect(name, equals('QuickShare-01234567'));
+    test('falls back to safe directdrop name for a session without a code', () {
+      final name = BluetoothTransferTransport.bleAdvertisedName(publicId: '');
+      expect(name, equals('QuickShare-directdrop'));
+      expect(name.contains('token'), isFalse);
+    });
+
+    test('bridges never leak token prefix in advertised names', () {
+      final linuxBridge =
+          File('lib/features/sender/data/transports/linux_bluetooth_sender.dart')
+              .readAsStringSync();
+      final transport = File(
+              'lib/features/sender/data/transports/bluetooth_transfer_transport.dart')
+          .readAsStringSync();
+      final iosSwift =
+          File('ios/Runner/QuickShareBluetooth.swift').readAsStringSync();
+      final macSwift =
+          File('macos/Runner/QuickShareBluetooth.swift').readAsStringSync();
+
+      expect(linuxBridge, isNot(contains('token.substring(0, 8)')));
+      expect(transport, isNot(contains('token.substring(0, 8)')));
+      expect(iosSwift, isNot(contains('sessionToken.prefix(8)')));
+      expect(macSwift, isNot(contains('sessionToken.prefix(8)')));
     });
   });
 

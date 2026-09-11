@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:equatable/equatable.dart';
@@ -1003,14 +1004,17 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     emit(const ServerStarting());
     _subscribeToWifiProgress();
 
-    // One code decides the session's token, so somebody who was read the
-    // digits can open it without anything else travelling between the two
-    // devices.
-    final sessionCode = SessionCode.generate();
+    // Unlink the session token from the 33-bit numeric code for the QR flow (C1).
+    // The QR token is 128 bits of cryptographically secure randomness, preventing
+    // an eavesdropper from recovering the authentication token via mDNS multicast.
+    final random = Random.secure();
+    final qrAuthToken = List<int>.generate(16, (_) => random.nextInt(256))
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
 
     final result = await repository.startQhtpTransfer(
       event.paths,
-      authToken: sessionCode.sessionToken,
+      authToken: qrAuthToken,
       // Events, not `emit`. The walk no longer runs inside this handler's
       // await — the QR goes up first and the walk finishes behind it — so
       // by the time the last of these arrives this emitter is closed.
@@ -1064,7 +1068,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
               qrData,
               session,
               mode,
-              code: sessionCode,
+              code: null,
               itemCount: session.itemCount,
               totalBytes: session.fileMetadata.size,
               // Zero on both counts until the walk behind this lands, and
