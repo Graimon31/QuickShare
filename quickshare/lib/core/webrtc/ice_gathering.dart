@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:meta/meta.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -65,49 +66,73 @@ enum IcePathKind {
 Future<IcePathKind> selectedPathKind(RTCPeerConnection connection) async {
   try {
     final reports = await connection.getStats();
-
-    String? localCandidateId;
-    for (final report in reports) {
-      if (report.type != 'candidate-pair') continue;
-      final values = report.values;
-      final state = values['state'];
-      final nominated = values['nominated'];
-      final selected = values['selected'];
-      if (state == 'succeeded' && (nominated == true || selected == true)) {
-        localCandidateId = values['localCandidateId'] as String?;
-        break;
-      }
-    }
-
-    // Some implementations do not mark a pair nominated on a data-only
-    // connection; fall back to any succeeded pair.
-    if (localCandidateId == null) {
-      for (final report in reports) {
-        if (report.type == 'candidate-pair' &&
-            report.values['state'] == 'succeeded') {
-          localCandidateId = report.values['localCandidateId'] as String?;
-          break;
-        }
-      }
-    }
-    if (localCandidateId == null) return IcePathKind.unknown;
-
-    for (final report in reports) {
-      if (report.id != localCandidateId) continue;
-      final type = report.values['candidateType'] as String?;
-      return switch (type) {
-        'relay' => IcePathKind.relayed,
-        'srflx' || 'prflx' => IcePathKind.peerToPeer,
-        'host' => IcePathKind.direct,
-        _ => IcePathKind.unknown,
-      };
-    }
-    return IcePathKind.unknown;
+    return pathKindFromStats(reports);
   } catch (e) {
     AppLogger.warning('Could not read the selected ICE pair: $e',
         tag: 'WEBRTC');
     return IcePathKind.unknown;
   }
+}
+
+/// Evaluates nominated/succeeded candidate pair stats to classify the ICE path.
+///
+/// Both local and remote candidate types are checked: if either side uses a
+/// relay (TURN), the entire connection is relayed across that TURN server and
+/// must be held to relay budget limits.
+@visibleForTesting
+IcePathKind pathKindFromStats(List<StatsReport> reports) {
+  String? localCandidateId;
+  String? remoteCandidateId;
+  for (final report in reports) {
+    if (report.type != 'candidate-pair') continue;
+    final values = report.values;
+    final state = values['state'];
+    final nominated = values['nominated'];
+    final selected = values['selected'];
+    if (state == 'succeeded' && (nominated == true || selected == true)) {
+      localCandidateId = values['localCandidateId'] as String?;
+      remoteCandidateId = values['remoteCandidateId'] as String?;
+      break;
+    }
+  }
+
+  // Some implementations do not mark a pair nominated on a data-only
+  // connection; fall back to any succeeded pair.
+  if (localCandidateId == null) {
+    for (final report in reports) {
+      if (report.type == 'candidate-pair' &&
+          report.values['state'] == 'succeeded') {
+        localCandidateId = report.values['localCandidateId'] as String?;
+        remoteCandidateId = report.values['remoteCandidateId'] as String?;
+        break;
+      }
+    }
+  }
+  if (localCandidateId == null) return IcePathKind.unknown;
+
+  String? localType;
+  String? remoteType;
+  for (final report in reports) {
+    if (report.id == localCandidateId) {
+      localType = report.values['candidateType'] as String?;
+    } else if (report.id == remoteCandidateId) {
+      remoteType = report.values['candidateType'] as String?;
+    }
+  }
+
+  if (localType == 'relay' || remoteType == 'relay') {
+    return IcePathKind.relayed;
+  }
+  if (localType == 'srflx' ||
+      localType == 'prflx' ||
+      remoteType == 'srflx' ||
+      remoteType == 'prflx') {
+    return IcePathKind.peerToPeer;
+  }
+  if (localType == 'host' && (remoteType == 'host' || remoteType == null)) {
+    return IcePathKind.direct;
+  }
+  return IcePathKind.unknown;
 }
 
 /// Whether a session of [sessionBytes] may proceed over [path].

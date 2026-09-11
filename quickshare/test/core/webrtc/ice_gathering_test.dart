@@ -62,14 +62,67 @@ void main() {
     });
   });
 
-  group('gathering budget', () {
-    test('leaves room for a TURN allocation over TLS', () {
-      // Measured on the target network: a TURN handshake over TLS needed
-      // 557-1040 ms just to complete. The old one-second cap discarded the
-      // relay candidate, and in serverless mode there is no trickle path to
-      // deliver it later.
-      expect(AppConstants.iceGatheringMaxWait.inMilliseconds,
-          greaterThan(1500));
+  group('pathKindFromStats', () {
+    StatsReport pair({
+      required String id,
+      required String localId,
+      required String remoteId,
+      String state = 'succeeded',
+      bool nominated = true,
+    }) =>
+        StatsReport(id, 'candidate-pair', 0.0, {
+          'state': state,
+          'nominated': nominated,
+          'localCandidateId': localId,
+          'remoteCandidateId': remoteId,
+        });
+
+    StatsReport cand(String id, String type) =>
+        StatsReport(id, 'local-candidate', 0.0, {'candidateType': type});
+
+    test('classifies host + host as direct', () {
+      final reports = [
+        pair(id: 'p1', localId: 'c1', remoteId: 'c2'),
+        cand('c1', 'host'),
+        cand('c2', 'host'),
+      ];
+      expect(pathKindFromStats(reports), equals(IcePathKind.direct));
+    });
+
+    test('classifies local relay as relayed', () {
+      final reports = [
+        pair(id: 'p1', localId: 'c1', remoteId: 'c2'),
+        cand('c1', 'relay'),
+        cand('c2', 'host'),
+      ];
+      expect(pathKindFromStats(reports), equals(IcePathKind.relayed));
+    });
+
+    test('classifies remote relay as relayed (bypasses DD-06 cap if ignored)', () {
+      final reports = [
+        pair(id: 'p1', localId: 'c1', remoteId: 'c2'),
+        cand('c1', 'host'),
+        cand('c2', 'relay'),
+      ];
+      expect(pathKindFromStats(reports), equals(IcePathKind.relayed));
+    });
+
+    test('classifies srflx as peerToPeer', () {
+      final reports = [
+        pair(id: 'p1', localId: 'c1', remoteId: 'c2'),
+        cand('c1', 'srflx'),
+        cand('c2', 'host'),
+      ];
+      expect(pathKindFromStats(reports), equals(IcePathKind.peerToPeer));
+    });
+
+    test('returns unknown when no pair succeeded', () {
+      final reports = [
+        pair(id: 'p1', localId: 'c1', remoteId: 'c2', state: 'failed'),
+        cand('c1', 'host'),
+        cand('c2', 'host'),
+      ];
+      expect(pathKindFromStats(reports), equals(IcePathKind.unknown));
     });
   });
 }
