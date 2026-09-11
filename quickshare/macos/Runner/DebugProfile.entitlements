@@ -21,6 +21,9 @@
 	<!-- CoreWLAN: macOS 14+ gates the nearby-network list behind location. -->
 	<key>com.apple.security.personal-information.location</key>
 	<true/>
+	<!-- Security-scoped bookmarks for custom save folder. -->
+	<key>com.apple.security.files.bookmarks.app-scope</key>
+	<true/>
 	<!-- CoreBluetooth: advertise/scan for the LAN-free transfer mode. -->
 	<key>com.apple.security.device.bluetooth</key>
 	<true/>

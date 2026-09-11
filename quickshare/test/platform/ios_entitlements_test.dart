@@ -23,7 +23,10 @@ void main() {
     final file = File('ios/Runner/Runner.entitlements');
     expect(file.existsSync(), isTrue,
         reason: 'ios/Runner/Runner.entitlements is missing');
-    expect(file.readAsStringSync(), contains(entitlement));
+    final raw = file.readAsStringSync();
+    final stripped =
+        raw.replaceAll(RegExp(r'<!--.*?-->', multiLine: true, dotAll: true), '');
+    expect(stripped, contains('<key>$entitlement</key>'));
   });
 
   test('every build configuration signs with it', () {
