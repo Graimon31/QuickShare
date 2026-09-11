@@ -87,6 +87,22 @@ class IsolatedQhtpReceiver {
           if (!done.isCompleted) {
             done.complete(Left(NetworkFailure(crash.message)));
           }
+        case final List<dynamic> errorAndStack:
+          if (!done.isCompleted) {
+            final errorStr = errorAndStack.isNotEmpty
+                ? '${errorAndStack[0]}'
+                : 'Unknown worker isolate error';
+            AppLogger.error('Worker isolate threw uncaught error: $errorStr',
+                tag: 'QHTP');
+            done.complete(Left(NetworkFailure('Worker isolate error: $errorStr')));
+          }
+        case null:
+          if (!done.isCompleted) {
+            AppLogger.warning('Worker isolate exited before returning result',
+                tag: 'QHTP');
+            done.complete(
+                Left(NetworkFailure('Worker isolate exited unexpectedly')));
+          }
       }
     });
 

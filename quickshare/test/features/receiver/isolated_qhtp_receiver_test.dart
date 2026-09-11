@@ -166,4 +166,22 @@ void main() {
     final result = await done.timeout(const Duration(seconds: 60));
     expect(result.isLeft, isTrue);
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('unreachable target completes with failure instead of hanging', () async {
+    final payload = const QRPayload(
+      version: 2,
+      ip: '127.0.0.1',
+      port: 1, // Closed / unreachable port
+      token: 'test-token',
+      fileName: 'test.bin',
+      fileSize: 1024,
+      tlsFingerprint: 'test-fingerprint',
+    );
+    final worker = receiver();
+    final result = await worker
+        .downloadSession(payload: payload, targetBaseDir: target.path)
+        .timeout(const Duration(seconds: 10));
+
+    expect(result.isLeft, isTrue);
+  });
 }
