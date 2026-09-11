@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:go_router/go_router.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
@@ -45,7 +46,12 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
           },
         ),
       ),
-      body: BlocBuilder<SenderBloc, SenderState>(
+      body: BlocConsumer<SenderBloc, SenderState>(
+        listener: (context, state) {
+          if (state is Transferring) {
+            context.go('/send/progress');
+          }
+        },
         builder: (context, state) {
           if (state is HotspotStarting) {
             return _Busy(message: l10n.localNetCreating);

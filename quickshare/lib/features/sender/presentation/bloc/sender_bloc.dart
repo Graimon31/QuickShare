@@ -926,7 +926,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _sessionDisplay = null;
     _sessionFolderName = null;
     _indexedSessionBytes = null;
-    final mode = event.mode ?? _selectedMode;
+    if (event.mode != null) {
+      _selectedMode = event.mode!;
+    }
+    final mode = _selectedMode;
     if (mode == TransportType.internet || mode == TransportType.bluetooth) {
       if (event.paths.isEmpty) {
         emit(const SenderError('No files or folders selected.',
@@ -1099,120 +1102,128 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     if (_directLinkStarted) return;
     _directLinkStarted = true;
 
-    final transport = _activeBluetoothTransport;
-    final code = _bluetoothSessionCode;
-    final paths = _currentPaths;
-    if (transport == null || code == null || paths == null || paths.isEmpty) {
-      return;
-    }
+    try {
+      final transport = _activeBluetoothTransport;
+      final code = _bluetoothSessionCode;
+      final paths = _currentPaths;
+      if (transport == null || code == null || paths == null || paths.isEmpty) {
+        return;
+      }
 
-    // The session comes up before the link, not after. The peer-to-peer rung
-    // forwards a port, so there has to be something listening on it by the
-    // time that rung is tried — and a server bound to every interface is
-    // waiting on the hotspot's the moment it appears, so nothing is lost by
-    // starting here. The same token the Bluetooth session advertised: the
-    // receiver has no other, and a session minting its own would answer 401
-    // to the one device it exists to serve.
-    final started = await repository.startQhtpTransfer(
-      paths,
-      authToken: code.sessionToken,
-      // This screen already knows the counts — `expandSelection` walked the
-      // same selection before the radio started advertising — so only the
-      // two facts it does not have are wired up: the real size for the
-      // journal, and a walk that turns out to be unreadable.
-      onIndexed: (_, bytes) {
-        if (!isClosed) _indexedSessionBytes = bytes;
-      },
-      onIndexFailed: (error) {
-        if (isClosed) return;
-        add(TransferFailed('Could not read the selection: $error',
-            code: FailureCode.selectionUnreadable));
-      },
-    );
-    // `Either` here is the project's own and not sealed, so flow analysis
-    // cannot see that one of the two branches always assigns.
-    final session = started.fold<TransferSession?>((_) => null, (s) => s);
-    if (session == null) {
-      add(TransferFailed(started.fold((f) => f.message, (_) => ''),
-          code: started.fold((f) => f.code, (_) => null)));
-      return;
-    }
+      // The session comes up before the link, not after. The peer-to-peer rung
+      // forwards a port, so there has to be something listening on it by the
+      // time that rung is tried — and a server bound to every interface is
+      // waiting on the hotspot's the moment it appears, so nothing is lost by
+      // starting here. The same token the Bluetooth session advertised: the
+      // receiver has no other, and a session minting its own would answer 401
+      // to the one device it exists to serve.
+      final started = await repository.startQhtpTransfer(
+        paths,
+        authToken: code.sessionToken,
+        // This screen already knows the counts — `expandSelection` walked the
+        // same selection before the radio started advertising — so only the
+        // two facts it does not have are wired up: the real size for the
+        // journal, and a walk that turns out to be unreadable.
+        onIndexed: (_, bytes) {
+          if (!isClosed) _indexedSessionBytes = bytes;
+        },
+        onIndexFailed: (error) {
+          if (isClosed) return;
+          add(TransferFailed('Could not read the selection: $error',
+              code: FailureCode.selectionUnreadable));
+        },
+      );
+      // `Either` here is the project's own and not sealed, so flow analysis
+      // cannot see that one of the two branches always assigns.
+      final session = started.fold<TransferSession?>((_) => null, (s) => s);
+      if (session == null) {
+        add(TransferFailed(started.fold((f) => f.message, (_) => ''),
+            code: started.fold((f) => f.code, (_) => null)));
+        return;
+      }
 
-    final outcome = await DirectLinkCoordinator(
-      driver: _directLinkDriver,
-      signal: transport.linkSignal,
-    ).runSender(code, servingPort: session.serverPort);
+      final outcome = await DirectLinkCoordinator(
+        driver: _directLinkDriver,
+        signal: transport.linkSignal,
+      ).runSender(code, servingPort: session.serverPort);
 
-    // The session may have been cancelled while the ladder climbed.
-    if (!identical(transport, _activeBluetoothTransport)) {
-      await repository.stopServer(force: true);
-      return;
-    }
-
-    // The session speaks TLS with a certificate signed by nobody, so the
-    // receiver has to be told what to pin — the QR path names it and this one
-    // has no QR. Without it the pull is refused outright, which is how a
-    // Bluetooth transfer could complete its rendezvous and still move no
-    // bytes at all.
-    final fingerprint = repository.sessionTlsFingerprint;
-    if (fingerprint == null || fingerprint.isEmpty) {
-      await repository.stopServer(force: true);
-      add(const TransferFailed(
-          'The session started without a certificate, so the other device '
-          'has nothing to trust. Try again.',
-          code: FailureCode.sessionWithoutCertificate));
-      return;
-    }
-
-    /// Hands the receiver the address to pull from and starts reporting
-    /// progress, so the sender's own screen leaves the QR code behind.
-    Future<void> serveAt(String ip) async {
-      _sessionLocalAddress = '$ip:${session.serverPort}';
-      _fastPathSubscription?.cancel();
-      _fastPathSubscription = repository.transferProgress.listen((progress) {
-        add(TransferProgressEvent(progress));
-        if (progress >= 1.0) add(TransferCompleted());
-      });
-      await transport.sendLinkFrame({
-        'serve': LinkServeInfo(
-          ip: ip,
-          port: session.serverPort,
-          token: code.sessionToken,
-          tlsFingerprint: fingerprint,
-        ).toJson(),
-      });
-      AppLogger.info(
-          'Bluetooth rendezvous done; serving on the direct Wi-Fi link at '
-          '$ip:${session.serverPort}',
-          tag: 'SENDER');
-    }
-
-    switch (outcome) {
-      case DirectLinkUnavailable(message: final message, code: final code):
-        AppLogger.info('Bluetooth direct link unavailable: $message',
-            tag: 'SENDER');
+      // The session may have been cancelled while the ladder climbed.
+      if (!identical(transport, _activeBluetoothTransport)) {
         await repository.stopServer(force: true);
-        add(TransferFailed(message, code: code));
+        return;
+      }
 
-      case DirectLinkOverPeerLink():
-        // The link already forwards to this session's port, so the address
-        // the receiver needs is its own end of it — which it has, and which
-        // is loopback. Only the token has to travel.
-        await serveAt('127.0.0.1');
+      // The session speaks TLS with a certificate signed by nobody, so the
+      // receiver has to be told what to pin — the QR path names it and this one
+      // has no QR. Without it the pull is refused outright, which is how a
+      // Bluetooth transfer could complete its rendezvous and still move no
+      // bytes at all.
+      final fingerprint = repository.sessionTlsFingerprint;
+      if (fingerprint == null || fingerprint.isEmpty) {
+        await repository.stopServer(force: true);
+        add(const TransferFailed(
+            'The session started without a certificate, so the other device '
+            'has nothing to trust. Try again.',
+            code: FailureCode.sessionWithoutCertificate));
+        return;
+      }
 
-      case DirectLinkReady(credentials: final credentials, hosting: final hosting):
-        final ip = hosting
-            ? credentials.hostAddress
-            : await NetworkInfoService().getLocalIpAddress();
-        if (ip == null) {
+      /// Hands the receiver the address to pull from and starts reporting
+      /// progress, so the sender's own screen leaves the QR code behind.
+      Future<void> serveAt(String ip) async {
+        _sessionLocalAddress = '$ip:${session.serverPort}';
+        _fastPathSubscription?.cancel();
+        _fastPathSubscription = repository.transferProgress.listen((progress) {
+          add(TransferProgressEvent(progress));
+          if (progress >= 1.0) add(TransferCompleted());
+        });
+        await transport.sendLinkFrame({
+          'serve': LinkServeInfo(
+            ip: ip,
+            port: session.serverPort,
+            token: code.sessionToken,
+            tlsFingerprint: fingerprint,
+          ).toJson(),
+        });
+        AppLogger.info(
+            'Bluetooth rendezvous done; serving on the direct Wi-Fi link at '
+            '$ip:${session.serverPort}',
+            tag: 'SENDER');
+      }
+
+      switch (outcome) {
+        case DirectLinkUnavailable(message: final message, code: final code):
+          AppLogger.info('Bluetooth direct link unavailable: $message',
+              tag: 'SENDER');
           await repository.stopServer(force: true);
-          add(const TransferFailed(
-              'The link is up, but this device could not work out its '
-              'own address on it.',
-              code: FailureCode.linkWithoutAddress));
-          return;
-        }
-        await serveAt(ip);
+          add(TransferFailed(message, code: code));
+
+        case DirectLinkOverPeerLink():
+          // The link already forwards to this session's port, so the address
+          // the receiver needs is its own end of it — which it has, and which
+          // is loopback. Only the token has to travel.
+          await serveAt('127.0.0.1');
+
+        case DirectLinkReady(credentials: final credentials, hosting: final hosting):
+          final ip = hosting
+              ? credentials.hostAddress
+              : await NetworkInfoService().getLocalIpAddress();
+          if (ip == null) {
+            await repository.stopServer(force: true);
+            add(const TransferFailed(
+                'The link is up, but this device could not work out its '
+                'own address on it.',
+                code: FailureCode.linkWithoutAddress));
+            return;
+          }
+          await serveAt(ip);
+      }
+    } catch (e, st) {
+      AppLogger.error('Bluetooth direct link failed',
+          error: e, stackTrace: st, tag: 'SENDER');
+      await repository.stopServer(force: true);
+      add(TransferFailed('Failed to establish direct link: $e',
+          code: FailureCode.bluetoothTransferFailed));
     }
   }
 
@@ -1362,6 +1373,13 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         code: FailureCode.nothingToRestart));
   }
 
+  int get _sessionTotalBytes {
+    if (_sessionFiles != null && _sessionFiles!.isNotEmpty) {
+      return _sessionFiles!.fold<int>(0, (sum, f) => sum + f.size);
+    }
+    return _indexedSessionBytes ?? _currentFile?.size ?? 0;
+  }
+
   Future<void> _onTransferProgress(
       TransferProgressEvent event, Emitter<SenderState> emit) async {
     // The clock starts at the first byte that actually moves, not when the
@@ -1371,9 +1389,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _sendStartedAt ??= DateTime.now();
     if (state is QRReady ||
         state is BluetoothAdvertising ||
+        state is LocalNetworkReady ||
         state is Transferring) {
-      if (_currentFile == null) return;
-      final totalBytes = _currentFile!.size;
+      final totalBytes = _sessionTotalBytes;
+      if (totalBytes <= 0) return;
       final currentBytes = (event.progress * totalBytes).round();
       final now = DateTime.now();
 
@@ -1438,9 +1457,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // indexing server-side — but `_currentFile` there is the manifest's own
     // total size, set from the session the server actually opened, so it is
     // just as good a number and it is the one that was missing.
-    final bytes = (_sessionFiles != null && _sessionFiles!.isNotEmpty)
-        ? _sessionFiles!.fold<int>(0, (sum, f) => sum + f.size)
-        : (_indexedSessionBytes ?? _currentFile?.size ?? 0);
+    final bytes = _sessionTotalBytes;
 
     await _diagnostics.record(TransferReport(
       at: started,
