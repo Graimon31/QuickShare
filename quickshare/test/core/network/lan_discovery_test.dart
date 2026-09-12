@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nsd/nsd.dart' as nsd;
 
 import 'package:quickshare/core/network/lan_discovery.dart';
+import 'package:quickshare/core/network/network_info_service.dart';
 
 void main() {
   const announcement = DiscoveryAnnouncement(
@@ -174,5 +175,42 @@ void main() {
       expect(service.isRunning, isFalse);
       await service.dispose();
     });
+
+    test('local IP change during reconcile triggers announcement update with new IP in TXT', () async {
+      final fakeNet = _FakeNetworkInfoService();
+      DiscoveryAnnouncement? synced;
+      final service = LanDiscoveryService(
+        networkInfo: fakeNet,
+        onSelfUpdated: (a) => synced = a,
+      );
+
+      const initialAnnouncement = DiscoveryAnnouncement(
+        id: 'self-1',
+        name: 'My Mac',
+        platform: 'macos',
+        ipAddress: '192.168.1.50',
+      );
+      await service.update(initialAnnouncement);
+      expect(service.selfAnnouncement?.ipAddress, equals('192.168.1.50'));
+
+      // Simulate network change
+      fakeNet.ip = '192.168.1.99';
+
+      final fakeDiscovery = nsd.Discovery('d-1');
+      await service.reconcilePassForTest(fakeDiscovery);
+
+      expect(service.selfAnnouncement?.ipAddress, equals('192.168.1.99'));
+      expect(synced?.ipAddress, equals('192.168.1.99'));
+      final txt = service.selfAnnouncement!.toTxt();
+      expect(utf8.decode(txt['a']!), equals('192.168.1.99'));
+
+      await service.dispose();
+    });
   });
+}
+
+class _FakeNetworkInfoService extends Fake implements NetworkInfoService {
+  String? ip = '192.168.1.50';
+  @override
+  Future<String?> getLocalIpAddress() async => ip;
 }

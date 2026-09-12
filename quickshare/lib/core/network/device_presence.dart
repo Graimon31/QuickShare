@@ -41,7 +41,9 @@ class DevicePresence {
   Future<bool>? _startInFlight;
 
   DevicePresence({LanDiscoveryService? discovery})
-      : _discovery = discovery ?? LanDiscoveryService();
+      : _discovery = discovery ?? LanDiscoveryService() {
+    _discovery.onSelfUpdated = (updated) => _announcement = updated;
+  }
 
   Stream<List<DiscoveredPeer>> get peers => _discovery.peers;
 

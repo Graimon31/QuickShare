@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:nsd/nsd.dart' as nsd;
 
+import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/transfer/invitation_listener.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
@@ -317,12 +318,17 @@ class LanDiscoveryService {
   final Map<String, int> _strikes = {};
 
   final Future<bool> Function(InternetAddress address, int port) _answersOn;
+  final NetworkInfoService _networkInfo;
+  void Function(DiscoveryAnnouncement)? onSelfUpdated;
 
   LanDiscoveryService({
     String? serviceType,
     Future<bool> Function(InternetAddress address, int port)? answersOn,
+    NetworkInfoService? networkInfo,
+    this.onSelfUpdated,
   })  : type = serviceType ?? LanDiscoveryService.serviceType,
-        _answersOn = answersOn ?? _opensASocket;
+        _answersOn = answersOn ?? _opensASocket,
+        _networkInfo = networkInfo ?? NetworkInfoService();
 
   static Future<bool> _opensASocket(InternetAddress address, int port) async {
     try {
@@ -516,6 +522,13 @@ class LanDiscoveryService {
   ///
   /// The resolves go out together rather than one after another, so a pass
   /// costs one round trip however many devices are on the network.
+  @visibleForTesting
+  DiscoveryAnnouncement? get selfAnnouncement => _self;
+
+  @visibleForTesting
+  Future<void> reconcilePassForTest(nsd.Discovery discovery) =>
+      _reconcilePass(discovery);
+
   Future<void> _reconcileNow() async {
     final discovery = _discovery;
     if (discovery == null) return;
@@ -529,6 +542,36 @@ class LanDiscoveryService {
   }
 
   Future<void> _reconcilePass(nsd.Discovery discovery) async {
+    final self = _self;
+    if (self != null) {
+      try {
+        final currentIp = await _networkInfo.getLocalIpAddress();
+        if (currentIp != null &&
+            currentIp.isNotEmpty &&
+            currentIp != self.ipAddress) {
+          AppLogger.info(
+            'Local IP changed from ${self.ipAddress} to $currentIp, republishing announcement',
+            tag: 'DISCOVERY',
+          );
+          final updated = DiscoveryAnnouncement(
+            id: self.id,
+            name: self.name,
+            platform: self.platform,
+            ipAddress: currentIp,
+            port: self.port,
+            tlsFingerprint: self.tlsFingerprint,
+            invitePort: self.invitePort,
+            sessionPublicId: self.sessionPublicId,
+          );
+          await update(updated);
+          onSelfUpdated?.call(updated);
+        }
+      } catch (e) {
+        AppLogger.warning('Checking local IP during reconcile failed: $e',
+            tag: 'DISCOVERY');
+      }
+    }
+
     var changed = false;
     final seen = <String>{};
 
