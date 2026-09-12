@@ -899,7 +899,13 @@ class LocalHttpServer {
   Middleware _authMiddleware() {
     return (Handler innerHandler) {
       return (Request request) async {
-        _recordClientAddress(request);
+        final path = request.url.path;
+        if (path != 'v2/health') {
+          if (!_firstClient.isCompleted) _firstClient.complete();
+        }
+        if (path.startsWith('v2/files') || path == 'v2/invite/request') {
+          _recordClientAddress(request);
+        }
         // One route is unauthenticated, and it answers nothing about the
         // session: /v2/health says a server of this protocol is listening and
         // stops there. /info used to sit here too, and it is a name and a
@@ -999,9 +1005,6 @@ class LocalHttpServer {
     final info = request.context['shelf.io.connection_info'];
     if (info is HttpConnectionInfo) {
       _lastClientAddress = info.remoteAddress;
-    }
-    if (!_firstClient.isCompleted) {
-      _firstClient.complete();
     }
   }
 

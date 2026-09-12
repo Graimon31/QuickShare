@@ -6,6 +6,7 @@
 // second case; this drives a real loopback download and proves the
 // receiving side notices within a couple of seconds, not thirty.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -17,6 +18,7 @@ import 'package:path/path.dart' as p;
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
+import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/features/sender/data/indexer/file_indexer.dart';
 import 'package:quickshare/features/sender/data/server/local_http_server.dart';
@@ -132,7 +134,7 @@ void main() {
         reason: 'the transfer must not have been allowed to complete');
   });
 
-  test('waitForFirstClient returns true when client connects, false on timeout', () async {
+  test('health is not a first client; invite/request is', () async {
     final srv = LocalHttpServer();
     addTearDown(() => srv.stop());
     final emptyDir = await Directory.systemTemp.createTemp('qhtp_empty_');
@@ -142,23 +144,37 @@ void main() {
       paths: [emptyDir.path],
       includeChecksums: false,
     );
+    final sessionCode = SessionCode.generate();
     final port = await srv.startQhtpSessionWhileIndexing(
       sessionId: 'sess-123',
       index: index,
       authToken: 'token-abc',
+      sessionPublicId: sessionCode.publicId,
     );
 
     // Timeout case
     final didConnect = await srv.waitForFirstClient(timeout: const Duration(milliseconds: 50));
     expect(didConnect, isFalse);
 
-    // Client connects case
+    // /v2/health does NOT complete waitForFirstClient
     final client = HttpClient();
     client.badCertificateCallback = (cert, host, port) => true;
+    final healthReq = await client.getUrl(Uri.parse('https://127.0.0.1:$port/v2/health'));
+    final healthRes = await healthReq.close();
+    expect(healthRes.statusCode, equals(200));
+
+    final stillWaiting = await srv.waitForFirstClient(timeout: const Duration(milliseconds: 50));
+    expect(stillWaiting, isFalse);
+
+    // /v2/invite/request DOES complete waitForFirstClient
+    srv.onApprovalRequested = (req) async => false;
     final waitFuture = srv.waitForFirstClient(timeout: const Duration(seconds: 3));
-    final req = await client.getUrl(Uri.parse('https://127.0.0.1:$port/v2/health'));
-    final res = await req.close();
-    expect(res.statusCode, equals(200));
+    final inviteReq = await client.postUrl(Uri.parse('https://127.0.0.1:$port/v2/invite/request'));
+    inviteReq.headers.contentType = ContentType.json;
+    inviteReq.write(jsonEncode({'code': sessionCode.code}));
+    final inviteRes = await inviteReq.close();
+    expect(inviteRes.statusCode, equals(200));
+
     expect(await waitFuture, isTrue);
   });
 }
