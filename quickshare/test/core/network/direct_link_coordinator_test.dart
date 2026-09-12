@@ -78,6 +78,12 @@ class _FakeDriver implements DirectLinkDriver {
     stopCalls++;
   }
 
+  int leaveCalls = 0;
+  @override
+  Future<void> leaveNetwork() async {
+    leaveCalls++;
+  }
+
   @override
   Future<void> hostPeerLink(String serviceName, int localPort) async {
     peerLinksHosted.add(serviceName);

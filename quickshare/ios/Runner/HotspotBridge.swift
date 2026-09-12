@@ -35,7 +35,7 @@ class HotspotBridge: NSObject {
                         + "Host it from the Android device or turn on Personal "
                         + "Hotspot manually.",
                     details: nil))
-            case "stopHotspot":
+            case "stopHotspot", "leaveHotspot":
                 self.leaveJoinedNetworks()
                 result(nil)
             default:

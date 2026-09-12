@@ -133,5 +133,10 @@ void main() {
       expect(calls.where((c) => c.method == 'stopHotspot').length,
           equals(Platform.isAndroid ? 1 : 0));
     });
+
+    test('leaveNetwork invokes leaveHotspot without canHost gate', () async {
+      await LocalHotspotService(channel: channel).leaveNetwork();
+      expect(calls.where((c) => c.method == 'leaveHotspot').length, equals(1));
+    });
   });
 }

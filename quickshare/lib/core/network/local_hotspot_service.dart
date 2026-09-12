@@ -178,6 +178,24 @@ class LocalHotspotService {
     }
   }
 
+  /// Leaves whatever network this device joined as a guest.
+  ///
+  /// Unlike [stopHosting], this has no [canHost] gate: leaving a network is
+  /// done by a guest, regardless of whether this platform can host one.
+  Future<void> leaveNetwork() async {
+    if (Platform.isLinux) return;
+    try {
+      await _methodChannel.invokeMethod<void>('leaveHotspot');
+    } on MissingPluginException {
+      try {
+        await _methodChannel.invokeMethod<void>('stopHotspot');
+      } catch (_) {}
+    } on PlatformException catch (e) {
+      AppLogger.warning('Leaving the network failed: ${e.message}',
+          tag: 'HOTSPOT');
+    } catch (_) {}
+  }
+
   /// Joins [credentials] from the guest side.
   ///
   /// On iOS this raises the system "Join network?" prompt and needs the

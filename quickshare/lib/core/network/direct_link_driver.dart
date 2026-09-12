@@ -70,6 +70,9 @@ class LocalHotspotDriver implements DirectLinkDriver {
   Future<void> stopHosting() => _hotspot.stopHosting();
 
   @override
+  Future<void> leaveNetwork() => _hotspot.leaveNetwork();
+
+  @override
   bool get canPeerLink => _peerLink.supported;
 
   @override

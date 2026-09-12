@@ -40,6 +40,9 @@ abstract interface class DirectLinkDriver {
   /// Take down whatever [host] raised. Never throws.
   Future<void> stopHosting();
 
+  /// Leave whatever network was joined via [joinNetwork]. Never throws.
+  Future<void> leaveNetwork();
+
   /// Whether this device can raise or join a peer-to-peer Wi-Fi link — the
   /// radio AirDrop uses, with no access point between the two devices.
   ///
@@ -633,11 +636,13 @@ class DirectLinkCoordinator {
         if (await _probe()) {
           return DirectLinkReady(credentials: credentials, hosting: false);
         }
+        await driver.leaveNetwork();
       } on Error {
         rethrow;
       } catch (_) {
         // A network that is still coming up refuses the first join; the
         // pause below is what the retry is for.
+        await driver.leaveNetwork();
       }
       await Future<void>.delayed(retryPause);
     }

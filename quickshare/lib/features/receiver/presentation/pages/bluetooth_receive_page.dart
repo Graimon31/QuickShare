@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/direct_link_driver.dart';
+import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/features/receiver/data/client/isolated_qhtp_receiver.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
@@ -84,6 +85,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   Timer? _searchClock;
   final _codeField = TextEditingController();
   String? _codeError;
+  bool _joinedAsGuest = false;
 
   String? get _token => _typedToken ?? widget.sessionToken;
 
@@ -155,7 +157,10 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         // where the file actually is.
         _peerLinkPort = localPort;
 
-      case DirectLinkReady():
+      case DirectLinkReady(hosting: final hosting):
+        if (!hosting) {
+          _joinedAsGuest = true;
+        }
         // The link is up; the sender's serve frame names the rest.
         break;
     }
@@ -202,12 +207,18 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
 
     result.fold(
       (failure) {
+        if (_joinedAsGuest) {
+          unawaited(LocalHotspotService().leaveNetwork());
+        }
         setState(() {
           _phase = _Phase.failed;
           _error = failure.message;
         });
       },
       (received) {
+        if (_joinedAsGuest) {
+          unawaited(LocalHotspotService().leaveNetwork());
+        }
         _completed = true;
         final items = TransferCache.itemsIn(session);
         context.go('/receive/complete', extra: {
@@ -359,6 +370,9 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
 
   @override
   void dispose() {
+    if (_joinedAsGuest) {
+      unawaited(LocalHotspotService().leaveNetwork());
+    }
     _searchClock?.cancel();
     _codeField.dispose();
     _transport.cancel();

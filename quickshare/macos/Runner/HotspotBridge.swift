@@ -106,7 +106,7 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
                 message: "macOS has no API for creating a Wi-Fi network from "
                     + "an app. Host it from the Android or Windows device.",
                 details: nil))
-        case "stopHotspot":
+        case "stopHotspot", "leaveHotspot":
             rejoinPrevious(result: result)
         default:
             result(FlutterMethodNotImplemented)
