@@ -134,9 +134,10 @@ void main() {
           equals(Platform.isAndroid ? 1 : 0));
     });
 
-    test('leaveNetwork invokes leaveHotspot without canHost gate', () async {
+    test('leaveNetwork invokes native leaveHotspot (except Linux)', () async {
       await LocalHotspotService(channel: channel).leaveNetwork();
-      expect(calls.where((c) => c.method == 'leaveHotspot').length, equals(1));
+      expect(calls.where((c) => c.method == 'leaveHotspot').length,
+          equals(Platform.isLinux ? 0 : 1));
     });
   });
 }
