@@ -290,6 +290,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       _receiveStarted = false;
       _bleProgressSeen = false;
       _peerLinkPort = null;
+      _joinedAsGuest = false;
     });
     _restartSearchClock();
     try {

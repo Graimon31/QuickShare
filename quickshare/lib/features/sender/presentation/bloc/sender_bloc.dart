@@ -483,6 +483,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   BluetoothTransferTransport? _activeBluetoothTransport;
   StreamSubscription<RelayLimitExceeded>? _relayBlockedSubscription;
 
+  bool _joinedAsGuest = false;
+
+  @visibleForTesting
+  bool get joinedAsGuestForTesting => _joinedAsGuest;
+
+  @visibleForTesting
+  void setJoinedAsGuestForTesting(bool value) => _joinedAsGuest = value;
+
   final LocalHotspotService hotspot;
 
   /// Offers the running QHTP session over direct Wi-Fi as well as the LAN.
@@ -1270,6 +1278,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           await serveAt('127.0.0.1');
 
         case DirectLinkReady(credentials: final credentials, hosting: final hosting):
+          if (!hosting) _joinedAsGuest = true;
           final ip = hosting
               ? credentials.hostAddress
               : await NetworkInfoService().getLocalIpAddress();
@@ -1406,6 +1415,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // minute of retries before it gave up.
     await repository.stopServer(force: true);
     await hotspot.stopHosting();
+    if (_joinedAsGuest) {
+      _joinedAsGuest = false;
+      unawaited(hotspot.leaveNetwork());
+    }
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
     _fastPathSubscription = null;
@@ -1539,6 +1552,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onTransferCompleted(
       TransferCompleted event, Emitter<SenderState> emit) async {
+    if (_joinedAsGuest) {
+      _joinedAsGuest = false;
+      unawaited(hotspot.leaveNetwork());
+    }
     await _reportSend();
     await repository.stopServer();
     await peerLink.stop();
@@ -1581,6 +1598,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       return;
     }
 
+    if (_joinedAsGuest) {
+      _joinedAsGuest = false;
+      unawaited(hotspot.leaveNetwork());
+    }
+
     // Same ordering as cancel, same reason: the server still knows who was
     // connected, if anyone was, until it stops.
     await _reportSend(failure: event.error, code: event.code);
@@ -1604,6 +1626,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   @override
   Future<void> close() async {
+    if (_joinedAsGuest) {
+      _joinedAsGuest = false;
+      unawaited(hotspot.leaveNetwork());
+    }
     _progressSubscription?.cancel();
     _statusSubscription?.cancel();
     _waitingSubscription?.cancel();

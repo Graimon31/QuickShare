@@ -12,10 +12,12 @@ import 'package:quickshare/features/sender/domain/transports/transfer_transport.
 
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
 
+import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 
 class MockSenderRepository extends Mock implements SenderRepository {}
+class _MockLocalHotspotService extends Mock implements LocalHotspotService {}
 
 /// Stands in for the native side and remembers whether it was asked to host.
 ///
@@ -465,5 +467,52 @@ void main() {
         expect(report.peerAddress, '192.168.1.77');
       },
     );
+
+    test('guest teardown invokes leaveNetwork on cancel', () async {
+      final mockHotspot = _MockLocalHotspotService();
+      when(() => mockHotspot.stopHosting()).thenAnswer((_) async {});
+      when(() => mockHotspot.leaveNetwork()).thenAnswer((_) async {});
+
+      final bloc = SenderBloc(
+        repository: mockRepository,
+        hotspotService: mockHotspot,
+      );
+
+      bloc.setJoinedAsGuestForTesting(true);
+      expect(bloc.joinedAsGuestForTesting, isTrue);
+
+      bloc.add(CancelSending());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(bloc.joinedAsGuestForTesting, isFalse);
+      verify(() => mockHotspot.leaveNetwork()).called(1);
+      await bloc.close();
+    });
+
+    test('guest teardown invokes leaveNetwork on completion and failure', () async {
+      final mockHotspot = _MockLocalHotspotService();
+      when(() => mockHotspot.stopHosting()).thenAnswer((_) async {});
+      when(() => mockHotspot.leaveNetwork()).thenAnswer((_) async {});
+
+      final bloc = SenderBloc(
+        repository: mockRepository,
+        hotspotService: mockHotspot,
+      );
+
+      bloc.setJoinedAsGuestForTesting(true);
+      bloc.add(TransferCompleted());
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(bloc.joinedAsGuestForTesting, isFalse);
+      verify(() => mockHotspot.leaveNetwork()).called(1);
+
+      bloc.setJoinedAsGuestForTesting(true);
+      bloc.add(const TransferFailed('failed'));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(bloc.joinedAsGuestForTesting, isFalse);
+      verify(() => mockHotspot.leaveNetwork()).called(1);
+      await bloc.close();
+    });
   });
 }
