@@ -101,7 +101,7 @@ class IsolatedQhtpReceiver {
             AppLogger.warning('Worker isolate exited before returning result',
                 tag: 'QHTP');
             done.complete(
-                Left(NetworkFailure('Worker isolate exited unexpectedly')));
+                const Left(NetworkFailure('Worker isolate exited unexpectedly')));
           }
       }
     });

@@ -60,7 +60,7 @@ void main() {
 
     group('sanitizeRelativePath', () {
       test('normalizes separators and removes traversal segments', () {
-        final path = r'foo\..\bar\./baz.txt';
+        const path = r'foo\..\bar\./baz.txt';
         final sanitized = PathSanitizer.sanitizeRelativePath(path);
         expect(sanitized.contains('..'), isFalse);
         expect(sanitized.contains('/baz.txt'), isTrue);

@@ -127,7 +127,7 @@ void main() {
 
   group('the item count and size limits', () {
     test('a manifest within limits passes', () {
-      final manifest = QhtpManifest(
+      const manifest = QhtpManifest(
         sessionId: 's',
         createdAt: 0,
         itemCount: 2,
@@ -156,7 +156,7 @@ void main() {
     });
 
     test('a manifest with negative item size is rejected', () {
-      final manifest = QhtpManifest(
+      const manifest = QhtpManifest(
         sessionId: 's',
         createdAt: 0,
         itemCount: 1,
@@ -169,7 +169,7 @@ void main() {
     });
 
     test('a manifest with aggregate size over session limit is rejected', () {
-      final manifest = QhtpManifest(
+      const manifest = QhtpManifest(
         sessionId: 's',
         createdAt: 0,
         itemCount: 2,

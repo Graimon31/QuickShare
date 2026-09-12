@@ -121,10 +121,6 @@ class QhtpReceiverClient {
     return PathSanitizer.sanitizeSegment(segment, defaultName: 'item');
   }
 
-  String _fitToNameLimit(String name) {
-    return PathSanitizer.fitToByteLimit(name, defaultName: 'item');
-  }
-
   String materializePath(String relativePath, String baseDir) {
     return PathSanitizer.resolveSafePath(relativePath, baseDir,
         defaultName: 'item');

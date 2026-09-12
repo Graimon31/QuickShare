@@ -77,6 +77,9 @@ class _FakeDirectLinkDriver implements DirectLinkDriver {
   @override
   Future<void> stopHosting() async {}
 
+  @override
+  Future<void> leaveNetwork() async {}
+
   // Hosting works in this fake, so the peer-to-peer rung is never reached.
   @override
   bool get canPeerLink => false;
@@ -105,6 +108,10 @@ void main() {
   late _MockSenderRepository repository;
   late List<MethodCall> nativeCalls;
 
+  setUpAll(() {
+    registerFallbackValue(const Duration(seconds: 1));
+  });
+
   setUp(() {
     // The bridge is chosen from the target platform, not the host, so the
     // Apple path is what this exercises wherever the suite runs.
@@ -130,6 +137,8 @@ void main() {
     when(() => repository.stopServer(force: any(named: 'force')))
         .thenAnswer((_) async => const Right(null));
     when(repository.stopServer).thenAnswer((_) async => const Right(null));
+    when(() => repository.waitForFirstClient(timeout: any(named: 'timeout')))
+        .thenAnswer((_) async => true);
   });
 
   tearDown(() {

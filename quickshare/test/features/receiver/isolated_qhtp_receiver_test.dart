@@ -168,7 +168,7 @@ void main() {
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('unreachable target completes with failure instead of hanging', () async {
-    final payload = const QRPayload(
+    const payload = QRPayload(
       version: 2,
       ip: '127.0.0.1',
       port: 1, // Closed / unreachable port

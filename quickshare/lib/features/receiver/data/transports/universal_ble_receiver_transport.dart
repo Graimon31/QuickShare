@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
@@ -486,11 +485,6 @@ class UniversalBleReceiverTransport {
         defaultName: 'received_file');
   }
 
-  String _sanitize(String name) {
-    return PathSanitizer.sanitizeSegment(p.basename(name),
-        defaultName: 'received_file');
-  }
-
   String _uniquePath(String path) {
     var candidate = path;
     var counter = 1;
@@ -597,9 +591,4 @@ class UniversalBleReceiverTransport {
     await _linkDirectiveController.close();
     await _serveInfoController.close();
   }
-}
-
-// Dart doesn't have .let(), so add a tiny extension.
-extension _LetExt<T> on T {
-  R let<R>(R Function(T) block) => block(this);
 }

@@ -125,4 +125,10 @@ void main() {
       expect(pathKindFromStats(reports), equals(IcePathKind.unknown));
     });
   });
+
+  group('gathering budget', () {
+    test('leaves room for a TURN allocation over TLS', () {
+      expect(AppConstants.iceGatheringMaxWait.inMilliseconds, greaterThan(1500));
+    });
+  });
 }
