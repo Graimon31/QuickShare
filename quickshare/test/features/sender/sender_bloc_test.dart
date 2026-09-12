@@ -14,6 +14,7 @@ import 'package:quickshare/features/sender/domain/repositories/sender_repository
 
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
+import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 
 class MockSenderRepository extends Mock implements SenderRepository {}
@@ -512,6 +513,29 @@ void main() {
 
       expect(bloc.joinedAsGuestForTesting, isFalse);
       verify(() => mockHotspot.leaveNetwork()).called(1);
+      await bloc.close();
+    });
+
+    test('auto-declines invite approval when state is not QRReady', () async {
+      when(() => mockRepository.respondToApproval(any(), any())).thenReturn(null);
+
+      final bloc = SenderBloc(
+        repository: mockRepository,
+      );
+
+      final req = TransferApprovalRequest(
+        id: 'test-req-id',
+        remoteAddress: InternetAddress.loopbackIPv4,
+        deviceName: 'Pixel',
+        code: '1234567890',
+        itemCount: 1,
+        totalBytes: 100,
+      );
+
+      bloc.add(InviteApprovalReceived(req));
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      verify(() => mockRepository.respondToApproval('test-req-id', false)).called(1);
       await bloc.close();
     });
   });

@@ -183,6 +183,7 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       return Right(QhtpSessionPreview(
         itemCount: map['itemCount'] as int? ?? 0,
         totalBytes: map['totalBytes'] as int? ?? 0,
+        senderName: map['senderName'] as String?,
       ));
     } catch (e) {
       debugPrint('Error details: $e');

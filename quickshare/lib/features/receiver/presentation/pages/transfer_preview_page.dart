@@ -89,6 +89,11 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
         (payload.itemCount > 0 ? payload.itemCount : (isQhtp ? 0 : 1));
     final totalBytes =
         isQhtp ? (preview?.totalBytes ?? payload.fileSize) : payload.fileSize;
+    final sender = (preview?.senderName?.isNotEmpty == true)
+        ? preview!.senderName!
+        : ((payload.senderName?.isNotEmpty == true)
+            ? payload.senderName!
+            : '');
     final title = isQhtp
         ? (payload.fileName.isNotEmpty
             ? payload.fileName
@@ -137,6 +142,18 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
+                    if (sender.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        l10n.previewSenderLabel(sender),
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.inter(
+                          color: Colors.white.withValues(alpha: 0.7),
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     Text(
                       title,

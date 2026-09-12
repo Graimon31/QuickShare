@@ -277,6 +277,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
               tlsFingerprint: match.tlsFingerprint,
               itemCount: data['itemCount'] as int? ?? 1,
               fileSize: data['totalBytes'] as int? ?? 0,
+              senderName: data['senderName'] as String?,
             );
             context
                 .read<ReceiverBloc>()
@@ -383,6 +384,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
             tlsFingerprint: tlsFingerprint!,
             itemCount: data['itemCount'] as int? ?? 1,
             fileSize: data['totalBytes'] as int? ?? 0,
+            senderName: data['senderName'] as String?,
           );
         }
       }

@@ -392,6 +392,27 @@
   "inviteAccept": "Accept",
   "inviteDecline": "Decline",
   "inviteUnknownSize": "size unknown",
+  "inviteApprovalBody": "{deviceName}{address} wants to receive {itemCount, plural, =1{1 file} other{{itemCount} files}} ({size}).",
+  "@inviteApprovalBody": {
+    "placeholders": {
+      "deviceName": { "type": "String" },
+      "address": { "type": "String" },
+      "itemCount": { "type": "int" },
+      "size": { "type": "String" }
+    }
+  },
+  "inviteApprovalExpiresIn": "Request expires in {seconds}s",
+  "@inviteApprovalExpiresIn": {
+    "placeholders": {
+      "seconds": { "type": "int" }
+    }
+  },
+  "previewSenderLabel": "From {sender}",
+  "@previewSenderLabel": {
+    "placeholders": {
+      "sender": { "type": "String" }
+    }
+  },
   "nearbyOrPaste": "Or paste a code",
   "inviteAsking": "Asking…",
   "inviteAccepted": "Accepted — sending now",

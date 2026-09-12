@@ -107,7 +107,7 @@ void main() {
       expect(body['sessionId'], equals('test-session'));
     });
 
-    test('invitePort: 0 times out to declined when sender does not respond', () async {
+    test('invitePort: 0 declines when approver does not answer in time', () async {
       server.onApprovalRequested = (req) async {
         await Future.delayed(const Duration(milliseconds: 200));
         return false;
@@ -126,6 +126,47 @@ void main() {
       final body = response.data is Map ? response.data as Map : jsonDecode(response.data.toString()) as Map;
       expect(body['outcome'], equals('declined'));
       expect(body.containsKey('token'), isFalse);
+    });
+
+    test('declined invite enforces 60s cooldown for the same IP', () async {
+      server.onApprovalRequested = (req) async => false;
+      final dio = client(server.tlsFingerprint!);
+
+      final firstResponse = await dio.post(
+        'https://127.0.0.1:$serverPort/v2/invite/request',
+        data: {
+          'code': sessionCode.code,
+          'invitePort': 0,
+        },
+      );
+      expect(firstResponse.statusCode, equals(200));
+      var body = firstResponse.data is Map
+          ? firstResponse.data as Map
+          : jsonDecode(firstResponse.data.toString()) as Map;
+      expect(body['outcome'], equals('declined'));
+      expect(body['detail'], equals('Transfer declined by sender'));
+
+      // Second request immediately after decline should be rejected due to cooldown without calling onApprovalRequested
+      var approvalCalled = false;
+      server.onApprovalRequested = (req) async {
+        approvalCalled = true;
+        return true;
+      };
+
+      final secondResponse = await dio.post(
+        'https://127.0.0.1:$serverPort/v2/invite/request',
+        data: {
+          'code': sessionCode.code,
+          'invitePort': 0,
+        },
+      );
+      expect(secondResponse.statusCode, equals(200));
+      body = secondResponse.data is Map
+          ? secondResponse.data as Map
+          : jsonDecode(secondResponse.data.toString()) as Map;
+      expect(body['outcome'], equals('declined'));
+      expect(body['detail'], equals('cooldown'));
+      expect(approvalCalled, isFalse);
     });
 
     test('rate limit triggers HTTP 429 after 5 attempts', () async {

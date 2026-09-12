@@ -401,6 +401,7 @@ class UniversalBleReceiverTransport {
           '$_fileTotalBytes bytes, compressed=$_isCompressed, '
           'item ${_itemIndex + 1} of $_itemCount',
           tag: 'BLE_RECEIVER');
+      _armIdleTimer();
       _emit('transferring');
     } catch (e) {
       AppLogger.warning('UniversalBleReceiver: metadata error: $e',

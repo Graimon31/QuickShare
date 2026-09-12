@@ -20,6 +20,7 @@ import 'package:quickshare/core/transfer/transfer_invitation.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
+import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/copy_value_row.dart';
@@ -494,30 +495,11 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     BuildContext context,
     InviteApprovalRequested requestState,
   ) async {
-    final l10n = AppLocalizations.of(context);
     final bloc = context.read<SenderBloc>();
-    final addressText = requestState.request.remoteAddress != null
-        ? ' (${requestState.request.remoteAddress!.address})'
-        : '';
     final accepted = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(l10n.inviteTitle),
-        content: Text(
-          '${requestState.request.deviceName}$addressText wants to receive the selected files.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: Text(l10n.inviteDecline),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: Text(l10n.inviteAccept),
-          ),
-        ],
-      ),
+      builder: (dialogContext) => _ApprovalDialog(request: requestState.request),
     );
     bloc.add(RespondToInviteApproval(
       requestId: requestState.request.id,
@@ -526,4 +508,87 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
   }
 
   String _formatBytes(int bytes) => ByteFormat.size(bytes);
+}
+
+class _ApprovalDialog extends StatefulWidget {
+  final TransferApprovalRequest request;
+
+  const _ApprovalDialog({required this.request});
+
+  @override
+  State<_ApprovalDialog> createState() => _ApprovalDialogState();
+}
+
+class _ApprovalDialogState extends State<_ApprovalDialog> {
+  int _remainingSeconds = 90;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_remainingSeconds <= 1) {
+        timer.cancel();
+        Navigator.of(context).pop(false);
+      } else {
+        setState(() => _remainingSeconds--);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final addressText = widget.request.remoteAddress != null
+        ? ' (${widget.request.remoteAddress!.address})'
+        : '';
+    final sizeStr = widget.request.totalBytes > 0
+        ? ByteFormat.size(widget.request.totalBytes)
+        : l10n.inviteUnknownSize;
+
+    return AlertDialog(
+      title: Text(l10n.inviteTitle),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            l10n.inviteApprovalBody(
+              widget.request.deviceName,
+              addressText,
+              widget.request.itemCount,
+              sizeStr,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            l10n.inviteApprovalExpiresIn(_remainingSeconds),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.outline,
+                ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: Text(l10n.inviteDecline),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: Text(l10n.inviteAccept),
+        ),
+      ],
+    );
+  }
 }

@@ -10,6 +10,7 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
+import 'package:quickshare/features/receiver/domain/entities/qhtp_session_preview.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
 import 'package:quickshare/features/receiver/domain/usecases/download_file_usecase.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
@@ -126,5 +127,22 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(bloc.started.single, equals(payload));
+  });
+
+  testWidgets('shows sender name when available from preview', (tester) async {
+    bloc.emit(const QRParsed(
+      payload,
+      qhtpPreview: QhtpSessionPreview(
+        itemCount: 12,
+        totalBytes: 4200000,
+        senderName: 'Alice iPhone',
+      ),
+    ));
+
+    await tester.pumpWidget(underTest());
+    await tester.pump();
+
+    final l10n = await AppLocalizations.delegate.load(const Locale('en'));
+    expect(find.text(l10n.previewSenderLabel('Alice iPhone')), findsOneWidget);
   });
 }

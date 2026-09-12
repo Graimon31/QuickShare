@@ -1532,6 +1532,25 @@ abstract class AppLocalizations {
   /// **'size unknown'**
   String get inviteUnknownSize;
 
+  /// No description provided for @inviteApprovalBody.
+  ///
+  /// In en, this message translates to:
+  /// **'{deviceName}{address} wants to receive {itemCount, plural, =1{1 file} other{{itemCount} files}} ({size}).'**
+  String inviteApprovalBody(
+      String deviceName, String address, int itemCount, String size);
+
+  /// No description provided for @inviteApprovalExpiresIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Request expires in {seconds}s'**
+  String inviteApprovalExpiresIn(int seconds);
+
+  /// No description provided for @previewSenderLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'From {sender}'**
+  String previewSenderLabel(String sender);
+
   /// No description provided for @nearbyOrPaste.
   ///
   /// In en, this message translates to:

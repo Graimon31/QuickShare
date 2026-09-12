@@ -835,6 +835,29 @@ class AppLocalizationsRu extends AppLocalizations {
   String get inviteUnknownSize => 'размер неизвестен';
 
   @override
+  String inviteApprovalBody(
+      String deviceName, String address, int itemCount, String size) {
+    String _temp0 = intl.Intl.pluralLogic(
+      itemCount,
+      locale: localeName,
+      other: '$itemCount файлов',
+      few: '$itemCount файла',
+      one: '$itemCount файл',
+    );
+    return '$deviceName$address хочет получить $_temp0 ($size).';
+  }
+
+  @override
+  String inviteApprovalExpiresIn(int seconds) {
+    return 'Запрос истекает через $seconds с';
+  }
+
+  @override
+  String previewSenderLabel(String sender) {
+    return 'От: $sender';
+  }
+
+  @override
   String get nearbyOrPaste => 'Или вставьте код';
 
   @override

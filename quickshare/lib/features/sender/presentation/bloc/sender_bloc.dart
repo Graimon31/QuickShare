@@ -648,6 +648,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         request: event.request,
         previousState: current,
       ));
+    } else {
+      repository.respondToApproval(event.request.id, false);
     }
   }
 
@@ -1417,7 +1419,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await hotspot.stopHosting();
     if (_joinedAsGuest) {
       _joinedAsGuest = false;
-      unawaited(hotspot.leaveNetwork());
+      unawaited(hotspot.leaveNetwork().catchError((_) {}));
     }
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
@@ -1554,7 +1556,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       TransferCompleted event, Emitter<SenderState> emit) async {
     if (_joinedAsGuest) {
       _joinedAsGuest = false;
-      unawaited(hotspot.leaveNetwork());
+      unawaited(hotspot.leaveNetwork().catchError((_) {}));
     }
     await _reportSend();
     await repository.stopServer();
@@ -1600,7 +1602,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
     if (_joinedAsGuest) {
       _joinedAsGuest = false;
-      unawaited(hotspot.leaveNetwork());
+      unawaited(hotspot.leaveNetwork().catchError((_) {}));
     }
 
     // Same ordering as cancel, same reason: the server still knows who was
@@ -1628,7 +1630,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   Future<void> close() async {
     if (_joinedAsGuest) {
       _joinedAsGuest = false;
-      unawaited(hotspot.leaveNetwork());
+      unawaited(hotspot.leaveNetwork().catchError((_) {}));
     }
     _progressSubscription?.cancel();
     _statusSubscription?.cancel();

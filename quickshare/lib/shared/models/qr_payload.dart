@@ -24,6 +24,8 @@ class QRPayload extends Equatable {
   /// TLS (those are rejected: a plaintext fallback is a permanent hole).
   final String tlsFingerprint;
 
+  final String? senderName;
+
   const QRPayload({
     required this.version,
     required this.ip,
@@ -37,13 +39,14 @@ class QRPayload extends Equatable {
     this.sdpOffer,
     this.itemCount = 0,
     this.tlsFingerprint = '',
+    this.senderName,
   });
 
   bool get isQhtp =>
       version == AppConstants.qhtpPayloadVersion ||
       (sessionId != null && sessionId!.isNotEmpty);
 
-  QRPayload copyWith({String? ip, int? port}) => QRPayload(
+  QRPayload copyWith({String? ip, int? port, String? senderName}) => QRPayload(
         version: version,
         ip: ip ?? this.ip,
         port: port ?? this.port,
@@ -56,6 +59,7 @@ class QRPayload extends Equatable {
         sdpOffer: sdpOffer,
         itemCount: itemCount,
         tlsFingerprint: tlsFingerprint,
+        senderName: senderName ?? this.senderName,
       );
 
   factory QRPayload.fromJson(Map<String, dynamic> json) {
@@ -75,6 +79,7 @@ class QRPayload extends Equatable {
         fileSize: json['fs'] as int? ?? 0,
         itemCount: json['ic'] as int? ?? 0,
         tlsFingerprint: json['tf'] as String? ?? '',
+        senderName: json['sn'] as String?,
       );
     }
     return QRPayload(
@@ -87,6 +92,7 @@ class QRPayload extends Equatable {
       checksum: json['cs'] as String? ?? '',
       sdpOffer: json['sdp'] as String?,
       tlsFingerprint: json['tf'] as String? ?? '',
+      senderName: json['sn'] as String?,
     );
   }
 
@@ -104,6 +110,7 @@ class QRPayload extends Equatable {
         if (fileSize > 0) 'fs': fileSize,
         if (itemCount > 0) 'ic': itemCount,
         if (tlsFingerprint.isNotEmpty) 'tf': tlsFingerprint,
+        if (senderName != null && senderName!.isNotEmpty) 'sn': senderName,
       };
     }
     return {
@@ -116,6 +123,7 @@ class QRPayload extends Equatable {
       'cs': checksum,
       if (sdpOffer != null && sdpOffer!.isNotEmpty) 'sdp': sdpOffer,
       if (tlsFingerprint.isNotEmpty) 'tf': tlsFingerprint,
+      if (senderName != null && senderName!.isNotEmpty) 'sn': senderName,
     };
   }
 
@@ -191,5 +199,6 @@ class QRPayload extends Equatable {
         mode,
         itemCount,
         tlsFingerprint,
+        senderName,
       ];
 }

@@ -29,6 +29,8 @@ class TransferApprovalRequest {
   final InternetAddress? remoteAddress;
   final String deviceName;
   final String code;
+  final int itemCount;
+  final int totalBytes;
   final Completer<bool> _completer = Completer<bool>();
 
   TransferApprovalRequest({
@@ -36,6 +38,8 @@ class TransferApprovalRequest {
     required this.remoteAddress,
     required this.deviceName,
     required this.code,
+    this.itemCount = 0,
+    this.totalBytes = 0,
   });
 
   Future<bool> get decision => _completer.future;
@@ -53,6 +57,7 @@ class LocalHttpServer {
   String? _sessionPublicId;
 
   final Map<InternetAddress, List<DateTime>> _codeAttempts = {};
+  final Map<InternetAddress, DateTime> _declineCooldowns = {};
   final Map<String, TransferApprovalRequest> _pendingApprovals = {};
   final _approvalController =
       StreamController<TransferApprovalRequest>.broadcast();
@@ -528,6 +533,17 @@ class LocalHttpServer {
             );
           }
           attempts.add(now);
+
+          final cooldownUntil = _declineCooldowns[remoteAddress];
+          if (cooldownUntil != null && DateTime.now().isBefore(cooldownUntil)) {
+            return Response.ok(
+              jsonEncode({
+                'outcome': 'declined',
+                'detail': 'cooldown',
+              }),
+              headers: {'Content-Type': 'application/json; charset=utf-8'},
+            );
+          }
         }
 
         final bodyText = await request.readAsString();
@@ -552,14 +568,21 @@ class LocalHttpServer {
           );
         }
 
-        final deviceName = body['deviceName'] as String? ??
+        final rawDeviceName = body['deviceName'] as String? ??
             (remoteAddress?.address ?? 'Unknown Device');
+        final deviceName = rawDeviceName.length > 40
+            ? '${rawDeviceName.substring(0, 40)}…'
+            : rawDeviceName;
+
+        final indexed = await _indexOrNull(index);
 
         final approval = TransferApprovalRequest(
           id: const Uuid().v4(),
           remoteAddress: remoteAddress,
           deviceName: deviceName,
           code: codeText,
+          itemCount: indexed?.manifest.itemCount ?? 0,
+          totalBytes: indexed?.manifest.totalBytes ?? 0,
         );
 
         // Sender-side approval (Layer B): human approval required before any token is issued
@@ -568,6 +591,10 @@ class LocalHttpServer {
           timeout: const Duration(seconds: 90),
         );
         if (!senderAccepted) {
+          if (remoteAddress != null) {
+            _declineCooldowns[remoteAddress] =
+                DateTime.now().add(const Duration(seconds: 60));
+          }
           return Response.ok(
             jsonEncode({
               'outcome': 'declined',
@@ -577,9 +604,9 @@ class LocalHttpServer {
           );
         }
 
-        final invitePort = body['invitePort'] as int? ?? 0;
-        final indexed = await _indexOrNull(index);
         if (indexed == null) return _indexUnavailable();
+
+        final invitePort = body['invitePort'] as int? ?? 0;
 
         if (invitePort > 0 && remoteAddress != null) {
           final result = await InvitationSender().invite(
@@ -609,6 +636,7 @@ class LocalHttpServer {
               'tlsFingerprint': _tls?.fingerprint ?? '',
               'itemCount': indexed.manifest.itemCount,
               'totalBytes': indexed.manifest.totalBytes,
+              'senderName': DevicePresence.describeThisDevice(),
             });
           }
           return Response.ok(
@@ -627,6 +655,7 @@ class LocalHttpServer {
             'tlsFingerprint': _tls?.fingerprint ?? '',
             'itemCount': indexed.manifest.itemCount,
             'totalBytes': indexed.manifest.totalBytes,
+            'senderName': DevicePresence.describeThisDevice(),
           }),
           headers: {'Content-Type': 'application/json; charset=utf-8'},
         );
@@ -655,6 +684,7 @@ class LocalHttpServer {
           'protocolVersion': 1,
           'supportsRange': true,
           'supportsNdjsonManifest': false,
+          'senderName': DevicePresence.describeThisDevice(),
         }),
         headers: {'Content-Type': 'application/json; charset=utf-8'},
       );
@@ -1071,6 +1101,8 @@ class LocalHttpServer {
       approval.complete(false);
     }
     _pendingApprovals.clear();
+    _declineCooldowns.clear();
+    _codeAttempts.clear();
     if (_server != null) {
       await _server!.close(force: force);
       _server = null;

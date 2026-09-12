@@ -830,6 +830,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get inviteUnknownSize => 'size unknown';
 
   @override
+  String inviteApprovalBody(
+      String deviceName, String address, int itemCount, String size) {
+    String _temp0 = intl.Intl.pluralLogic(
+      itemCount,
+      locale: localeName,
+      other: '$itemCount files',
+      one: '1 file',
+    );
+    return '$deviceName$address wants to receive $_temp0 ($size).';
+  }
+
+  @override
+  String inviteApprovalExpiresIn(int seconds) {
+    return 'Request expires in ${seconds}s';
+  }
+
+  @override
+  String previewSenderLabel(String sender) {
+    return 'From $sender';
+  }
+
+  @override
   String get nearbyOrPaste => 'Or paste a code';
 
   @override
