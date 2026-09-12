@@ -255,4 +255,26 @@ test('POST /turn with a valid signature is served and has no CORS wildcard', asy
   assert.ok(body.cloudflare.iceServers.length > 0);
 });
 
+test('upstream error response body is not leaked into 502 error message', async (t) => {
+  t.after(() => mock.restoreAll());
+  const sensitiveLeak = 'super_secret_upstream_token_and_internal_stack_trace';
+  mock.method(globalThis, 'fetch', async (url) => {
+    const href = typeof url === 'string' ? url : url.url;
+    if (href.includes('cloudflare.com')) {
+      return new Response(JSON.stringify({ error: sensitiveLeak }), { status: 500 });
+    }
+    if (href.includes('metered.live')) {
+      return new Response(sensitiveLeak, { status: 502 });
+    }
+    throw new Error(`unexpected upstream call to ${href}`);
+  });
+
+  const { status, body } = await callTurn();
+  assert.equal(status, 502);
+  assert.ok(!JSON.stringify(body).includes(sensitiveLeak), 'upstream body must not leak into response');
+  assert.match(body.cloudflare.error, /500/);
+  assert.match(body.metered.error, /502/);
+});
+
+
 

@@ -170,9 +170,11 @@ running elsewhere silently uses a different wrangler than the pinned one.
 - Metered is unconfigured, so ТЗ §12's mitigation for "Cloudflare blocked from
   Russia" is not actually in place — there is one relay provider, not two. Add
   `METERED_SUBDOMAIN` / `METERED_API_KEY` when that matters.
-- No rate limiting yet. Fine for personal/small-scale use; add Cloudflare's
-  built-in rate limiting rules (dashboard, no code change) before wider
-  exposure.
+- Rate limiting: Protect `/r/*` and `/turn` against abuse by configuring a Cloudflare WAF Rate Limiting rule (Dashboard → Security → WAF → Rate limiting rules):
+  - Rule expression: `http.request.uri.path wildcard "/r/*" or http.request.uri.path eq "/turn"`
+  - Characteristics: IP (`ip.src`)
+  - Threshold: 10 requests per 1 minute
+  - Mitigation action: Block (1 minute duration) or Managed Challenge
 - TURN credentials are fetched once, when the `RTCPeerConnection` is built.
   A single uninterrupted session running past the 30-minute TTL will lose its
   relay; refreshing them into a live connection via `setConfiguration()`

@@ -92,8 +92,8 @@ function text(body, status, { cors = true } = {}) {
 /// Summarises an unexpected upstream payload without echoing its values.
 ///
 /// Field *names* are what a shape mismatch is about and are safe to hand back;
-/// the values are live TURN credentials and stay out of the HTTP response. The
-/// full body still goes to `console.log`, which surfaces in `wrangler tail` —
+/// the values are live TURN credentials and stay out of both the HTTP response
+/// and logs. The structural summary goes to `console.log` (`wrangler tail`),
 /// visible to the operator, not to whoever called /turn.
 function describeShape(data) {
   if (Array.isArray(data)) {
@@ -167,11 +167,13 @@ async function fetchCloudflareTurn(env) {
     },
   );
   if (!res.ok) {
-    throw new Error(
-      `cloudflare turn credential fetch failed: ${res.status} ${await res
-        .text()
-        .catch(() => '')}`.trim(),
-    );
+    const errorText = await res.text().catch(() => '');
+    let shape = typeof errorText;
+    try {
+      shape = describeShape(JSON.parse(errorText));
+    } catch (_) {}
+    console.log(`cloudflare turn credential fetch failed (${res.status}):`, shape);
+    throw new Error(`cloudflare turn credential fetch failed: ${res.status}`);
   }
 
   const data = await res.json();
@@ -235,11 +237,13 @@ async function fetchMeteredTurn(env) {
     `https://${env.METERED_SUBDOMAIN}.metered.live/api/v1/turn/credentials?apiKey=${env.METERED_API_KEY}`,
   );
   if (!res.ok) {
-    throw new Error(
-      `metered turn credential fetch failed: ${res.status} ${await res
-        .text()
-        .catch(() => '')}`.trim(),
-    );
+    const errorText = await res.text().catch(() => '');
+    let shape = typeof errorText;
+    try {
+      shape = describeShape(JSON.parse(errorText));
+    } catch (_) {}
+    console.log(`metered turn credential fetch failed (${res.status}):`, shape);
+    throw new Error(`metered turn credential fetch failed: ${res.status}`);
   }
 
   const servers = await res.json();
@@ -308,6 +312,13 @@ async function handleTurn(env) {
 async function handleRoomPost(request, env, roomId) {
   if (!ROOM_ID_RE.test(roomId)) {
     return text('invalid room id', 400);
+  }
+  const contentLength = request.headers.get('content-length');
+  if (contentLength !== null) {
+    const len = parseInt(contentLength, 10);
+    if (isNaN(len) || len <= 0 || len > MAX_BLOB_BYTES) {
+      return text('invalid blob size', 400);
+    }
   }
   const blob = await request.arrayBuffer();
   if (blob.byteLength === 0 || blob.byteLength > MAX_BLOB_BYTES) {

@@ -19,3 +19,4 @@ kv_namespaces = [
 #   METERED_SUBDOMAIN    Metered account subdomain, e.g. "quickshare" for
 #                        https://quickshare.metered.live
 #   METERED_API_KEY      Metered API key
+#   TURN_CLIENT_SECRET   Shared HMAC secret for authenticating POST /turn

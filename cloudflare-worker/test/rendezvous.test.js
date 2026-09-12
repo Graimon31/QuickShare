@@ -101,3 +101,18 @@ test('a malformed URI encoded room id returns 400 not 500', async () => {
   const response = await worker.fetch(new Request('https://worker.example/r/%E0%A4%A'), env);
   assert.equal(response.status, 400);
 });
+
+test('Content-Length pre-check rejects oversized body before reading arrayBuffer', async () => {
+  const env = makeEnv();
+  const response = await worker.fetch(
+    new Request(`https://worker.example/r/${VALID_ROOM}`, {
+      method: 'POST',
+      headers: { 'Content-Length': '99999' },
+      body: new Uint8Array([1, 2, 3]),
+    }),
+    env,
+  );
+  assert.equal(response.status, 400);
+  assert.equal(await response.text(), 'invalid blob size');
+});
+
