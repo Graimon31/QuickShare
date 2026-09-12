@@ -200,6 +200,7 @@ void main() {
         );
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
+                sessionPublicId: any(named: 'sessionPublicId'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
@@ -238,6 +239,7 @@ void main() {
         );
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
+                sessionPublicId: any(named: 'sessionPublicId'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
@@ -315,6 +317,7 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
+                sessionPublicId: any(named: 'sessionPublicId'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
@@ -357,6 +360,7 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
+                sessionPublicId: any(named: 'sessionPublicId'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
@@ -391,6 +395,7 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
+                sessionPublicId: any(named: 'sessionPublicId'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
@@ -427,6 +432,7 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
+                sessionPublicId: any(named: 'sessionPublicId'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))

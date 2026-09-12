@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui';
 
@@ -235,20 +236,83 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       'Session code ${code.publicId} matched peer: ${match.name} at ${match.address.address}:${match.port}',
       tag: 'CODE',
     );
-    final payload = QRPayload(
-      version: AppConstants.qhtpPayloadVersion,
-      ip: match.address.address,
-      port: match.port,
-      token: code.sessionToken,
-      sessionId: code.sessionToken,
-      mode: 'http-lan',
-      tlsFingerprint: match.tlsFingerprint,
-    );
 
-    if (!mounted) return;
-    context
-        .read<ReceiverBloc>()
-        .add(QRCodeScanned(payload.encode(), fromPaste: true));
+    final targetPeer = match;
+    final client =
+        HttpClient(context: SecurityContext(withTrustedRoots: false));
+    client.connectionTimeout = const Duration(seconds: 4);
+    client.badCertificateCallback = (X509Certificate cert, String host, int p) {
+      if (targetPeer.tlsFingerprint.isEmpty) return true;
+      return SessionTlsIdentity.fingerprintOf(cert.der) == targetPeer.tlsFingerprint;
+    };
+
+    try {
+      final invitePort = AppPresence.instance.presence?.invitePort ?? 0;
+      final uri = Uri.parse(
+          'https://${targetPeer.address.address}:${targetPeer.port}/v2/invite/request');
+      final request =
+          await client.postUrl(uri).timeout(const Duration(seconds: 4));
+      request.headers.contentType = ContentType.json;
+      request.write(jsonEncode({
+        'code': code.code,
+        'invitePort': invitePort,
+      }));
+      final response =
+          await request.close().timeout(const Duration(seconds: 20));
+      if (response.statusCode == HttpStatus.ok) {
+        final bodyText = await response.transform(utf8.decoder).join();
+        final data = jsonDecode(bodyText) as Map<String, dynamic>;
+        if (data['outcome'] == 'accepted') {
+          final token = data['token'] as String?;
+          if (token != null && token.isNotEmpty && mounted) {
+            final payload = QRPayload(
+              version: AppConstants.qhtpPayloadVersion,
+              ip: match.address.address,
+              port: match.port,
+              token: token,
+              sessionId: data['sessionId'] as String? ?? token,
+              mode: 'http-lan',
+              tlsFingerprint: match.tlsFingerprint,
+              itemCount: data['itemCount'] as int? ?? 1,
+              fileSize: data['totalBytes'] as int? ?? 0,
+            );
+            context
+                .read<ReceiverBloc>()
+                .add(QRCodeScanned(payload.encode(), fromPaste: true));
+            return;
+          }
+        } else {
+          if (!mounted) return;
+          setState(() {
+            _isSubmitting = false;
+            _failedCode = code;
+            _inputError = l10n.inviteDeclined;
+          });
+          return;
+        }
+      } else {
+        if (!mounted) return;
+        setState(() {
+          _isSubmitting = false;
+          _failedCode = code;
+          _inputError = l10n.codeReceiveNotFoundLan;
+        });
+        return;
+      }
+    } catch (e) {
+      AppLogger.warning(
+          'Could not request invite from ${match.address.address}:${match.port}: $e',
+          tag: 'CODE');
+      if (!mounted) return;
+      setState(() {
+        _isSubmitting = false;
+        _failedCode = code;
+        _inputError = l10n.inviteUnreachable;
+      });
+      return;
+    } finally {
+      client.close(force: true);
+    }
   }
 
   Future<QRPayload?> _probeCandidate(
@@ -265,23 +329,33 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     };
 
     try {
-      final uri = Uri.parse('https://${address.address}:$port/v2/session');
+      final uri = Uri.parse('https://${address.address}:$port/v2/invite/request');
       final request =
-          await client.getUrl(uri).timeout(const Duration(milliseconds: 1500));
-      request.headers
-          .set(HttpHeaders.authorizationHeader, 'Bearer ${code.sessionToken}');
+          await client.postUrl(uri).timeout(const Duration(milliseconds: 1500));
+      request.headers.contentType = ContentType.json;
+      request.write(jsonEncode({
+        'code': code.code,
+        'invitePort': 0,
+      }));
       final response =
           await request.close().timeout(const Duration(milliseconds: 1500));
       if (response.statusCode == HttpStatus.ok && tlsFingerprint != null) {
-        return QRPayload(
-          version: AppConstants.qhtpPayloadVersion,
-          ip: address.address,
-          port: port,
-          token: code.sessionToken,
-          sessionId: code.sessionToken,
-          mode: 'http-lan',
-          tlsFingerprint: tlsFingerprint!,
-        );
+        final bodyText = await response.transform(utf8.decoder).join();
+        final data = jsonDecode(bodyText) as Map<String, dynamic>;
+        final token = data['token'] as String?;
+        if (token != null && token.isNotEmpty) {
+          return QRPayload(
+            version: AppConstants.qhtpPayloadVersion,
+            ip: address.address,
+            port: port,
+            token: token,
+            sessionId: data['sessionId'] as String? ?? token,
+            mode: 'http-lan',
+            tlsFingerprint: tlsFingerprint!,
+            itemCount: data['itemCount'] as int? ?? 1,
+            fileSize: data['totalBytes'] as int? ?? 0,
+          );
+        }
       }
     } catch (_) {
       // Not a matching QHTP server or port unreachable

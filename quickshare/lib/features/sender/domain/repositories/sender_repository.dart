@@ -42,6 +42,7 @@ abstract class SenderRepository {
   Future<Either<Failure, TransferSession>> startQhtpTransfer(
     List<String> paths, {
     String? authToken,
+    String? sessionPublicId,
     void Function(int items, int bytes)? onIndexProgress,
     void Function(int itemCount, int totalBytes)? onIndexed,
     void Function(Object error)? onIndexFailed,

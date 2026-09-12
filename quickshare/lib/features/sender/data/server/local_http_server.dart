@@ -8,7 +8,11 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/network/device_presence.dart';
+import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/network/session_tls_identity.dart';
+import 'package:quickshare/core/transfer/invitation_sender.dart';
+import 'package:quickshare/core/transfer/transfer_invitation.dart';
 import 'package:quickshare/core/utils/streaming_digest.dart';
 import 'package:quickshare/features/sender/data/server/http_range.dart';
 import 'package:quickshare/features/sender/data/indexer/file_indexer.dart';
@@ -19,6 +23,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 class LocalHttpServer {
   HttpServer? _server;
   String? _authToken;
+  String? _sessionPublicId;
 
   /// True once the receiver has said the session is delivered. From then on
   /// the token answers for nothing but a repeat of that acknowledgement.
@@ -356,15 +361,21 @@ class LocalHttpServer {
     required String sessionId,
     required Future<QhtpIndexerResult> index,
     required String authToken,
+    String? sessionPublicId,
   }) =>
       _serveQhtpSession(
-          sessionId: sessionId, index: index, authToken: authToken);
+        sessionId: sessionId,
+        index: index,
+        authToken: authToken,
+        sessionPublicId: sessionPublicId,
+      );
 
   Future<int> _serveQhtpSession({
     required String sessionId,
     required Future<QhtpIndexerResult> index,
     required String authToken,
     Map<String, Future<String?>>? checksums,
+    String? sessionPublicId,
   }) async {
     if (_server != null) {
       await stop();
@@ -372,6 +383,7 @@ class LocalHttpServer {
     WakelockPlus.enable();
     unawaited(BackgroundHold.begin());
     _authToken = authToken;
+    _sessionPublicId = sessionPublicId;
     _sessionComplete = false;
     _isQhtpSession = true;
     _activeManifest = null;
@@ -414,6 +426,89 @@ class LocalHttpServer {
         jsonEncode({'ok': true, 'protocol': 'QHTP', 'protocolVersion': 1}),
         headers: {'Content-Type': 'application/json; charset=utf-8'},
       );
+    });
+
+    // POST /v2/invite/request (No auth required — authenticated via 10-digit code)
+    router.post('/v2/invite/request', (Request request) async {
+      try {
+        final bodyText = await request.readAsString();
+        final Map<String, dynamic> body;
+        try {
+          body = jsonDecode(bodyText) as Map<String, dynamic>;
+        } catch (_) {
+          return Response.badRequest(
+            body: jsonEncode({'error': 'invalid json'}),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+          );
+        }
+
+        final codeText = body['code'] as String? ?? '';
+        final parsedCode = SessionCode.parse(codeText);
+        if (parsedCode == null ||
+            _sessionPublicId == null ||
+            parsedCode.publicId != _sessionPublicId) {
+          return Response.forbidden(
+            jsonEncode({'error': 'invalid code', 'code': 'CODE_MISMATCH'}),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+          );
+        }
+
+        final invitePort = body['invitePort'] as int? ?? 0;
+        final connection =
+            request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
+        final remoteAddress = connection?.remoteAddress;
+
+        final indexed = await _indexOrNull(index);
+        if (indexed == null) return _indexUnavailable();
+
+        if (invitePort > 0 && remoteAddress != null) {
+          final result = await InvitationSender().invite(
+            address: remoteAddress,
+            port: invitePort,
+            invitation: TransferInvitation(
+              senderName: DevicePresence.describeThisDevice(),
+              senderPlatform: Platform.operatingSystem,
+              itemCount: indexed.manifest.itemCount,
+              totalBytes: indexed.manifest.totalBytes,
+              port: _server?.port ?? 8000,
+              sessionId: sessionId,
+              token: _authToken ?? '',
+              tlsFingerprint: _tls?.fingerprint ?? '',
+            ),
+          );
+          return Response.ok(
+            jsonEncode({
+              'outcome': result.accepted ? 'accepted' : 'declined',
+              'detail': result.detail,
+              'token': _authToken,
+              'sessionId': sessionId,
+              'port': _server?.port ?? 8000,
+              'tlsFingerprint': _tls?.fingerprint ?? '',
+              'itemCount': indexed.manifest.itemCount,
+              'totalBytes': indexed.manifest.totalBytes,
+            }),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+          );
+        }
+
+        return Response.ok(
+          jsonEncode({
+            'outcome': 'accepted',
+            'token': _authToken,
+            'sessionId': sessionId,
+            'port': _server?.port ?? 8000,
+            'tlsFingerprint': _tls?.fingerprint ?? '',
+            'itemCount': indexed.manifest.itemCount,
+            'totalBytes': indexed.manifest.totalBytes,
+          }),
+          headers: {'Content-Type': 'application/json; charset=utf-8'},
+        );
+      } catch (e) {
+        return Response.internalServerError(
+          body: jsonEncode({'error': '$e'}),
+          headers: {'Content-Type': 'application/json; charset=utf-8'},
+        );
+      }
     });
 
     // 2. GET /v2/session (Auth required)
@@ -689,7 +784,8 @@ class LocalHttpServer {
         // accepted an SDP answer from anyone on the network and handed it to
         // the active peer connection, and the rendezvous moved to a sealed
         // out-of-band channel long ago.
-        if (request.url.path == 'v2/health') {
+        if (request.url.path == 'v2/health' ||
+            request.url.path == 'v2/invite/request') {
           return innerHandler(request);
         }
 

@@ -49,6 +49,8 @@ class DevicePresence {
 
   bool get isRunning => _discovery.isRunning;
 
+  int get invitePort => _invitations?.port ?? _announcement?.invitePort ?? 0;
+
   /// Triggers an immediate discovery refresh.
   Future<void> refresh() => _discovery.refresh();
 

@@ -1015,9 +1015,15 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         .map((b) => b.toRadixString(16).padLeft(2, '0'))
         .join();
 
+    // Generate a 10-digit session code as a pure locator for LAN code entry (P0-3 Variant B).
+    // The public identifier is advertised over mDNS (cid) safely because the auth token
+    // is independently generated with 128 bits of randomness.
+    final sessionCode = SessionCode.generate();
+
     final result = await repository.startQhtpTransfer(
       event.paths,
       authToken: qrAuthToken,
+      sessionPublicId: sessionCode.publicId,
       // Events, not `emit`. The walk no longer runs inside this handler's
       // await — the QR goes up first and the walk finishes behind it — so
       // by the time the last of these arrives this emitter is closed.
@@ -1071,7 +1077,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
               qrData,
               session,
               mode,
-              code: null,
+              code: sessionCode,
               itemCount: session.itemCount,
               totalBytes: session.fileMetadata.size,
               // Zero on both counts until the walk behind this lands, and
