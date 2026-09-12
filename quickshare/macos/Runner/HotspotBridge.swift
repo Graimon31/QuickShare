@@ -140,6 +140,24 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
                 return
             }
 
+            if self.settledAuthorization() == .notDetermined {
+                DispatchQueue.main.async { self.location.requestWhenInUseAuthorization() }
+                _ = self.authorizationAnswered.wait(timeout: .now() + 60)
+            }
+
+            if !self.locationGranted {
+                DispatchQueue.main.async {
+                    result(FlutterError(
+                        code: "LOCATION_DENIED",
+                        message: "macOS will not join nearby networks without "
+                            + "Location Services. Allow it for DirectDrop in "
+                            + "System Settings › Privacy & Security › Location "
+                            + "Services.",
+                        details: nil))
+                }
+                return
+            }
+
             // Remember where to go back to, but only the first time: a retry
             // must not record the transfer network as "previous".
             if self.previousSsid == nil, let current = interface.ssid() {

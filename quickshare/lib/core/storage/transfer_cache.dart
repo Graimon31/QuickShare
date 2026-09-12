@@ -134,6 +134,37 @@ class TransferCache {
     return freed;
   }
 
+  /// Sweeps abandoned sessions older than [ttl] (default 24h, aligned with [SessionStateStore]).
+  /// Recent partial sessions are preserved so interrupted downloads can be resumed.
+  Future<int> clearExpired({Duration ttl = const Duration(hours: 24)}) async {
+    final dir = await directory();
+    final cutoff = DateTime.now().subtract(ttl);
+    var freed = 0;
+    try {
+      if (!await dir.exists()) return 0;
+      await for (final entity in dir.list(followLinks: false)) {
+        if (entity is! Directory) continue;
+        if (!p.basename(entity.path).startsWith('s_')) continue;
+        try {
+          final stat = await entity.stat();
+          if (stat.modified.isBefore(cutoff)) {
+            freed += await _measure(entity);
+            await entity.delete(recursive: true);
+          }
+        } on FileSystemException {
+          // Best effort
+        }
+      }
+      if (freed > 0) {
+        AppLogger.info('Swept $freed bytes of expired sessions (>24h) from cache', tag: 'CACHE');
+      }
+    } on FileSystemException catch (e) {
+      AppLogger.warning('Could not sweep expired sessions: $e', tag: 'CACHE');
+      return 0;
+    }
+    return freed;
+  }
+
   /// Removes exactly [paths], for a session the user walked away from.
   ///
   /// Scoped to the paths a session produced rather than clearing everything,

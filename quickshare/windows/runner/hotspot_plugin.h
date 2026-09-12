@@ -62,6 +62,10 @@ class HotspotPlugin : public flutter::Plugin {
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
   void CurrentSsid(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
+  void DeleteTemporaryProfile();
+
+  std::string last_joined_ssid_;
+  std::string last_joined_guid_;
 
   // Owned, not borrowed: the channel is created in RegisterWithRegistrar and
   // would otherwise be destroyed at the end of it, taking the method-call

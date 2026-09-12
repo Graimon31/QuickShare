@@ -46,11 +46,11 @@ void main() async {
 
 Future<void> _clearOrphanedCache() async {
   try {
-    final freed = await const TransferCache().clear();
+    final freed = await const TransferCache().clearExpired();
     if (freed > 0) {
       AppLogger.info(
-          'Startup: released ${TransferCache.formatBytes(freed)} left by a '
-          'session that never finished',
+          'Startup: released ${TransferCache.formatBytes(freed)} left by an '
+          'expired session (>24h)',
           tag: 'CACHE');
     }
   } catch (e) {

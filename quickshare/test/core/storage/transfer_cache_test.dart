@@ -74,6 +74,22 @@ void main() {
       expect(await cache.clear(), equals(0));
       expect((await cache.directory()).existsSync(), isTrue);
     });
+
+    test('clearExpired sweeps expired sessions and preserves fresh ones', () async {
+      final oldSession = await cache.sessionDirectory();
+      await File(p.join(oldSession.path, 'old.bin')).writeAsString('12345');
+
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      final freshSession = await cache.sessionDirectory();
+      final freshFile = File(p.join(freshSession.path, 'fresh.bin'))..writeAsStringSync('12345');
+
+      final freed = await cache.clearExpired(ttl: const Duration(milliseconds: 20));
+      expect(freed, equals(5));
+      expect(oldSession.existsSync(), isFalse);
+      expect(freshSession.existsSync(), isTrue);
+      expect(freshFile.existsSync(), isTrue);
+    });
   });
 
   group('discard', () {

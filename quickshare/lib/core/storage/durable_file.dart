@@ -72,9 +72,10 @@ class DurableFile {
     if (raf == null) {
       throw StateError('DurableFile.commit on $finalPath without open()');
     }
-    await raf.flush(); // fsync the bytes onto the device
+    await raf.flush(); // flushes Dart buffer to the OS
     await raf.close();
     _raf = null;
+    await syncFile(partialPath); // fsync payload bytes onto the physical device
     if (staged) {
       await File(partialPath).rename(finalPath);
       await syncDirectory(p.dirname(finalPath));
@@ -175,6 +176,26 @@ Future<void> syncDirectory(String dirPath) async {
     }
   } catch (e) {
     AppLogger.warning('syncDirectory($dirPath) failed: $e', tag: 'DISK');
+  } finally {
+    malloc.free(ptr);
+  }
+}
+
+/// fsyncs the file at [filePath] so bytes reach physical storage before rename.
+Future<void> syncFile(String filePath) async {
+  final libc = _LibC.instance;
+  if (libc == null) return;
+  final ptr = filePath.toNativeUtf8();
+  try {
+    final fd = libc.open(ptr, _oRdonly);
+    if (fd < 0) return;
+    try {
+      libc.fsync(fd);
+    } finally {
+      libc.close(fd);
+    }
+  } catch (e) {
+    AppLogger.warning('syncFile($filePath) failed: $e', tag: 'DISK');
   } finally {
     malloc.free(ptr);
   }

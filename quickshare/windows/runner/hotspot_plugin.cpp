@@ -156,7 +156,6 @@ WlanSnapshot ReadWlan() {
 // takes the network down, so it cannot be a local.
 struct HotspotPlugin::Advertisement {
   WiFiDirectAdvertisementPublisher publisher{nullptr};
-  winrt::event_token status_token{};
   std::string ssid;
   std::string passphrase;
 };
@@ -182,6 +181,7 @@ void HotspotPlugin::RegisterWithRegistrar(
 HotspotPlugin::HotspotPlugin() = default;
 
 HotspotPlugin::~HotspotPlugin() {
+  DeleteTemporaryProfile();
   // A network that outlives the app is a network nobody can turn off from
   // inside it.
   if (advertisement_ && advertisement_->publisher) {
@@ -208,6 +208,9 @@ void HotspotPlugin::HandleMethodCall(
     CurrentSsid(std::move(result));
   } else if (call.method_name() == "joinHotspot") {
     JoinHotspot(arguments, std::move(result));
+  } else if (call.method_name() == "leaveHotspot") {
+    DeleteTemporaryProfile();
+    result->Success();
   } else {
     result->NotImplemented();
   }
@@ -286,6 +289,7 @@ void HotspotPlugin::StartHotspot(
 
 void HotspotPlugin::StopHotspot(
     std::unique_ptr<flutter::MethodResult<EncodableValue>> result) {
+  DeleteTemporaryProfile();
   if (!advertisement_ || !advertisement_->publisher) {
     result->Success();
     return;
@@ -406,6 +410,14 @@ void HotspotPlugin::JoinHotspot(
   params.dwFlags = 0;
 
   const DWORD connect_result = WlanConnect(client, &guid, &params, nullptr);
+  if (connect_result == ERROR_SUCCESS) {
+    last_joined_ssid_ = *ssid;
+    LPOLESTR guid_str = nullptr;
+    if (StringFromCLSID(guid, &guid_str) == S_OK && guid_str) {
+      last_joined_guid_ = ToUtf8(guid_str);
+      CoTaskMemFree(guid_str);
+    }
+  }
   WlanCloseHandle(client, nullptr);
 
   if (connect_result != ERROR_SUCCESS) {
@@ -416,6 +428,23 @@ void HotspotPlugin::JoinHotspot(
     return;
   }
   result->Success();
+}
+
+void HotspotPlugin::DeleteTemporaryProfile() {
+  if (last_joined_ssid_.empty() || last_joined_guid_.empty()) return;
+  DWORD negotiated = 0;
+  HANDLE client = nullptr;
+  if (WlanOpenHandle(2, nullptr, &negotiated, &client) == ERROR_SUCCESS) {
+    GUID guid{};
+    const std::wstring wide_guid = ToWide(last_joined_guid_);
+    if (CLSIDFromString(wide_guid.c_str(), &guid) == NOERROR) {
+      const std::wstring profile_name = ToWide(last_joined_ssid_);
+      WlanDeleteProfile(client, &guid, profile_name.c_str(), nullptr);
+    }
+    WlanCloseHandle(client, nullptr);
+  }
+  last_joined_ssid_.clear();
+  last_joined_guid_.clear();
 }
 
 void HotspotPlugin::CurrentSsid(

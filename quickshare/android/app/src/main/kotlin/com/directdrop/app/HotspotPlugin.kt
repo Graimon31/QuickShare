@@ -37,6 +37,7 @@ class HotspotPlugin(private val context: Context) : MethodChannel.MethodCallHand
             "startHotspot" -> startHotspot(result)
             "stopHotspot" -> stopHotspot(result)
             "joinHotspot" -> joinHotspot(call, result)
+            "leaveHotspot" -> leaveHotspot(result)
             else -> result.notImplemented()
         }
     }
@@ -139,6 +140,21 @@ class HotspotPlugin(private val context: Context) : MethodChannel.MethodCallHand
     private fun stopHotspot(result: MethodChannel.Result) {
         reservation?.close()
         reservation = null
+        leaveHotspot(result)
+    }
+
+    private fun leaveHotspot(result: MethodChannel.Result) {
+        joinCallback?.let {
+            val connectivity = context.applicationContext
+                .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            try {
+                connectivity.unregisterNetworkCallback(it)
+                connectivity.bindProcessToNetwork(null)
+            } catch (_: IllegalArgumentException) {
+                // Already gone.
+            }
+        }
+        joinCallback = null
         result.success(null)
     }
 
@@ -224,10 +240,18 @@ class HotspotPlugin(private val context: Context) : MethodChannel.MethodCallHand
         var answered = false
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                connectivity.bindProcessToNetwork(network)
+                val bound = connectivity.bindProcessToNetwork(network)
                 if (!answered) {
                     answered = true
-                    result.success(null)
+                    if (bound) {
+                        result.success(null)
+                    } else {
+                        result.error(
+                            "BIND_FAILED",
+                            "Could not bind process to the hotspot network",
+                            null,
+                        )
+                    }
                 }
             }
 
