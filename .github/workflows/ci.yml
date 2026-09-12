@@ -7,7 +7,27 @@ on:
   pull_request:
     branches: [ main, master ]
 
+permissions:
+  contents: read
+
 jobs:
+  test_worker:
+    name: Test Cloudflare Worker
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./cloudflare-worker
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run worker tests
+        run: node --test test/*.test.js
+
   analyze_and_test:
     runs-on: ubuntu-latest
     defaults:
@@ -53,7 +73,10 @@ jobs:
           # and CI is not one, so grepping for it found nothing at all.
           grep -F '[E]' /tmp/test-output.txt | head -40 \
             | while IFS= read -r line; do
-                echo "::error::$line"
+                escaped="${line//'%'/'%25'}"
+                escaped="${escaped//$'\r'/'%0D'}"
+                escaped="${escaped//$'\n'/'%0A'}"
+                echo "::error::$escaped"
               done
           {
             echo '### Failing tests'
