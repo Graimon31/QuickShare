@@ -331,4 +331,8 @@ class SenderRepositoryImpl implements SenderRepository {
       return const Left(ServerFailure('Failed to stop server.'));
     }
   }
+
+  @override
+  Future<bool> waitForFirstClient({Duration timeout = const Duration(seconds: 10)}) =>
+      localServer.waitForFirstClient(timeout: timeout);
 }

@@ -89,4 +89,8 @@ abstract class SenderRepository {
 
   /// A stream of current transfer statuses.
   Stream<TransferStatus> get statusStream;
+
+  /// Waits until the first client connects to the local server, or returns
+  /// false if [timeout] expires first.
+  Future<bool> waitForFirstClient({Duration timeout = const Duration(seconds: 10)});
 }

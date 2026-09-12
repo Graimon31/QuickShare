@@ -7,6 +7,7 @@ import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/direct_link_driver.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
+import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/features/receiver/data/client/isolated_qhtp_receiver.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
@@ -132,6 +133,16 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     final outcome = await DirectLinkCoordinator(
       driver: LocalHotspotDriver(),
       signal: _ReceiverLinkSignal(_transport),
+      probeLink: () async {
+        for (var i = 0; i < 20; i++) {
+          final ip = await NetworkInfoService().getLocalIpAddress();
+          if (ip != null && !ip.startsWith('127.') && ip.isNotEmpty) {
+            return true;
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+        }
+        return false;
+      },
     ).runReceiver(_typedCode);
     if (!mounted || _completed) return;
 

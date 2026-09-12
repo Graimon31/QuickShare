@@ -34,6 +34,18 @@ class LocalHttpServer {
   /// The fingerprint the receiver must pin this session's HTTPS connection to
   /// — belongs in the QR. Null until a server is started.
   String? get tlsFingerprint => _tls?.fingerprint;
+  Completer<void> _firstClient = Completer<void>();
+
+  /// Resolves to true when the first HTTP client reaches this server,
+  /// or false if [timeout] expires without any request arriving.
+  Future<bool> waitForFirstClient({Duration timeout = const Duration(seconds: 10)}) async {
+    try {
+      await _firstClient.future.timeout(timeout);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
   QhtpManifest? _activeManifest;
   Map<String, String>? _itemIdToAbsPathMap;
   Map<String, Future<String?>>? _itemChecksums;
@@ -385,6 +397,7 @@ class LocalHttpServer {
     _authToken = authToken;
     _sessionPublicId = sessionPublicId;
     _sessionComplete = false;
+    _firstClient = Completer<void>();
     _isQhtpSession = true;
     _activeManifest = null;
     _itemIdToAbsPathMap = null;
@@ -772,6 +785,7 @@ class LocalHttpServer {
   Middleware _authMiddleware() {
     return (Handler innerHandler) {
       return (Request request) async {
+        _recordClientAddress(request);
         // One route is unauthenticated, and it answers nothing about the
         // session: /v2/health says a server of this protocol is listening and
         // stops there. /info used to sit here too, and it is a name and a
@@ -872,6 +886,9 @@ class LocalHttpServer {
     if (info is HttpConnectionInfo) {
       _lastClientAddress = info.remoteAddress;
     }
+    if (!_firstClient.isCompleted) {
+      _firstClient.complete();
+    }
   }
 
   void _mergeChecksum(String itemId, String digest) {
@@ -932,6 +949,7 @@ class LocalHttpServer {
     _streamedDigests.clear();
     _lazyDigests.clear();
     _lastClientAddress = null;
+    _firstClient = Completer<void>();
     if (_server != null) {
       await _server!.close(force: force);
       _server = null;

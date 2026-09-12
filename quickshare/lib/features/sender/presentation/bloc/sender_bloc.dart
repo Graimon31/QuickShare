@@ -1151,6 +1151,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       final outcome = await DirectLinkCoordinator(
         driver: _directLinkDriver,
         signal: transport.linkSignal,
+        probeLink: () => repository.waitForFirstClient(timeout: const Duration(seconds: 10)),
       ).runSender(code, servingPort: session.serverPort);
 
       // The session may have been cancelled while the ladder climbed.

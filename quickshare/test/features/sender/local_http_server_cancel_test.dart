@@ -131,4 +131,34 @@ void main() {
     expect(received, lessThan(64 * 1024 * 1024),
         reason: 'the transfer must not have been allowed to complete');
   });
+
+  test('waitForFirstClient returns true when client connects, false on timeout', () async {
+    final srv = LocalHttpServer();
+    addTearDown(() => srv.stop());
+    final emptyDir = await Directory.systemTemp.createTemp('qhtp_empty_');
+    addTearDown(() => emptyDir.delete(recursive: true));
+    final index = FileIndexer().buildResult(
+      sessionId: 'sess-123',
+      paths: [emptyDir.path],
+      includeChecksums: false,
+    );
+    final port = await srv.startQhtpSessionWhileIndexing(
+      sessionId: 'sess-123',
+      index: index,
+      authToken: 'token-abc',
+    );
+
+    // Timeout case
+    final didConnect = await srv.waitForFirstClient(timeout: const Duration(milliseconds: 50));
+    expect(didConnect, isFalse);
+
+    // Client connects case
+    final client = HttpClient();
+    client.badCertificateCallback = (cert, host, port) => true;
+    final waitFuture = srv.waitForFirstClient(timeout: const Duration(seconds: 3));
+    final req = await client.getUrl(Uri.parse('https://127.0.0.1:$port/v2/health'));
+    final res = await req.close();
+    expect(res.statusCode, equals(200));
+    expect(await waitFuture, isTrue);
+  });
 }

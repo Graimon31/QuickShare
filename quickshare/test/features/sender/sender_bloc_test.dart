@@ -68,6 +68,7 @@ void main() {
       localIp: '127.0.0.1',
       startedAt: DateTime.now(),
     ));
+    registerFallbackValue(const Duration(seconds: 1));
   });
 
   setUp(() {
@@ -80,6 +81,8 @@ void main() {
         .thenAnswer((_) async => const Right(null));
     when(() => mockRepository.stopServer(force: true))
         .thenAnswer((_) async => const Right(null));
+    when(() => mockRepository.waitForFirstClient(timeout: any(named: 'timeout')))
+        .thenAnswer((_) async => true);
   });
 
   group('SenderBloc', () {
