@@ -153,9 +153,32 @@ class UniversalBleReceiverTransport {
 
   List<String> get receivedPaths => List.unmodifiable(_writtenPaths);
 
-  final _completion = Completer<String>();
+  Completer<String> _completion = Completer<String>();
   bool _failed = false;
   Timer? _idleTimer;
+
+  void _resetSessionState() {
+    _completion = Completer<String>();
+    _failed = false;
+    _metadataReceived = false;
+    _writtenPaths.clear();
+    _receivedBytes = 0;
+    _totalBytes = 0;
+    _fileReceivedBytes = 0;
+    _fileTotalBytes = 0;
+    _itemIndex = 0;
+    _itemCount = 1;
+    _fileName = 'received_file';
+    _isCompressed = false;
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    try {
+      _raf?.closeSync();
+    } catch (_) {}
+    _raf = null;
+    _targetPath = null;
+    _partialPath = null;
+  }
 
   void _failSession(Object e) {
     _failed = true;
@@ -253,6 +276,8 @@ class UniversalBleReceiverTransport {
       throw Exception('Missing session token — scan the QR code again.');
     }
     await stopScanning();
+
+    _resetSessionState();
 
     _targetDeviceId = deviceId;
     _baseDir = targetDir ??
@@ -644,6 +669,9 @@ class UniversalBleReceiverTransport {
 
   @visibleForTesting
   void failSessionForTesting(Object e) => _failSession(e);
+
+  @visibleForTesting
+  void resetSessionStateForTesting() => _resetSessionState();
 
   Future<void> dispose() async {
     _idleTimer?.cancel();

@@ -249,4 +249,19 @@ void main() {
     expect(partial.existsSync(), isFalse);
     expect(transport.receivedPaths, isEmpty);
   });
+
+  test('C5-3: retry after failure gets a fresh session', () async {
+    transport.completionForTesting.future.catchError((_) => '');
+    transport.failSessionForTesting(StateError('boom'));
+    expect(transport.isFailedForTesting, isTrue);
+    expect(transport.completionForTesting.isCompleted, isTrue);
+    final old = transport.completionForTesting;
+
+    transport.resetSessionStateForTesting();
+
+    expect(transport.isFailedForTesting, isFalse);
+    expect(transport.completionForTesting.isCompleted, isFalse);
+    expect(identical(transport.completionForTesting, old), isFalse);
+    expect(transport.receivedPaths, isEmpty);
+  });
 }

@@ -638,6 +638,10 @@ class LocalHttpServer {
               'totalBytes': indexed.manifest.totalBytes,
               'senderName': DevicePresence.describeThisDevice(),
             });
+          } else {
+            // Receiver declined the invitation that already received the auth token.
+            // Invalidate/stop the session immediately so the issued token cannot be abused.
+            unawaited(stop());
           }
           return Response.ok(
             jsonEncode(responseBody),

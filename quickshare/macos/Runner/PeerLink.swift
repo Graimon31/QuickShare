@@ -129,7 +129,7 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
         result(FlutterError(code: "BAD_ARGS", message: "serviceName/localPort required", details: nil))
         return
       }
-      host(serviceName: name, forwardTo: localPort, result: result)
+      queue.async { self.host(serviceName: name, forwardTo: localPort, result: result) }
 
     case "join":
       guard let args = call.arguments as? [String: Any],
@@ -138,10 +138,10 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
         return
       }
       let timeout = (args["timeoutMs"] as? Int) ?? 20000
-      join(serviceName: name, timeoutMs: timeout, result: result)
+      queue.async { self.join(serviceName: name, timeoutMs: timeout, result: result) }
 
     case "stop":
-      stop()
+      queue.async { self.stop() }
       result(nil)
 
     case "wifiReady":

@@ -11,6 +11,8 @@ import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.RequiresApi
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -26,6 +28,7 @@ import io.flutter.plugin.common.MethodChannel
  */
 class HotspotPlugin(private val context: Context) : MethodChannel.MethodCallHandler {
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var reservation: WifiManager.LocalOnlyHotspotReservation? = null
 
     /// The join currently in flight, so a retry can withdraw it rather than
@@ -269,9 +272,11 @@ class HotspotPlugin(private val context: Context) : MethodChannel.MethodCallHand
         joinCallback = callback
 
         try {
-            connectivity.requestNetwork(request, callback)
+            connectivity.requestNetwork(request, callback, mainHandler)
         } catch (e: SecurityException) {
             result.error("PERMISSION_DENIED", e.message, null)
+        } catch (e: RuntimeException) {
+            result.error("JOIN_FAILED", e.message, null)
         }
     }
 
