@@ -204,4 +204,49 @@ void main() {
 
     expect(transport.isFailedForTesting, isTrue);
   });
+
+  test('no phantom success: finalize with zero files fails completion with StateError', () async {
+    transport.setBaseDirForTesting(tempDir.path);
+    transport.setTargetDeviceIdForTesting('device_1');
+
+    final futureExpectation = expectLater(
+      transport.completionForTesting.future,
+      throwsA(isA<StateError>().having(
+        (e) => e.message,
+        'message',
+        contains('Connection lost before any file was received'),
+      )),
+    );
+
+    await transport.finalizeForTesting();
+    await futureExpectation;
+
+    expect(transport.receivedPaths, isEmpty);
+    expect(tempDir.listSync(), isEmpty);
+  });
+
+  test('finalize with metadata but no data bytes fails and deletes partial', () async {
+    transport.setBaseDirForTesting(tempDir.path);
+    transport.setTargetDeviceIdForTesting('device_1');
+
+    final meta = Uint8List.fromList(
+      '{"name":"empty_delivery.bin","size":50,"index":0,"count":1,"sessionBytes":50}'
+          .codeUnits,
+    );
+    transport.handleMetadataForTesting(meta);
+
+    final futureExpectation = expectLater(
+      transport.completionForTesting.future,
+      throwsA(isA<StateError>()),
+    );
+
+    await transport.finalizeForTesting();
+    await futureExpectation;
+
+    final file = File(p.join(tempDir.path, 'empty_delivery.bin'));
+    final partial = File(p.join(tempDir.path, 'empty_delivery.bin.qs.partial'));
+    expect(file.existsSync(), isFalse);
+    expect(partial.existsSync(), isFalse);
+    expect(transport.receivedPaths, isEmpty);
+  });
 }

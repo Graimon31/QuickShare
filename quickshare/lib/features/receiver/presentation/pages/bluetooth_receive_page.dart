@@ -367,7 +367,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         'items': items,
       });
     } catch (e) {
-      if (!mounted || _completed) return;
+      if (!mounted || _completed || _receiveStarted) return;
       setState(() {
         _phase = _Phase.failed;
         _error = e.toString().replaceFirst('Exception: ', '');

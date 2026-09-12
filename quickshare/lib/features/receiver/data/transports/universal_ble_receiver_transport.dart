@@ -267,7 +267,10 @@ class UniversalBleReceiverTransport {
           tag: 'BLE_RECEIVER');
 
       UniversalBle.onConnectionChange = (devId, isConnected, error) {
-        if (devId == deviceId && !isConnected && !_completion.isCompleted) {
+        if (devId == deviceId &&
+            !isConnected &&
+            !_completion.isCompleted &&
+            _metadataReceived) {
           _finalize().catchError((Object e) => _failSession(e));
         }
       };
@@ -489,14 +492,22 @@ class UniversalBleReceiverTransport {
       if (_targetDeviceId != null) await _cleanup(_targetDeviceId!);
       return;
     }
+    // Zero sealed files at finalization is a loss of connection or truncation,
+    // not success: a valid session always delivers at least one item.
+    if (_writtenPaths.isEmpty) {
+      _emit('failed');
+      _failSession(
+          StateError('Connection lost before any file was received'));
+      if (_targetDeviceId != null) await _cleanup(_targetDeviceId!);
+      return;
+    }
     _emit('completed');
     AppLogger.info(
         'UniversalBleReceiver: ${_writtenPaths.length} file(s) saved under '
         '$_baseDir',
         tag: 'BLE_RECEIVER');
     if (!_completion.isCompleted) {
-      _completion.complete(
-          _writtenPaths.isNotEmpty ? _writtenPaths.first : '');
+      _completion.complete(_writtenPaths.first);
     }
     if (_targetDeviceId != null) {
       await _cleanup(_targetDeviceId!);
