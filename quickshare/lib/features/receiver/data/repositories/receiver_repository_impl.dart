@@ -11,6 +11,7 @@ import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/security/path_sanitizer.dart';
 import 'package:flutter/foundation.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
 import 'package:quickshare/features/receiver/domain/entities/qhtp_receive_result.dart';
@@ -46,21 +47,13 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
         dio = dioClient ?? Dio();
 
   String sanitizeFileName(String fileName) {
-    var name = p.basename(fileName);
-    name = name.replaceAll(RegExp(r'[\x00-\x1F\x7F/\\:*?"<>|]'), '_').trim();
-    if (name.isEmpty || name.replaceAll('.', '').isEmpty) {
-      name = 'received_file';
-    }
-    return name;
+    return PathSanitizer.sanitizeSegment(p.basename(fileName),
+        defaultName: 'received_file');
   }
 
   String sanitizePath(String fileName, String baseDir) {
-    final cleanName = sanitizeFileName(fileName);
-    final resolvedPath = p.normalize(p.join(baseDir, cleanName));
-    if (!p.isWithin(baseDir, resolvedPath) && resolvedPath != baseDir) {
-      throw Exception('Path traversal detected');
-    }
-    return resolvedPath;
+    return PathSanitizer.resolveSafePath(fileName, baseDir,
+        defaultName: 'received_file');
   }
 
   /// Whether [ip] names one machine this device could dial.

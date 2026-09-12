@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/security/path_sanitizer.dart';
 import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/utils/wakelock_guard.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
@@ -168,14 +169,8 @@ class WebRtcReceiverTransport {
 
 
   String sanitizeFileName(String name) {
-    final base = p
-        .basename(name)
-        .replaceAll(RegExp(r'[\x00-\x1F\x7F/\\:*?"<>|]'), '_')
-        .trim();
-    if (base.isEmpty || base.replaceAll('.', '').isEmpty) {
-      return 'received_file';
-    }
-    return base;
+    return PathSanitizer.sanitizeSegment(p.basename(name),
+        defaultName: 'received_file');
   }
 
   /// The relative path an item is written to, cleaned segment by segment.
@@ -190,14 +185,8 @@ class WebRtcReceiverTransport {
   /// checks the result against the destination afterwards, because one guard
   /// in front of the filesystem is not enough.
   String sanitizeRelativePath(String rawPath) {
-    final segments = rawPath
-        .replaceAll('\\', '/')
-        .split('/')
-        .where((s) => s.isNotEmpty && s != '.' && s != '..')
-        .map(sanitizeFileName)
-        .toList();
-    if (segments.isEmpty) return 'received_file';
-    return p.joinAll(segments);
+    return PathSanitizer.sanitizeRelativePath(rawPath,
+        defaultName: 'received_file');
   }
 
   String resolveTargetPath(String fileName, String baseDir) {
@@ -208,12 +197,8 @@ class WebRtcReceiverTransport {
     if (baseDir.isEmpty || !p.isAbsolute(baseDir)) {
       throw Exception('Receive directory is not set (got "$baseDir")');
     }
-    final resolved =
-        p.normalize(p.join(baseDir, sanitizeRelativePath(fileName)));
-    if (!p.isWithin(baseDir, resolved)) {
-      throw Exception('Path traversal detected in "$fileName"');
-    }
-    return resolved;
+    return PathSanitizer.resolveSafePath(fileName, baseDir,
+        defaultName: 'received_file');
   }
 
   Future<Map<String, dynamic>> _buildIceConfiguration() =>

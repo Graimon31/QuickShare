@@ -18,6 +18,7 @@ import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
 import 'package:quickshare/features/receiver/data/manifest_guard.dart';
+import 'package:quickshare/core/security/path_sanitizer.dart';
 import 'package:quickshare/features/receiver/data/store/session_state_store.dart';
 import 'package:quickshare/features/receiver/domain/entities/qhtp_receive_result.dart';
 
@@ -117,61 +118,16 @@ class QhtpReceiverClient {
   }
 
   String sanitizeSegment(String segment) {
-    var clean =
-        segment.replaceAll(RegExp(r'[\x00-\x1F\x7F/\\:*?"<>|]'), '_').trim();
-    if (clean.isEmpty || clean.replaceAll('.', '').isEmpty) {
-      clean = 'item';
-    }
-    return _fitToNameLimit(clean);
+    return PathSanitizer.sanitizeSegment(segment, defaultName: 'item');
   }
 
-  /// Shortens a name that no filesystem would accept, keeping its extension.
-  ///
-  /// Refusing the item instead would mean the user does not get their file at
-  /// all because its name was long — the wrong trade. The extension is kept
-  /// because it is what decides whether the file opens afterwards, and the
-  /// middle is what gets dropped.
-  ///
-  /// Counted in UTF-8 bytes, and cut on a character boundary so the result is
-  /// never mojibake.
   String _fitToNameLimit(String name) {
-    const limit = AppConstants.qhtpMaxNameBytes;
-    if (utf8.encode(name).length <= limit) return name;
-
-    final extension = p.extension(name);
-    // An "extension" longer than the budget is not an extension, it is a name
-    // with a dot in it.
-    final keptExtension =
-        utf8.encode(extension).length <= limit ~/ 4 ? extension : '';
-    final stem = name.substring(0, name.length - extension.length);
-    final stemBudget = limit - utf8.encode(keptExtension).length;
-
-    final buffer = StringBuffer();
-    var used = 0;
-    for (final rune in stem.runes) {
-      final encoded = utf8.encode(String.fromCharCode(rune)).length;
-      if (used + encoded > stemBudget) break;
-      buffer.writeCharCode(rune);
-      used += encoded;
-    }
-    final shortened = '$buffer$keptExtension';
-    return shortened.isEmpty ? 'item' : shortened;
+    return PathSanitizer.fitToByteLimit(name, defaultName: 'item');
   }
 
   String materializePath(String relativePath, String baseDir) {
-    final segments = relativePath.split('/');
-    final safeSegments = <String>[];
-
-    for (final seg in segments) {
-      if (seg == '.' || seg == '..' || seg.isEmpty) continue;
-      safeSegments.add(sanitizeSegment(seg));
-    }
-
-    final resolvedPath = p.normalize(p.joinAll([baseDir, ...safeSegments]));
-    if (!p.isWithin(baseDir, resolvedPath) && resolvedPath != baseDir) {
-      throw Exception('Path traversal detected: $relativePath');
-    }
-    return resolvedPath;
+    return PathSanitizer.resolveSafePath(relativePath, baseDir,
+        defaultName: 'item');
   }
 
   /// [path] if it is free, otherwise `stem (1).ext`, `stem (2).ext`, … — the
@@ -600,6 +556,7 @@ class QhtpReceiverClient {
         // Per-file retry up to 3 attempts
         bool itemSuccess = false;
         Object? itemError;
+        final sessionReceivedBeforeItem = sessionReceivedBytes;
 
         for (int attempt = 1;
             attempt <= AppConstants.maxRetryAttempts;
@@ -647,6 +604,8 @@ class QhtpReceiverClient {
             );
 
             int itemReceivedBytes = existingBytes;
+            sessionReceivedBytes = sessionReceivedBeforeItem + existingBytes;
+            lastBytesReceived = sessionReceivedBytes;
             String? streamedSha256;
 
             if (existingBytes < item.size) {
@@ -713,7 +672,9 @@ class QhtpReceiverClient {
                 if (pending.isEmpty) return;
                 final block = pending.takeBytes();
                 await writeInFlight;
-                writeInFlight = sink!.writeFrom(block);
+                final future = sink!.writeFrom(block);
+                future.ignore();
+                writeInFlight = future;
               }
 
               // Hashed as the bytes go past, rather than by reading the
@@ -884,6 +845,19 @@ class QhtpReceiverClient {
             break; // Success, break retry loop
           } catch (e) {
             itemError = e;
+            final isEnospc = e is FileSystemException &&
+                (e.osError?.errorCode == 28 ||
+                    e.message.toLowerCase().contains('no space left'));
+            if (isEnospc) {
+              try {
+                final partialFile = File(partialPath);
+                if (await partialFile.exists()) {
+                  await partialFile.delete();
+                }
+              } catch (_) {}
+              return Left(FileFailure(
+                  'Not enough disk space to write ${item.path}: $e'));
+            }
             if (attempt < AppConstants.maxRetryAttempts) {
               await Future.delayed(Duration(seconds: attempt));
             }

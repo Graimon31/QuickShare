@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:universal_ble/universal_ble.dart';
 
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
+import 'package:quickshare/core/security/path_sanitizer.dart';
 import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -465,26 +466,13 @@ class UniversalBleReceiverTransport {
   /// sender cannot climb out of the destination by naming its way out. The
   /// containment check afterwards is deliberate belt and braces.
   String _resolveTargetPath(String relative) {
-    final segments = relative
-        .replaceAll('\\', '/')
-        .split('/')
-        .where((s) => s.isNotEmpty && s != '.' && s != '..')
-        .map(_sanitize)
-        .toList();
-    final resolved = p.normalize(
-        p.join(_baseDir, segments.isEmpty ? 'received_file' : p.joinAll(segments)));
-    if (!p.isWithin(_baseDir, resolved)) {
-      throw Exception('Path traversal detected in "$relative"');
-    }
-    return resolved;
+    return PathSanitizer.resolveSafePath(relative, _baseDir,
+        defaultName: 'received_file');
   }
 
   String _sanitize(String name) {
-    return p
-        .basename(name)
-        .replaceAll(RegExp(r'[\x00-\x1F\x7F/\\:*?"<>|]'), '_')
-        .trim()
-        .let((s) => s.isEmpty ? 'received_file' : s);
+    return PathSanitizer.sanitizeSegment(p.basename(name),
+        defaultName: 'received_file');
   }
 
   String _uniquePath(String path) {

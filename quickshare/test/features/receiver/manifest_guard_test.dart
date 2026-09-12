@@ -182,4 +182,38 @@ void main() {
       expect(() => guard.checkLimits(manifest), throwsA(isA<ManifestRejected>()));
     });
   });
+
+  group('Windows reserved device names', () {
+    test('rejects reserved device names as file or directory segments', () {
+      final reservedPaths = [
+        'CON',
+        'con.txt',
+        'sub/PRN/file.txt',
+        'AUX.dat',
+        'NUL',
+        'folder/COM1.png',
+        'LPT9.log',
+        'com5',
+      ];
+      for (final path in reservedPaths) {
+        expect(
+          () => guard.checkPaths(withItems([path])),
+          throwsA(isA<ManifestRejected>()),
+          reason: 'Expected $path to be rejected',
+        );
+      }
+    });
+
+    test('accepts ordinary names that contain reserved prefixes as substrings', () {
+      final validPaths = [
+        'contact.txt',
+        'pronto.doc',
+        'auxiliary.bin',
+        'null.txt',
+        'common.png',
+        'com10.dat',
+      ];
+      expect(() => guard.checkPaths(withItems(validPaths)), returnsNormally);
+    });
+  });
 }

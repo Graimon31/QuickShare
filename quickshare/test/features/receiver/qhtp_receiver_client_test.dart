@@ -28,6 +28,12 @@ void main() {
       expect(client.sanitizeSegment(''), equals('item'));
     });
 
+    test('sanitizeSegment prefixes Windows reserved device names', () {
+      expect(client.sanitizeSegment('CON.txt'), equals('_CON.txt'));
+      expect(client.sanitizeSegment('nul'), equals('_nul'));
+      expect(client.sanitizeSegment('COM1.png'), equals('_COM1.png'));
+    });
+
     test('materializePath builds valid path within base directory', () {
       final res =
           client.materializePath('photos/2024/vacation.jpg', tempBaseDir.path);

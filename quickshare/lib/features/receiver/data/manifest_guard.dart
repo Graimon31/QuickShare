@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/security/path_sanitizer.dart';
 import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
 
 /// Why a manifest was refused before a byte of the transfer moved.
@@ -78,6 +79,10 @@ class ManifestGuard {
         if (segment.contains(r'\') || segment.contains('\x00')) {
           throw const ManifestRejected(
               'An item path contains a character no filesystem accepts.');
+        }
+        if (PathSanitizer.isWindowsReserved(segment)) {
+          throw ManifestRejected(
+              'An item path contains reserved Windows device name "$segment".');
         }
       }
     }

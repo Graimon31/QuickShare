@@ -51,6 +51,10 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   /// the second finds this set and stands down.
   bool _completed = false;
 
+  /// Prevents duplicate serve frames from spawning multiple concurrent
+  /// IsolatedQhtpReceiver instances into the same session directory.
+  bool _receiveStarted = false;
+
   /// The loopback port a joined peer-to-peer link reaches the sender on.
   ///
   /// Set only when the rendezvous took that rung, and it overrides the
@@ -158,7 +162,8 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   }
 
   Future<void> _receiveOverDirectLink(LinkServeInfo serve) async {
-    if (_completed) return;
+    if (_completed || _receiveStarted) return;
+    _receiveStarted = true;
     setState(() {
       _phase = _Phase.transferring;
       _fileName = AppLocalizations.of(context).btReceiveDirectLinkPlaceholder;
@@ -260,6 +265,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       _error = null;
       _autoConnectAttempted = false;
       _completed = false;
+      _receiveStarted = false;
       _bleProgressSeen = false;
       _peerLinkPort = null;
     });
