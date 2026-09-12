@@ -222,5 +222,14 @@ void main() {
       expect(config['iceTransportPolicy'], equals('all'));
       expect(config['iceServers'], isNotEmpty);
     });
+
+    test('default Dio instance configures 4s connect and receive timeouts', () {
+      final service = TurnCredentialService(
+        baseUrl: 'http://127.0.0.1:8080',
+        clientSecret: 's3cret',
+      );
+      expect(service.dio.options.connectTimeout, equals(const Duration(seconds: 4)));
+      expect(service.dio.options.receiveTimeout, equals(const Duration(seconds: 4)));
+    });
   });
 }

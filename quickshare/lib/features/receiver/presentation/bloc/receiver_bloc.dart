@@ -3,7 +3,7 @@ import 'dart:io'
     show Directory, File, FileSystemEntity, FileSystemException;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:meta/meta.dart';
+import 'package:flutter/foundation.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:quickshare/core/errors/failures.dart';

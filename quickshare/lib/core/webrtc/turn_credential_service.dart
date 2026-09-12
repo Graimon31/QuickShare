@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -23,9 +24,18 @@ class TurnCredentialService {
     Dio? dio,
     String? clientSecret,
   })  : baseUrl = _stripTrailingSlash(baseUrl),
-        _dio = dio ?? Dio(),
+        _dio = dio ??
+            Dio(
+              BaseOptions(
+                connectTimeout: const Duration(seconds: 4),
+                receiveTimeout: const Duration(seconds: 4),
+              ),
+            ),
         clientSecret =
             clientSecret ?? AppConstants.turnClientSecret;
+
+  @visibleForTesting
+  Dio get dio => _dio;
 
   /// Headers that prove this request came from the app, not a random curl.
   static Map<String, String> signedHeaders(String secret, {DateTime? now}) {

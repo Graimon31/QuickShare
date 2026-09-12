@@ -146,7 +146,7 @@ class IceServers {
       final dynamicTurnServers = await TurnCredentialService(
         baseUrl: url,
         clientSecret: turnClientSecret ?? AppConstants.turnClientSecret,
-      ).fetchIceServers();
+      ).fetchIceServers().timeout(const Duration(seconds: 6));
 
       // The Worker hands back its own STUN entry, which overlaps the static
       // pool — `stun.cloudflare.com` is in both. A duplicate is not harmless

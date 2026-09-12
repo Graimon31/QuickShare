@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:meta/meta.dart';
+import 'package:flutter/foundation.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
