@@ -160,4 +160,48 @@ void main() {
     expect(lastPartial.existsSync(), isFalse);
     expect(transport.receivedPaths.contains(last.path), isFalse);
   });
+
+  test('P0-1 remnants: failed session drops subsequent metadata and data', () async {
+    transport.setBaseDirForTesting(tempDir.path);
+    final errorFuture = expectLater(
+        transport.completionForTesting.future, throwsA(isA<Exception>()));
+    transport.failSessionForTesting(Exception('Initial failure'));
+
+    expect(transport.isFailedForTesting, isTrue);
+
+    final meta = Uint8List.fromList(
+      '{"name":"ignored.bin","size":10,"index":0,"count":1,"sessionBytes":10}'
+          .codeUnits,
+    );
+    transport.handleMetadataForTesting(meta);
+    transport.handleDataForTesting(Uint8List.fromList([1, 2, 3]));
+
+    final ignored = File(p.join(tempDir.path, 'ignored.bin'));
+    final ignoredPartial = File(p.join(tempDir.path, 'ignored.bin.qs.partial'));
+    expect(ignored.existsSync(), isFalse);
+    expect(ignoredPartial.existsSync(), isFalse);
+    await errorFuture;
+  });
+
+  test('P0-1 remnants: idle timer armed on data and finalize fails incomplete file', () async {
+    transport.setBaseDirForTesting(tempDir.path);
+    transport.setTargetDeviceIdForTesting('device_1');
+
+    final meta = Uint8List.fromList(
+      '{"name":"idle_test.bin","size":100,"index":0,"count":1,"sessionBytes":100}'
+          .codeUnits,
+    );
+    transport.handleMetadataForTesting(meta);
+    transport.handleDataForTesting(Uint8List.fromList([1, 2, 3, 4, 5]));
+
+    expect(transport.idleTimerForTesting, isNotNull);
+
+    final futureExpectation =
+        expectLater(transport.completionForTesting.future, throwsA(isA<StateError>()));
+
+    await transport.finalizeForTesting();
+    await futureExpectation;
+
+    expect(transport.isFailedForTesting, isTrue);
+  });
 }

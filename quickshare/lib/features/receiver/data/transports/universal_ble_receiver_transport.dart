@@ -154,6 +154,30 @@ class UniversalBleReceiverTransport {
   List<String> get receivedPaths => List.unmodifiable(_writtenPaths);
 
   final _completion = Completer<String>();
+  bool _failed = false;
+  Timer? _idleTimer;
+
+  void _failSession(Object e) {
+    _failed = true;
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    try {
+      _raf?.closeSync();
+    } catch (_) {}
+    _raf = null;
+    if (!_completion.isCompleted) {
+      _completion.completeError(e);
+    }
+  }
+
+  void _armIdleTimer() {
+    _idleTimer?.cancel();
+    _idleTimer = Timer(const Duration(seconds: 30), () {
+      if (!_completion.isCompleted) {
+        _finalize().catchError((Object e) => _failSession(e));
+      }
+    });
+  }
 
   /// Starts BLE scanning and emits discovered devices on [devices].
   ///
@@ -242,6 +266,12 @@ class UniversalBleReceiverTransport {
       AppLogger.info('UniversalBleReceiver: connected to $deviceId',
           tag: 'BLE_RECEIVER');
 
+      UniversalBle.onConnectionChange = (devId, isConnected, error) {
+        if (devId == deviceId && !isConnected && !_completion.isCompleted) {
+          _finalize().catchError((Object e) => _failSession(e));
+        }
+      };
+
       await UniversalBle.discoverServices(deviceId);
 
       // Subscribe to metadata and data characteristics.
@@ -302,9 +332,7 @@ class UniversalBleReceiverTransport {
       AppLogger.info('UniversalBleReceiver: START command sent',
           tag: 'BLE_RECEIVER');
     } catch (e) {
-      if (!_completion.isCompleted) {
-        _completion.completeError(e);
-      }
+      _failSession(e);
       await _cleanup(deviceId);
     }
 
@@ -312,6 +340,7 @@ class UniversalBleReceiverTransport {
   }
 
   void _handleMetadata(Uint8List value) {
+    if (_failed) return;
     try {
       final json = jsonDecode(utf8.decode(value)) as Map<String, dynamic>;
 
@@ -336,7 +365,7 @@ class UniversalBleReceiverTransport {
       unawaited(_sealCurrentFile().catchError((Object e) {
         AppLogger.warning('UniversalBleReceiver: seal failed mid-session: $e',
             tag: 'BLE_RECEIVER');
-        if (!_completion.isCompleted) _completion.completeError(e);
+        _failSession(e);
       }));
 
       _fileName = json['name'] as String? ?? 'received_file';
@@ -373,14 +402,14 @@ class UniversalBleReceiverTransport {
     } catch (e) {
       AppLogger.warning('UniversalBleReceiver: metadata error: $e',
           tag: 'BLE_RECEIVER');
-      if (!_completion.isCompleted) {
-        _completion.completeError(e);
-      }
+      _failSession(e);
     }
   }
 
   void _handleData(Uint8List value) {
+    if (_failed) return;
     if (!_metadataReceived || _raf == null) return;
+    _armIdleTimer();
 
     try {
       // §8: decompress if the sender said so.
@@ -399,15 +428,13 @@ class UniversalBleReceiverTransport {
         if (_itemIndex >= _itemCount - 1) {
           unawaited(_finalize());
         } else {
-          unawaited(_sealCurrentFile());
+          unawaited(_sealCurrentFile().catchError((Object e) => _failSession(e)));
         }
       }
     } catch (e) {
       AppLogger.warning('UniversalBleReceiver: data chunk error: $e',
           tag: 'BLE_RECEIVER');
-      if (!_completion.isCompleted) {
-        _completion.completeError(e);
-      }
+      _failSession(e);
     }
   }
 
@@ -450,13 +477,15 @@ class UniversalBleReceiverTransport {
   }
 
   Future<void> _finalize() async {
+    _idleTimer?.cancel();
+    _idleTimer = null;
     try {
       await _sealCurrentFile();
     } catch (e) {
       AppLogger.warning('UniversalBleReceiver: finalize failed: $e',
           tag: 'BLE_RECEIVER');
       _emit('failed');
-      if (!_completion.isCompleted) _completion.completeError(e);
+      _failSession(e);
       if (_targetDeviceId != null) await _cleanup(_targetDeviceId!);
       return;
     }
@@ -508,6 +537,11 @@ class UniversalBleReceiverTransport {
   }
 
   Future<void> _cleanup(String deviceId) async {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    try {
+      UniversalBle.onConnectionChange = null;
+    } catch (_) {}
     for (final sub in _extraSubs) {
       await sub.cancel();
     }
@@ -520,6 +554,9 @@ class UniversalBleReceiverTransport {
   }
 
   Future<void> cancel() async {
+    _failed = true;
+    _idleTimer?.cancel();
+    _idleTimer = null;
     try {
       _raf?.closeSync();
     } catch (_) {}
@@ -584,7 +621,24 @@ class UniversalBleReceiverTransport {
   @visibleForTesting
   void setTargetDeviceIdForTesting(String? id) => _targetDeviceId = id;
 
+  @visibleForTesting
+  bool get isFailedForTesting => _failed;
+
+  @visibleForTesting
+  Timer? get idleTimerForTesting => _idleTimer;
+
+  @visibleForTesting
+  void armIdleTimerForTesting() => _armIdleTimer();
+
+  @visibleForTesting
+  void failSessionForTesting(Object e) => _failSession(e);
+
   Future<void> dispose() async {
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    try {
+      UniversalBle.onConnectionChange = null;
+    } catch (_) {}
     await stopScanning();
     await _devicesController.close();
     await _progressController.close();
