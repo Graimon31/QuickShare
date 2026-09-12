@@ -42,6 +42,8 @@ void main() {
     when(() => repository.statusStream).thenAnswer((_) => const Stream.empty());
     when(() => repository.stopServer(force: any(named: 'force')))
         .thenAnswer((_) async => const Right(null));
+    when(() => repository.approvalRequests)
+        .thenAnswer((_) => const Stream.empty());
     when(() => repository.lastQhtpClientAddress).thenReturn(null);
     when(() => repository.sessionTlsFingerprint).thenReturn('cert');
   });

@@ -12,6 +12,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/network/app_presence.dart';
+import 'package:quickshare/core/network/device_presence.dart';
 import 'package:quickshare/core/network/lan_discovery.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
@@ -256,9 +257,10 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       request.write(jsonEncode({
         'code': code.code,
         'invitePort': invitePort,
+        'deviceName': DevicePresence.describeThisDevice(),
       }));
       final response =
-          await request.close().timeout(const Duration(seconds: 20));
+          await request.close().timeout(const Duration(seconds: 95));
       if (response.statusCode == HttpStatus.ok) {
         final bodyText = await response.transform(utf8.decoder).join();
         final data = jsonDecode(bodyText) as Map<String, dynamic>;
@@ -320,6 +322,13 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     int port,
     SessionCode code,
   ) async {
+    // Security note: probe-path is a fallback of last resort when mDNS multicast
+    // is blocked by the network. Sending code to unverified IPs is sensitive,
+    // so we pre-filter hosts using GET /v2/health to verify QHTP protocol presence
+    // before presenting the code. The sender must approve the request on their side
+    // before the token is returned. Any proof of knowing the 33-bit code to an untrusted
+    // host could be subject to brute force, so presence-path (cid matching) is the
+    // primary and trusted route.
     final client = HttpClient(context: SecurityContext(withTrustedRoots: false));
     client.connectionTimeout = const Duration(milliseconds: 1500);
     String? tlsFingerprint;
@@ -329,6 +338,22 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     };
 
     try {
+      // 1. Pre-filter: verify host is a legitimate QHTP server before sending the code
+      final healthUri = Uri.parse('https://${address.address}:$port/v2/health');
+      final healthRequest =
+          await client.getUrl(healthUri).timeout(const Duration(milliseconds: 1500));
+      final healthResponse =
+          await healthRequest.close().timeout(const Duration(milliseconds: 1500));
+      if (healthResponse.statusCode != HttpStatus.ok) return null;
+      final healthBody = await healthResponse.transform(utf8.decoder).join();
+      try {
+        final healthData = jsonDecode(healthBody) as Map<String, dynamic>;
+        if (healthData['protocol'] != 'QHTP') return null;
+      } catch (_) {
+        return null;
+      }
+
+      // 2. Request invite with code and device name
       final uri = Uri.parse('https://${address.address}:$port/v2/invite/request');
       final request =
           await client.postUrl(uri).timeout(const Duration(milliseconds: 1500));
@@ -336,12 +361,16 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       request.write(jsonEncode({
         'code': code.code,
         'invitePort': 0,
+        'deviceName': DevicePresence.describeThisDevice(),
       }));
       final response =
-          await request.close().timeout(const Duration(milliseconds: 1500));
+          await request.close().timeout(const Duration(seconds: 95));
       if (response.statusCode == HttpStatus.ok && tlsFingerprint != null) {
         final bodyText = await response.transform(utf8.decoder).join();
         final data = jsonDecode(bodyText) as Map<String, dynamic>;
+        if (data['outcome'] != 'accepted') {
+          return null;
+        }
         final token = data['token'] as String?;
         if (token != null && token.isNotEmpty) {
           return QRPayload(
@@ -358,7 +387,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
         }
       }
     } catch (_) {
-      // Not a matching QHTP server or port unreachable
+      // Not a matching QHTP server or port unreachable / declined / timed out
     } finally {
       client.close(force: true);
     }

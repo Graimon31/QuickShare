@@ -2,6 +2,7 @@ import 'dart:io' show InternetAddress;
 
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
+import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 
@@ -93,4 +94,10 @@ abstract class SenderRepository {
   /// Waits until the first client connects to the local server, or returns
   /// false if [timeout] expires first.
   Future<bool> waitForFirstClient({Duration timeout = const Duration(seconds: 10)});
+
+  /// A stream of human-approval requests from receivers attempting LAN code entry.
+  Stream<TransferApprovalRequest> get approvalRequests;
+
+  /// Responds to a pending human-approval request.
+  void respondToApproval(String requestId, bool accepted);
 }

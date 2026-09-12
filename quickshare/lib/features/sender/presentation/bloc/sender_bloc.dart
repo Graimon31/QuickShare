@@ -20,6 +20,7 @@ import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
+import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
@@ -81,6 +82,21 @@ class CancelSending extends SenderEvent {}
 class RestartSession extends SenderEvent {}
 
 class TransferCompleted extends SenderEvent {}
+
+class InviteApprovalReceived extends SenderEvent {
+  final TransferApprovalRequest request;
+  const InviteApprovalReceived(this.request);
+  @override
+  List<Object?> get props => [request];
+}
+
+class RespondToInviteApproval extends SenderEvent {
+  final String requestId;
+  final bool accepted;
+  const RespondToInviteApproval({required this.requestId, required this.accepted});
+  @override
+  List<Object?> get props => [requestId, accepted];
+}
 
 /// The walk behind a session that is already being served has got further.
 ///
@@ -260,6 +276,20 @@ class QRReady extends SenderState {
        code, indexing];
 }
 
+/// A receiver connected via LAN code entry and requested transfer approval.
+class InviteApprovalRequested extends SenderState {
+  final TransferApprovalRequest request;
+  final QRReady previousState;
+
+  const InviteApprovalRequested({
+    required this.request,
+    required this.previousState,
+  });
+
+  @override
+  List<Object?> get props => [request, previousState];
+}
+
 /// Bluetooth is advertising and waiting for a receiver that scanned [qrData].
 class BluetoothAdvertising extends SenderState {
   final TransferSession session;
@@ -392,6 +422,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// the receiver decides.
   StreamSubscription<double>? _fastPathSubscription;
   StreamSubscription<TransferStatus>? _statusSubscription;
+  StreamSubscription<TransferApprovalRequest>? _approvalSubscription;
 
   FileMetadata? _currentFile;
 
@@ -592,6 +623,33 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
             code: FailureCode.transferFailedUnexpectedly));
       }
     });
+
+    on<InviteApprovalReceived>(_onInviteApprovalReceived);
+    on<RespondToInviteApproval>(_onRespondToInviteApproval);
+
+    _approvalSubscription = repository.approvalRequests.listen((request) {
+      add(InviteApprovalReceived(request));
+    });
+  }
+
+  void _onInviteApprovalReceived(
+      InviteApprovalReceived event, Emitter<SenderState> emit) {
+    final current = state;
+    if (current is QRReady) {
+      emit(InviteApprovalRequested(
+        request: event.request,
+        previousState: current,
+      ));
+    }
+  }
+
+  void _onRespondToInviteApproval(
+      RespondToInviteApproval event, Emitter<SenderState> emit) {
+    repository.respondToApproval(event.requestId, event.accepted);
+    final current = state;
+    if (current is InviteApprovalRequested) {
+      emit(current.previousState);
+    }
   }
 
   Future<void> _closeAnswerChannel() async {
@@ -1551,6 +1609,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _waitingSubscription?.cancel();
     _receiverReadySubscription?.cancel();
     _noPathSubscription?.cancel();
+    await _approvalSubscription?.cancel();
+    _approvalSubscription = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;

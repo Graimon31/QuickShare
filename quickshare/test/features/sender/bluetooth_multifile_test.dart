@@ -139,6 +139,8 @@ void main() {
     when(repository.stopServer).thenAnswer((_) async => const Right(null));
     when(() => repository.waitForFirstClient(timeout: any(named: 'timeout')))
         .thenAnswer((_) async => true);
+    when(() => repository.approvalRequests)
+        .thenAnswer((_) => const Stream.empty());
   });
 
   tearDown(() {

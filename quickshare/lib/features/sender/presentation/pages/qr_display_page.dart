@@ -207,13 +207,18 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
               // Expiry lands here too (the session is cancelled underneath),
               // but then the expired panel owns the screen.
               if (!_expired) context.go('/send');
+            } else if (state is InviteApprovalRequested) {
+              _showApprovalDialog(context, state);
             }
           },
           builder: (context, state) {
             if (_expired) {
               return SessionExpiredPanel(onRefresh: _refreshSession);
             }
-            if (state is! QRReady) {
+            final qrState = state is InviteApprovalRequested
+                ? state.previousState
+                : (state is QRReady ? state : null);
+            if (qrState == null) {
               return Center(
                 child: TransferPhaseLoader(
                   phaseLabel: l10n.qrDisplayPreparing,
@@ -223,16 +228,16 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
               );
             }
 
-            final isInternet = state.mode == TransportType.internet;
+            final isInternet = qrState.mode == TransportType.internet;
             // The Room Link goes everywhere: it is the one way to hand a
             // session over without a camera, so it is not platform-gated.
             final shareLink = DeepLinkService.buildPayloadLink(
-              state.qrData,
-              name: state.session.fileMetadata.name,
-              bytes: state.totalBytes > 0
-                  ? state.totalBytes
-                  : state.session.fileMetadata.size,
-              itemCount: state.itemCount,
+              qrState.qrData,
+              name: qrState.session.fileMetadata.name,
+              bytes: qrState.totalBytes > 0
+                  ? qrState.totalBytes
+                  : qrState.session.fileMetadata.size,
+              itemCount: qrState.itemCount,
             );
 
             return ScrollConfiguration(
@@ -255,17 +260,17 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         // other.
                         NearbyDevicesPanel(
                           presence: AppPresence.instance.presence,
-                          onSelected: (peer) => _invite(context, peer, state),
+                          onSelected: (peer) => _invite(context, peer, qrState),
                           // What a receiver who was told the code matches
                           // against. Derived from the code and not reversible,
                           // so it identifies this session without handing it
                           // to everyone in range.
-                          serving: state.code == null
+                          serving: qrState.code == null
                               ? null
                               : ServingSession(
-                                  port: state.session.serverPort,
-                                  tlsFingerprint: _fingerprintOf(state),
-                                  publicId: state.code!.publicId,
+                                  port: qrState.session.serverPort,
+                                  tlsFingerprint: _fingerprintOf(qrState),
+                                  publicId: qrState.code!.publicId,
                                 ),
                         ),
                         const SizedBox(height: 28),
@@ -329,7 +334,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                                     borderRadius: BorderRadius.circular(16),
                                   ),
                                   child: QrImageView(
-                                    data: state.qrData,
+                                    data: qrState.qrData,
                                     version: QrVersions.auto,
                                     size: 260.0,
                                     backgroundColor: Colors.white,
@@ -370,11 +375,11 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                             copiedMessage: l10n.qrDisplayLinkCopied,
                             copyTooltip: l10n.commonCopy,
                           ).animate().fadeIn(delay: 250.ms)
-                        else if (state.code != null)
+                        else if (qrState.code != null)
                           CopyValueRow(
                             icon: Icons.pin_rounded,
                             label: l10n.codeLabel,
-                            value: state.code!.display,
+                            value: qrState.code!.display,
                             copiedMessage: l10n.qrDisplayLinkCopied,
                             copyTooltip: l10n.commonCopy,
                           ).animate().fadeIn(delay: 250.ms),
@@ -394,24 +399,24 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                               Text(
                                 // A folder by its own name; a pile of
                                 // loose files by how many there are.
-                                state.folderName ??
-                                    (state.itemCount > 1
-                                        ? l10n.sharedItemsCount(state.itemCount)
-                                        : state.session.fileMetadata.name),
+                                qrState.folderName ??
+                                    (qrState.itemCount > 1
+                                        ? l10n.sharedItemsCount(qrState.itemCount)
+                                        : qrState.session.fileMetadata.name),
                                 style: GoogleFonts.inter(
-                                  fontSize: 16,
+                                    fontSize: 16,
                                   fontWeight: FontWeight.w600,
                                   color: Colors.white,
                                 ),
                               ),
                               const SizedBox(height: 4),
-                              if (state.totalBytes > 0 ||
-                                  state.session.fileMetadata.size > 0)
+                              if (qrState.totalBytes > 0 ||
+                                  qrState.session.fileMetadata.size > 0)
                                 Text(
                                   l10n.qrDisplayTotalSize(_formatBytes(
-                                      state.totalBytes > 0
-                                          ? state.totalBytes
-                                          : state.session.fileMetadata.size)),
+                                      qrState.totalBytes > 0
+                                          ? qrState.totalBytes
+                                          : qrState.session.fileMetadata.size)),
                                   style: GoogleFonts.inter(
                                     fontSize: 15,
                                     fontWeight: FontWeight.w700,
@@ -422,7 +427,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                               // size is not known yet. Said out loud, because
                               // a missing size on a screen that has one a
                               // second later reads as a glitch.
-                              else if (state.indexing)
+                              else if (qrState.indexing)
                                 Text(
                                   l10n.qrDisplayStillCounting,
                                   style: GoogleFonts.inter(
@@ -483,6 +488,41 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _showApprovalDialog(
+    BuildContext context,
+    InviteApprovalRequested requestState,
+  ) async {
+    final l10n = AppLocalizations.of(context);
+    final bloc = context.read<SenderBloc>();
+    final addressText = requestState.request.remoteAddress != null
+        ? ' (${requestState.request.remoteAddress!.address})'
+        : '';
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l10n.inviteTitle),
+        content: Text(
+          '${requestState.request.deviceName}$addressText wants to receive the selected files.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(l10n.inviteDecline),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(l10n.inviteAccept),
+          ),
+        ],
+      ),
+    );
+    bloc.add(RespondToInviteApproval(
+      requestId: requestState.request.id,
+      accepted: accepted ?? false,
+    ));
   }
 
   String _formatBytes(int bytes) => ByteFormat.size(bytes);

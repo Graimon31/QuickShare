@@ -83,6 +83,8 @@ void main() {
         .thenAnswer((_) async => const Right(null));
     when(() => mockRepository.waitForFirstClient(timeout: any(named: 'timeout')))
         .thenAnswer((_) async => true);
+    when(() => mockRepository.approvalRequests)
+        .thenAnswer((_) => const Stream.empty());
   });
 
   group('SenderBloc', () {

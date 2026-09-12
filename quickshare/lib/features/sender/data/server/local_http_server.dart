@@ -4,9 +4,11 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
+import 'package:uuid/uuid.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/network/device_presence.dart';
 import 'package:quickshare/core/network/session_code.dart';
@@ -20,10 +22,74 @@ import 'package:quickshare/features/sender/domain/entities/qhtp_manifest.dart';
 import 'package:quickshare/core/utils/background_hold.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+/// Represents a pending human-approval request when a receiver asks for files
+/// via LAN code entry (/v2/invite/request).
+class TransferApprovalRequest {
+  final String id;
+  final InternetAddress? remoteAddress;
+  final String deviceName;
+  final String code;
+  final Completer<bool> _completer = Completer<bool>();
+
+  TransferApprovalRequest({
+    required this.id,
+    required this.remoteAddress,
+    required this.deviceName,
+    required this.code,
+  });
+
+  Future<bool> get decision => _completer.future;
+
+  void complete(bool accepted) {
+    if (!_completer.isCompleted) {
+      _completer.complete(accepted);
+    }
+  }
+}
+
 class LocalHttpServer {
   HttpServer? _server;
   String? _authToken;
   String? _sessionPublicId;
+
+  final Map<InternetAddress, List<DateTime>> _codeAttempts = {};
+  final Map<String, TransferApprovalRequest> _pendingApprovals = {};
+  final _approvalController =
+      StreamController<TransferApprovalRequest>.broadcast();
+
+  Stream<TransferApprovalRequest> get approvalRequests =>
+      _approvalController.stream;
+
+  @visibleForTesting
+  Future<bool> Function(TransferApprovalRequest request)? onApprovalRequested;
+
+  void respondToApproval(String requestId, bool accepted) {
+    final pending = _pendingApprovals[requestId];
+    pending?.complete(accepted);
+  }
+
+  Future<bool> _requestApproval(
+    TransferApprovalRequest request, {
+    Duration timeout = const Duration(seconds: 90),
+  }) async {
+    if (onApprovalRequested != null) {
+      try {
+        return await onApprovalRequested!(request)
+            .timeout(timeout, onTimeout: () => false);
+      } catch (_) {
+        return false;
+      }
+    }
+    _pendingApprovals[request.id] = request;
+    _approvalController.add(request);
+    try {
+      return await request.decision.timeout(timeout, onTimeout: () => false);
+    } catch (_) {
+      return false;
+    } finally {
+      _pendingApprovals.remove(request.id);
+    }
+  }
 
   /// True once the receiver has said the session is delivered. From then on
   /// the token answers for nothing but a repeat of that acknowledgement.
@@ -444,6 +510,26 @@ class LocalHttpServer {
     // POST /v2/invite/request (No auth required — authenticated via 10-digit code)
     router.post('/v2/invite/request', (Request request) async {
       try {
+        final connection =
+            request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
+        final remoteAddress = connection?.remoteAddress;
+
+        // Rate limit attempts per source address (Layer C): max 5 attempts per minute
+        if (remoteAddress != null) {
+          final now = DateTime.now();
+          final attempts = (_codeAttempts[remoteAddress] ??= [])
+            ..removeWhere((t) => now.difference(t) > const Duration(minutes: 1));
+          if (attempts.length >= 5) {
+            return Response(
+              429,
+              body: jsonEncode(
+                  {'error': 'too many attempts', 'code': 'RATE_LIMITED'}),
+              headers: {'Content-Type': 'application/json; charset=utf-8'},
+            );
+          }
+          attempts.add(now);
+        }
+
         final bodyText = await request.readAsString();
         final Map<String, dynamic> body;
         try {
@@ -466,11 +552,32 @@ class LocalHttpServer {
           );
         }
 
-        final invitePort = body['invitePort'] as int? ?? 0;
-        final connection =
-            request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
-        final remoteAddress = connection?.remoteAddress;
+        final deviceName = body['deviceName'] as String? ??
+            (remoteAddress?.address ?? 'Unknown Device');
 
+        final approval = TransferApprovalRequest(
+          id: const Uuid().v4(),
+          remoteAddress: remoteAddress,
+          deviceName: deviceName,
+          code: codeText,
+        );
+
+        // Sender-side approval (Layer B): human approval required before any token is issued
+        final senderAccepted = await _requestApproval(
+          approval,
+          timeout: const Duration(seconds: 90),
+        );
+        if (!senderAccepted) {
+          return Response.ok(
+            jsonEncode({
+              'outcome': 'declined',
+              'detail': 'Transfer declined by sender',
+            }),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+          );
+        }
+
+        final invitePort = body['invitePort'] as int? ?? 0;
         final indexed = await _indexOrNull(index);
         if (indexed == null) return _indexUnavailable();
 
@@ -489,21 +596,28 @@ class LocalHttpServer {
               tlsFingerprint: _tls?.fingerprint ?? '',
             ),
           );
-          return Response.ok(
-            jsonEncode({
-              'outcome': result.accepted ? 'accepted' : 'declined',
-              'detail': result.detail,
+          final responseBody = <String, dynamic>{
+            'outcome': result.accepted ? 'accepted' : 'declined',
+            'detail': result.detail,
+          };
+          // Token and session details only returned upon explicit acceptance (Layer A)
+          if (result.accepted) {
+            responseBody.addAll({
               'token': _authToken,
               'sessionId': sessionId,
               'port': _server?.port ?? 8000,
               'tlsFingerprint': _tls?.fingerprint ?? '',
               'itemCount': indexed.manifest.itemCount,
               'totalBytes': indexed.manifest.totalBytes,
-            }),
+            });
+          }
+          return Response.ok(
+            jsonEncode(responseBody),
             headers: {'Content-Type': 'application/json; charset=utf-8'},
           );
         }
 
+        // Long-poll / probe path (invitePort == 0): sender has approved, return token (Layer A)
         return Response.ok(
           jsonEncode({
             'outcome': 'accepted',
@@ -950,6 +1064,10 @@ class LocalHttpServer {
     _lazyDigests.clear();
     _lastClientAddress = null;
     _firstClient = Completer<void>();
+    for (final approval in _pendingApprovals.values) {
+      approval.complete(false);
+    }
+    _pendingApprovals.clear();
     if (_server != null) {
       await _server!.close(force: force);
       _server = null;

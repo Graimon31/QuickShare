@@ -335,4 +335,13 @@ class SenderRepositoryImpl implements SenderRepository {
   @override
   Future<bool> waitForFirstClient({Duration timeout = const Duration(seconds: 10)}) =>
       localServer.waitForFirstClient(timeout: timeout);
+
+  @override
+  Stream<TransferApprovalRequest> get approvalRequests =>
+      localServer.approvalRequests;
+
+  @override
+  void respondToApproval(String requestId, bool accepted) {
+    localServer.respondToApproval(requestId, accepted);
+  }
 }
