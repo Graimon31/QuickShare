@@ -80,3 +80,4 @@ app.*.map.json
 *.jks
 *.keystore
 ios/.symlinks/
+*_result.txt

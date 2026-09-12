@@ -95,3 +95,9 @@ test('an unknown path is a 404', async () => {
   const response = await worker.fetch(new Request('https://worker.example/nope'), env);
   assert.equal(response.status, 404);
 });
+
+test('a malformed URI encoded room id returns 400 not 500', async () => {
+  const env = makeEnv();
+  const response = await worker.fetch(new Request('https://worker.example/r/%E0%A4%A'), env);
+  assert.equal(response.status, 400);
+});

@@ -177,7 +177,10 @@ async function fetchCloudflareTurn(env) {
   const data = await res.json();
   const creds = extractCredentials(data.iceServers ?? data);
   if (!creds) {
-    console.log('cloudflare /turn unexpected payload:', JSON.stringify(data));
+    console.log(
+      'cloudflare /turn unexpected payload shape:',
+      describeShape(data.iceServers ?? data),
+    );
     throw new Error(
       `cloudflare turn response carried no credentials (got ${describeShape(
         data.iceServers ?? data,
@@ -242,7 +245,7 @@ async function fetchMeteredTurn(env) {
   const servers = await res.json();
   const creds = extractCredentials(servers);
   if (!creds) {
-    console.log('metered /turn unexpected payload:', JSON.stringify(servers));
+    console.log('metered /turn unexpected payload shape:', describeShape(servers));
     throw new Error(
       `metered response carried no credentials (got ${describeShape(servers)})`,
     );
@@ -346,7 +349,12 @@ export default {
 
     const roomMatch = url.pathname.match(/^\/r\/([^/]+)$/);
     if (roomMatch) {
-      const roomId = decodeURIComponent(roomMatch[1]);
+      let roomId;
+      try {
+        roomId = decodeURIComponent(roomMatch[1]);
+      } catch {
+        return text('invalid room id', 400);
+      }
       if (request.method === 'POST') return handleRoomPost(request, env, roomId);
       if (request.method === 'GET') return handleRoomGet(env, roomId);
     }

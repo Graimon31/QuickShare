@@ -39,6 +39,8 @@ put METERED_SUBDOMAIN \
   "just the subdomain part of <subdomain>.metered.live, no https:// and no dots"
 put METERED_API_KEY \
   "Metered dashboard -> Developers/API key"
+put TURN_CLIENT_SECRET \
+  "the shared secret DirectDrop clients use to authenticate against /turn"
 
 echo
 echo "Done. Check what is stored (names only, never values):"
