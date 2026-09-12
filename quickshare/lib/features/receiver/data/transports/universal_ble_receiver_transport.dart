@@ -334,7 +334,11 @@ class UniversalBleReceiverTransport {
 
       // Whatever was open belongs to the previous file: a metadata frame is
       // the only end-of-file marker this channel has.
-      unawaited(_sealCurrentFile());
+      unawaited(_sealCurrentFile().catchError((Object e) {
+        AppLogger.warning('UniversalBleReceiver: seal failed mid-session: $e',
+            tag: 'BLE_RECEIVER');
+        if (!_completion.isCompleted) _completion.completeError(e);
+      }));
 
       _fileName = json['name'] as String? ?? 'received_file';
       _fileTotalBytes = json['size'] as int? ?? 0;
@@ -368,8 +372,11 @@ class UniversalBleReceiverTransport {
           tag: 'BLE_RECEIVER');
       _emit('transferring');
     } catch (e) {
-      AppLogger.warning('UniversalBleReceiver: bad metadata chunk: $e',
+      AppLogger.warning('UniversalBleReceiver: metadata error: $e',
           tag: 'BLE_RECEIVER');
+      if (!_completion.isCompleted) {
+        _completion.completeError(e);
+      }
     }
   }
 
@@ -444,7 +451,16 @@ class UniversalBleReceiverTransport {
   }
 
   Future<void> _finalize() async {
-    await _sealCurrentFile();
+    try {
+      await _sealCurrentFile();
+    } catch (e) {
+      AppLogger.warning('UniversalBleReceiver: finalize failed: $e',
+          tag: 'BLE_RECEIVER');
+      _emit('failed');
+      if (!_completion.isCompleted) _completion.completeError(e);
+      if (_targetDeviceId != null) await _cleanup(_targetDeviceId!);
+      return;
+    }
     _emit('completed');
     AppLogger.info(
         'UniversalBleReceiver: ${_writtenPaths.length} file(s) saved under '
@@ -555,6 +571,24 @@ class UniversalBleReceiverTransport {
     _fileReceivedBytes = fileReceivedBytes;
     _fileTotalBytes = fileTotalBytes;
   }
+
+  @visibleForTesting
+  void handleMetadataForTesting(Uint8List value) => _handleMetadata(value);
+
+  @visibleForTesting
+  void handleDataForTesting(Uint8List value) => _handleData(value);
+
+  @visibleForTesting
+  Future<void> finalizeForTesting() => _finalize();
+
+  @visibleForTesting
+  void setBaseDirForTesting(String dir) => _baseDir = dir;
+
+  @visibleForTesting
+  Completer<String> get completionForTesting => _completion;
+
+  @visibleForTesting
+  void setTargetDeviceIdForTesting(String? id) => _targetDeviceId = id;
 
   Future<void> dispose() async {
     await stopScanning();

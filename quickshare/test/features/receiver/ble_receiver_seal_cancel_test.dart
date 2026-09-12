@@ -99,4 +99,65 @@ void main() {
     expect(finalFile.existsSync(), isFalse);
     expect(partialFile.existsSync(), isFalse);
   });
+
+  test('P0-1: truncated middle file fails completion instead of silent drop', () async {
+    transport.setBaseDirForTesting(tempDir.path);
+    transport.setTargetDeviceIdForTesting('device_1');
+
+    // Announce file 1 (size 10 bytes)
+    final meta1 = Uint8List.fromList(
+      '{"name":"file1.bin","size":10,"index":0,"count":2,"sessionBytes":20}'
+          .codeUnits,
+    );
+    transport.handleMetadataForTesting(meta1);
+
+    // Deliver only 5 bytes
+    transport.handleDataForTesting(Uint8List.fromList([1, 2, 3, 4, 5]));
+
+    // Announce file 2 before file 1 completed
+    final meta2 = Uint8List.fromList(
+      '{"name":"file2.bin","size":10,"index":1,"count":2,"sessionBytes":20}'
+          .codeUnits,
+    );
+    transport.handleMetadataForTesting(meta2);
+
+    // Completion future must complete with StateError, not succeed without file1
+    expect(transport.completionForTesting.future, throwsA(isA<StateError>()));
+
+    // file1 partial must be deleted, and final not created
+    final file1 = File(p.join(tempDir.path, 'file1.bin'));
+    final file1Partial = File(p.join(tempDir.path, 'file1.bin.qs.partial'));
+    expect(file1.existsSync(), isFalse);
+    expect(file1Partial.existsSync(), isFalse);
+    expect(transport.receivedPaths.contains(file1.path), isFalse);
+  });
+
+  test('P0-1: truncated last file fails completion instead of hanging', () async {
+    transport.setBaseDirForTesting(tempDir.path);
+    transport.setTargetDeviceIdForTesting('device_1');
+
+    // Announce single file of 10 bytes
+    final meta = Uint8List.fromList(
+      '{"name":"last.bin","size":10,"index":0,"count":1,"sessionBytes":10}'
+          .codeUnits,
+    );
+    transport.handleMetadataForTesting(meta);
+
+    // Deliver only 4 bytes
+    transport.handleDataForTesting(Uint8List.fromList([1, 2, 3, 4]));
+
+    // Completion must fail with StateError, not hang forever
+    final futureExpectation =
+        expectLater(transport.completionForTesting.future, throwsA(isA<StateError>()));
+
+    // Trigger finalize (e.g. sender disconnected or closed transfer)
+    await transport.finalizeForTesting();
+    await futureExpectation;
+
+    final last = File(p.join(tempDir.path, 'last.bin'));
+    final lastPartial = File(p.join(tempDir.path, 'last.bin.qs.partial'));
+    expect(last.existsSync(), isFalse);
+    expect(lastPartial.existsSync(), isFalse);
+    expect(transport.receivedPaths.contains(last.path), isFalse);
+  });
 }

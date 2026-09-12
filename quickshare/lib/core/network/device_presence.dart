@@ -207,6 +207,7 @@ class DevicePresence {
     _invitations = null;
     await _discovery.stop();
     _announcement = null;
+    _startInFlight = null;
   }
 
   Future<void> dispose() async {

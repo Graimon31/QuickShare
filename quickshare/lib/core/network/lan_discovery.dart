@@ -273,6 +273,7 @@ class LanDiscoveryService {
   /// [stop] and keeps a torn-down screen alive in a widget test — and, less
   /// visibly, in the app.
   final Set<Timer> _pendingTimeouts = {};
+  final Set<Completer<dynamic>> _pendingCalls = {};
 
   nsd.Registration? _registration;
   nsd.Discovery? _discovery;
@@ -338,24 +339,27 @@ class LanDiscoveryService {
   /// can cancel.
   Future<T> _bounded<T>(Future<T> call, String what) {
     final completer = Completer<T>();
+    _pendingCalls.add(completer);
     late final Timer timer;
     timer = Timer(platformCallTimeout, () {
       _pendingTimeouts.remove(timer);
+      _pendingCalls.remove(completer);
       if (!completer.isCompleted) {
         completer.completeError(TimeoutException(what));
       }
     });
     _pendingTimeouts.add(timer);
 
-    call.then((value) {
+    void settle(void Function() body) {
       timer.cancel();
       _pendingTimeouts.remove(timer);
-      if (!completer.isCompleted) completer.complete(value);
-    }, onError: (Object error, StackTrace stack) {
-      timer.cancel();
-      _pendingTimeouts.remove(timer);
-      if (!completer.isCompleted) completer.completeError(error, stack);
-    });
+      _pendingCalls.remove(completer);
+      if (!completer.isCompleted) body();
+    }
+
+    call.then((value) => settle(() => completer.complete(value)),
+        onError: (Object error, StackTrace stack) =>
+            settle(() => completer.completeError(error, stack)));
 
     return completer.future;
   }
@@ -810,6 +814,10 @@ class LanDiscoveryService {
       timer.cancel();
     }
     _pendingTimeouts.clear();
+    for (final c in List.of(_pendingCalls)) {
+      if (!c.isCompleted) c.completeError(StateError('cancelled'));
+    }
+    _pendingCalls.clear();
   }
 
   Future<void> dispose() async {
