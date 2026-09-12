@@ -363,6 +363,7 @@ class WebRtcTransferTransport implements TransferTransport {
           bufferedAmount: () => _queuedBytes,
           isOpen: _isChannelOpen,
           limit: AppConstants.webRtcMaxBufferedAmount,
+          onDrain: _awaitDrain,
         );
       }
       AppLogger.info(
@@ -391,9 +392,15 @@ class WebRtcTransferTransport implements TransferTransport {
                   '($fileSent of ${item.size} bytes read)');
             }
 
-            final payload = item.compressed
-                ? Uint8List.fromList(GZipEncoder().encode(chunk)!)
-                : chunk;
+            final Uint8List payload;
+            if (item.compressed) {
+              final encoded = GZipEncoder().encode(chunk)!;
+              payload = encoded is Uint8List
+                  ? encoded
+                  : Uint8List.fromList(encoded);
+            } else {
+              payload = chunk;
+            }
 
             _dataChannel!.send(RTCDataChannelMessage.fromBinary(payload));
             _queuedBytes += payload.length;
@@ -408,6 +415,7 @@ class WebRtcTransferTransport implements TransferTransport {
               bufferedAmount: () => _queuedBytes,
               isOpen: _isChannelOpen,
               limit: AppConstants.webRtcMaxBufferedAmount,
+              onDrain: _awaitDrain,
             );
           }
         } finally {
