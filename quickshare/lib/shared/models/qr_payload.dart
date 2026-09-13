@@ -42,9 +42,13 @@ class QRPayload extends Equatable {
     this.senderName,
   });
 
-  bool get isQhtp =>
-      version == AppConstants.qhtpPayloadVersion ||
-      (sessionId != null && sessionId!.isNotEmpty);
+  bool get isQhtp {
+    // Internet (QS1/QS2) and Bluetooth locators also carry a session id.
+    // They are not LAN QHTP and must not hit `/v2/session` for a preview.
+    if (mode == 'webrtc-qs1' || mode == 'bluetooth') return false;
+    return version == AppConstants.qhtpPayloadVersion ||
+        (sessionId != null && sessionId!.isNotEmpty);
+  }
 
   QRPayload copyWith({String? ip, int? port, String? senderName}) => QRPayload(
         version: version,

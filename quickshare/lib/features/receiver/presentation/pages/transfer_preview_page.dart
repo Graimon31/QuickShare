@@ -88,8 +88,7 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
     final isQhtp = payload.isQhtp || isBluetooth;
     final itemCount = preview?.itemCount ??
         (payload.itemCount > 0 ? payload.itemCount : (isQhtp ? 0 : 1));
-    final totalBytes =
-        isQhtp ? (preview?.totalBytes ?? payload.fileSize) : payload.fileSize;
+    final totalBytes = preview?.totalBytes ?? payload.fileSize;
     final sender = (preview?.senderName?.isNotEmpty == true)
         ? preview!.senderName!
         : ((payload.senderName?.isNotEmpty == true)

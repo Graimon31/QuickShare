@@ -739,11 +739,19 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// answer into a channel nobody is watching. Returns null if no public
   /// channel could be reached; the caller then fails the share outright rather
   /// than showing a code that leads nowhere.
-  Future<String?> _prepareServerlessQr(String offerSdp) async {
+  Future<String?> _prepareServerlessQr(
+    String offerSdp, {
+    String name = '',
+    int bytes = 0,
+    int itemCount = 0,
+  }) async {
     try {
       final qr = ServerlessQr(
         seed: SealedEnvelope.newSeed(),
         offer: ServerlessQr.trimForQr(CompactSdp.fromSdp(offerSdp)),
+        fileName: name,
+        fileSize: bytes,
+        itemCount: itemCount,
       );
       final topic = await qr.topic;
 
@@ -911,7 +919,13 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           throw Exception('WebRTC produced no local offer to put in the QR');
         }
 
-        final qrPayloadData = await _prepareServerlessQr(offerSdp);
+        final session = _sessionFiles ?? [file];
+        final qrPayloadData = await _prepareServerlessQr(
+          offerSdp,
+          name: _sessionFolderName ?? file.name,
+          bytes: session.fold<int>(0, (sum, f) => sum + f.size),
+          itemCount: session.length,
+        );
         if (qrPayloadData == null) {
           // Better a clear failure than a QR code pointing at a rendezvous
           // nobody is listening on.
@@ -920,7 +934,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
               'internet connection and try again.');
         }
 
-        final session = _sessionFiles ?? [file];
         emit(QRReady(
           qrPayloadData,
           _makeDummySession(_sessionDisplay ?? file),

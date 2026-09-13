@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
+import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 
 void main() {
   String offerWith(int hostCount, int srflxCount, int relayCount) {
@@ -34,6 +35,31 @@ a=sctp-port:5000
   }
 
   group('ServerlessQr', () {
+    test('round trips seed, offer and preview (size, count, name)', () {
+      final seed = SealedEnvelope.newSeed();
+      final qr = ServerlessQr(
+        seed: seed,
+        offer: CompactSdp.fromSdp(offerWith(1, 1, 1)),
+        fileName: 'Новая папка',
+        fileSize: 2261115486,
+        itemCount: 378,
+      );
+
+      final decoded = ServerlessQr.decode(qr.encode());
+
+      expect(decoded.fileName, 'Новая папка');
+      expect(decoded.fileSize, 2261115486);
+      expect(decoded.itemCount, 378);
+      expect(decoded.offer.iceUfrag, 'F7gI');
+      expect(qr.encode(), startsWith('QS2'));
+
+      final payload = QRPayloadDecoder().decode(qr.encode());
+      expect(payload.isQhtp, isFalse);
+      expect(payload.fileName, 'Новая папка');
+      expect(payload.fileSize, 2261115486);
+      expect(payload.itemCount, 378);
+    });
+
     test('round trips seed and offer through the QR string', () {
       final seed = SealedEnvelope.newSeed();
       final qr = ServerlessQr(

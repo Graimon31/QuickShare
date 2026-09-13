@@ -17,21 +17,59 @@ import 'package:quickshare/core/webrtc/compact_sdp.dart';
 class ServerlessQr {
   /// Marks the payload as this format so the scanner can tell it apart from
   /// the JSON QR codes used by the LAN and Bluetooth transports.
+  ///
+  /// `QS1` is seed + offer only. `QS2` prepends name/size/count so the
+  /// receiver can show what is coming before the DataChannel opens — a
+  /// camera scan never sees the `n`/`s`/`c` query params on the share link.
   static const String prefix = 'QS1';
+  static const String prefixWithPreview = 'QS2';
+  static const int _maxNameBytes = 80;
 
   final Uint8List seed;
   final CompactSdp offer;
+  final String fileName;
+  final int fileSize;
+  final int itemCount;
 
-  const ServerlessQr({required this.seed, required this.offer});
+  const ServerlessQr({
+    required this.seed,
+    required this.offer,
+    this.fileName = '',
+    this.fileSize = 0,
+    this.itemCount = 0,
+  });
 
-  static bool looksLikeOne(String raw) => raw.trim().startsWith(prefix);
+  bool get hasPreview =>
+      fileSize > 0 || itemCount > 0 || fileName.isNotEmpty;
+
+  static bool looksLikeOne(String raw) {
+    final t = raw.trim();
+    return t.startsWith(prefixWithPreview) || t.startsWith(prefix);
+  }
 
   String encode() {
     final offerBytes = offer.toBytes();
-    final body = Uint8List(seed.length + offerBytes.length)
-      ..setRange(0, seed.length, seed)
-      ..setRange(seed.length, seed.length + offerBytes.length, offerBytes);
-    return prefix + base64Url.encode(body).replaceAll('=', '');
+    final nameBytes = utf8.encode(_clipName(fileName));
+    final withPreview = hasPreview;
+    final previewBytes = withPreview ? 4 + 8 + 1 + nameBytes.length : 0;
+    final body = Uint8List(seed.length + previewBytes + offerBytes.length);
+    var o = 0;
+    body.setRange(o, o + seed.length, seed);
+    o += seed.length;
+    if (withPreview) {
+      final view = ByteData.sublistView(body);
+      view.setUint32(o, itemCount, Endian.big);
+      o += 4;
+      view.setUint64(o, fileSize, Endian.big);
+      o += 8;
+      body[o] = nameBytes.length;
+      o += 1;
+      body.setRange(o, o + nameBytes.length, nameBytes);
+      o += nameBytes.length;
+    }
+    body.setRange(o, o + offerBytes.length, offerBytes);
+    final tag = withPreview ? prefixWithPreview : prefix;
+    return tag + base64Url.encode(body).replaceAll('=', '');
   }
 
   static ServerlessQr decode(String raw) {
@@ -39,18 +77,50 @@ class ServerlessQr {
     if (!looksLikeOne(trimmed)) {
       throw const FormatException('not a serverless DirectDrop QR code');
     }
+    final withPreview = trimmed.startsWith(prefixWithPreview);
+    final tag = withPreview ? prefixWithPreview : prefix;
     final body = base64Url.decode(
-      base64Url.normalize(trimmed.substring(prefix.length)),
+      base64Url.normalize(trimmed.substring(tag.length)),
     );
     if (body.length <= SealedEnvelope.seedLengthBytes) {
       throw const FormatException('serverless QR payload is truncated');
     }
+    var o = SealedEnvelope.seedLengthBytes;
+    var fileName = '';
+    var fileSize = 0;
+    var itemCount = 0;
+    if (withPreview) {
+      if (body.length < o + 13) {
+        throw const FormatException('serverless QR preview is truncated');
+      }
+      final view = ByteData.sublistView(body);
+      itemCount = view.getUint32(o, Endian.big);
+      o += 4;
+      fileSize = view.getUint64(o, Endian.big);
+      o += 8;
+      final nameLen = body[o];
+      o += 1;
+      if (body.length < o + nameLen) {
+        throw const FormatException('serverless QR name is truncated');
+      }
+      fileName = utf8.decode(body.sublist(o, o + nameLen));
+      o += nameLen;
+    }
     return ServerlessQr(
       seed: Uint8List.fromList(body.sublist(0, SealedEnvelope.seedLengthBytes)),
-      offer: CompactSdp.fromBytes(
-        Uint8List.fromList(body.sublist(SealedEnvelope.seedLengthBytes)),
-      ),
+      offer: CompactSdp.fromBytes(Uint8List.fromList(body.sublist(o))),
+      fileName: fileName,
+      fileSize: fileSize,
+      itemCount: itemCount,
     );
+  }
+
+  static String _clipName(String name) {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) return '';
+    final bytes = utf8.encode(trimmed);
+    if (bytes.length <= _maxNameBytes) return trimmed;
+    return utf8.decode(bytes.sublist(0, _maxNameBytes), allowMalformed: true);
   }
 
   /// Bound into the sealed answer as associated data. An answer produced for

@@ -26,9 +26,10 @@ class QRPayloadDecoder {
         sessionId: qr.offer.iceUfrag,
         mode: serverlessMode,
         sdpOffer: unwrapped,
-        fileName: share?.name ?? '',
-        fileSize: share?.bytes ?? 0,
-        itemCount: share?.itemCount ?? 0,
+        fileName: qr.fileName.isNotEmpty ? qr.fileName : (share?.name ?? ''),
+        fileSize: qr.fileSize > 0 ? qr.fileSize : (share?.bytes ?? 0),
+        itemCount:
+            qr.itemCount > 0 ? qr.itemCount : (share?.itemCount ?? 0),
       );
     }
 
