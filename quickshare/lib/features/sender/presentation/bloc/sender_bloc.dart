@@ -8,7 +8,6 @@ import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
-import 'package:quickshare/features/sender/data/repositories/sender_repository_impl.dart';
 import 'package:quickshare/features/sender/data/transports/webrtc_transfer_transport.dart';
 import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
 import 'package:quickshare/features/sender/data/indexer/transfer_selection.dart';
@@ -1648,9 +1647,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await peerLink.stop();
     await _fastPathSubscription?.cancel();
     _fastPathSubscription = null;
-    if (repository is SenderRepositoryImpl) {
-      (repository as SenderRepositoryImpl).dispose();
-    }
     return super.close();
   }
 }

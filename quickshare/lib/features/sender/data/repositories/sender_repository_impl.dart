@@ -27,7 +27,14 @@ class SenderRepositoryImpl implements SenderRepository {
   final FileIndexer indexer;
   final ImagePicker imagePicker;
 
-  final _statusController = StreamController<TransferStatus>.broadcast();
+  var _statusController = StreamController<TransferStatus>.broadcast();
+
+  void _emitStatus(TransferStatus status) {
+    if (_statusController.isClosed) {
+      _statusController = StreamController<TransferStatus>.broadcast();
+    }
+    _statusController.add(status);
+  }
 
   SenderRepositoryImpl({
     required this.localServer,
@@ -105,7 +112,7 @@ class SenderRepositoryImpl implements SenderRepository {
   Future<Either<Failure, TransferSession>> startServer(
       FileMetadata file) async {
     try {
-      _statusController.add(TransferStatus.serving);
+      _emitStatus(TransferStatus.serving);
 
       final ip = await networkInfoService.getLocalIpAddress();
       if (ip == null) {
@@ -133,7 +140,7 @@ class SenderRepositoryImpl implements SenderRepository {
 
       return Right(session);
     } catch (e) {
-      _statusController.add(TransferStatus.failed);
+      _emitStatus(TransferStatus.failed);
       debugPrint('Error details: $e');
       return const Left(
           ServerFailure('Failed to start server. Please try again.'));
@@ -150,7 +157,7 @@ class SenderRepositoryImpl implements SenderRepository {
     void Function(Object error)? onIndexFailed,
   }) async {
     try {
-      _statusController.add(TransferStatus.serving);
+      _emitStatus(TransferStatus.serving);
 
       // Every step from here to the QR says how long it took. A session
       // that takes twenty seconds and a session that never starts at all
@@ -257,7 +264,7 @@ class SenderRepositoryImpl implements SenderRepository {
 
       return Right(session);
     } catch (e) {
-      _statusController.add(TransferStatus.failed);
+      _emitStatus(TransferStatus.failed);
       debugPrint('Error starting QHTP transfer: $e');
       return Left(
           ServerFailure('Failed to start QHTP transfer: ${e.toString()}'));
@@ -324,7 +331,7 @@ class SenderRepositoryImpl implements SenderRepository {
   Future<Either<Failure, void>> stopServer({bool force = false}) async {
     try {
       await localServer.stop(force: force);
-      _statusController.add(TransferStatus.cancelled);
+      _emitStatus(TransferStatus.cancelled);
       return const Right(null);
     } catch (e) {
       debugPrint('Error details: $e');

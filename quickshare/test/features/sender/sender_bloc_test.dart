@@ -538,5 +538,78 @@ void main() {
       verify(() => mockRepository.respondToApproval('test-req-id', false)).called(1);
       await bloc.close();
     });
+
+    // B3 — sender_bloc.dart:643-654 (_onInviteApprovalReceived). The plain
+    // `test` above pins the regression from 47c4919 (an approval arriving off
+    // QRReady must not sit for 90s); these two blocTest cases pin both halves
+    // of the branch it lives in, in the idiom the rest of this file uses.
+    blocTest<SenderBloc, SenderState>(
+      // B3(a) — on QRReady, an approval request must surface the dialog
+      // state rather than being silently auto-declined.
+      'B3(a): QRReady + InviteApprovalReceived emits InviteApprovalRequested',
+      seed: () => QRReady(
+        'qr-data',
+        TransferSession(
+          id: 'seeded-session',
+          fileMetadata: const FileMetadata(
+            name: 'seeded.txt',
+            path: '/tmp/seeded.txt',
+            size: 10,
+            mimeType: 'text/plain',
+          ),
+          serverPort: 8000,
+          authToken: 'seed-token',
+          localIp: '192.168.1.10',
+          startedAt: DateTime.now(),
+        ),
+        TransportType.wifi,
+      ),
+      build: () => SenderBloc(repository: mockRepository),
+      act: (bloc) => bloc.add(InviteApprovalReceived(TransferApprovalRequest(
+        id: 'req-a',
+        remoteAddress: InternetAddress.loopbackIPv4,
+        deviceName: 'Pixel',
+        code: '1234567890',
+        itemCount: 2,
+        totalBytes: 4096,
+      ))),
+      expect: () => [
+        isA<InviteApprovalRequested>()
+            .having((s) => s.request.id, 'request.id', 'req-a')
+            .having((s) => s.previousState, 'previousState', isA<QRReady>()),
+      ],
+      verify: (_) {
+        // Accepted onto the dialog, not auto-declined behind the scenes.
+        verifyNever(() => mockRepository.respondToApproval(any(), any()));
+      },
+    );
+
+    blocTest<SenderBloc, SenderState>(
+      // B3(b) — the same event, off QRReady (mid-transfer here rather than
+      // the default initial state, so this is not just a copy of the plain
+      // test above): no dialog state, and the request is declined through
+      // the repository instead of being left to expire after 90s.
+      'B3(b): a state other than QRReady + InviteApprovalReceived does NOT '
+      'emit InviteApprovalRequested, and declines via the repository',
+      seed: () => const Transferring(0.5, 1000),
+      build: () {
+        when(() => mockRepository.respondToApproval(any(), any()))
+            .thenReturn(null);
+        return SenderBloc(repository: mockRepository);
+      },
+      act: (bloc) => bloc.add(InviteApprovalReceived(TransferApprovalRequest(
+        id: 'req-b',
+        remoteAddress: InternetAddress.loopbackIPv4,
+        deviceName: 'Pixel',
+        code: '1234567890',
+        itemCount: 1,
+        totalBytes: 100,
+      ))),
+      expect: () => <SenderState>[],
+      verify: (_) {
+        verify(() => mockRepository.respondToApproval('req-b', false))
+            .called(1);
+      },
+    );
   });
 }

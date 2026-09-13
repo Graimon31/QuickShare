@@ -19,7 +19,7 @@ import 'package:quickshare/core/theme/app_colors.dart';
 /// contents. Children are read from disk only when a folder is opened — a
 /// received tree can hold thousands of files, and walking it up front would
 /// stall the screen for a list nobody may look at.
-class ReceivedItemsList extends StatelessWidget {
+class ReceivedItemsList extends StatefulWidget {
   const ReceivedItemsList({
     super.key,
     required this.items,
@@ -33,26 +33,41 @@ class ReceivedItemsList extends StatelessWidget {
   final double maxHeight;
 
   @override
+  State<ReceivedItemsList> createState() => _ReceivedItemsListState();
+}
+
+class _ReceivedItemsListState extends State<ReceivedItemsList> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     // A flat list of files needs no room for a disclosure arrow; only reserve
     // that column when something here can actually be opened.
-    final anyExpandable = items.any((i) => i.isDirectory);
+    final anyExpandable = widget.items.any((i) => i.isDirectory);
 
     return ConstrainedBox(
-      constraints: BoxConstraints(maxHeight: maxHeight),
+      constraints: BoxConstraints(maxHeight: widget.maxHeight),
       child: Scrollbar(
+        controller: _scrollController,
         thumbVisibility: true,
         child: ListView.builder(
+          controller: _scrollController,
           shrinkWrap: true,
           // Right inset is the scrollbar's lane, so the size column never sits
           // under the thumb.
           padding: const EdgeInsets.only(right: 14),
-          itemCount: items.length,
+          itemCount: widget.items.length,
           itemBuilder: (context, i) => _EntryRow(
-            path: items[i].currentPath,
-            name: items[i].name,
-            isDirectory: items[i].isDirectory,
-            sizeLabel: TransferCache.formatBytes(items[i].size),
+            path: widget.items[i].currentPath,
+            name: widget.items[i].name,
+            isDirectory: widget.items[i].isDirectory,
+            sizeLabel: TransferCache.formatBytes(widget.items[i].size),
             showDisclosureColumn: anyExpandable,
           ),
         ),

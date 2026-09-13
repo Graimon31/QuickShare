@@ -198,5 +198,64 @@ void main() {
           : jsonDecode(rateLimitedResponse.data.toString()) as Map;
       expect(body['code'], equals('RATE_LIMITED'));
     });
+
+    // B4 — local_http_server.dart:562-569. The code check runs before the
+    // sender is ever bothered: a code that does not parse, or one that
+    // parses but names a different session, must be rejected on the wire
+    // alone, with no human in the loop.
+    test('wrong code returns 403 CODE_MISMATCH and never asks the sender',
+        () async {
+      var approvalCalled = false;
+      server.onApprovalRequested = (req) async {
+        approvalCalled = true;
+        return true;
+      };
+
+      final dio = client(server.tlsFingerprint!);
+      final response = await dio.post(
+        'https://127.0.0.1:$serverPort/v2/invite/request',
+        data: {
+          // A different (but validly-shaped) session's code — parses fine,
+          // just names the wrong session.
+          'code': SessionCode.generate().code,
+          'invitePort': 0,
+        },
+      );
+
+      expect(response.statusCode, equals(403));
+      final body = response.data is Map
+          ? response.data as Map
+          : jsonDecode(response.data.toString()) as Map;
+      expect(body['code'], equals('CODE_MISMATCH'));
+      expect(approvalCalled, isFalse,
+          reason: 'a code the server does not recognize must never reach '
+              'the human approval dialog');
+    });
+
+    test('unparseable code returns 403 CODE_MISMATCH and never asks the sender',
+        () async {
+      var approvalCalled = false;
+      server.onApprovalRequested = (req) async {
+        approvalCalled = true;
+        return true;
+      };
+
+      final dio = client(server.tlsFingerprint!);
+      final response = await dio.post(
+        'https://127.0.0.1:$serverPort/v2/invite/request',
+        data: {
+          // Not ten digits at all — SessionCode.parse returns null for this.
+          'code': 'not-a-code',
+          'invitePort': 0,
+        },
+      );
+
+      expect(response.statusCode, equals(403));
+      final body = response.data is Map
+          ? response.data as Map
+          : jsonDecode(response.data.toString()) as Map;
+      expect(body['code'], equals('CODE_MISMATCH'));
+      expect(approvalCalled, isFalse);
+    });
   });
 }
