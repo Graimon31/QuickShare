@@ -39,7 +39,6 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
   /// discoverable is not a property of standing on this page, and the typed
   /// code is matched against the same list the panel draws.
   String? _inputError;
-  SessionCode? _failedCode;
   bool _isSubmitting = false;
 
   final FocusNode _focusNode = FocusNode();
@@ -65,7 +64,6 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     setState(() {
       _controller.clear();
       _inputError = null;
-      _failedCode = null;
       _isSubmitting = false;
     });
   }
@@ -81,7 +79,6 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     setState(() {
       _isSubmitting = true;
       _inputError = null;
-      _failedCode = null;
     });
 
     // Ten digits mean a device in this room rather than a link from somewhere
@@ -227,7 +224,6 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       );
       setState(() {
         _isSubmitting = false;
-        _failedCode = code;
         _inputError = l10n.codeReceiveNotFoundLan;
       });
       return;
@@ -288,7 +284,6 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
           if (!mounted) return;
           setState(() {
             _isSubmitting = false;
-            _failedCode = code;
             _inputError = l10n.inviteDeclined;
           });
           return;
@@ -297,7 +292,6 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
         if (!mounted) return;
         setState(() {
           _isSubmitting = false;
-          _failedCode = code;
           _inputError = l10n.codeReceiveNotFoundLan;
         });
         return;
@@ -309,7 +303,6 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       if (!mounted) return;
       setState(() {
         _isSubmitting = false;
-        _failedCode = code;
         _inputError = l10n.inviteUnreachable;
       });
       return;
@@ -569,32 +562,6 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
           const SizedBox(height: 16),
           Text(_inputError!,
               style: GoogleFonts.inter(color: AppColors.error, fontSize: 14)),
-          if (_failedCode != null) ...[
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: () {
-                setState(() {
-                  _inputError =
-                      AppLocalizations.of(context).codeReceiveBluetoothWaiting;
-                  _failedCode = _failedCode;
-                });
-              },
-              icon: const Icon(Icons.bluetooth_searching,
-                  size: 18, color: AppColors.primary),
-              label: Text(
-                l10n.codeReceiveTryBluetooth,
-                style: GoogleFonts.inter(
-                    color: AppColors.primary, fontWeight: FontWeight.w600),
-              ),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: AppColors.primary),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16)),
-                padding:
-                    const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
-              ),
-            ),
-          ],
         ],
       ],
     );

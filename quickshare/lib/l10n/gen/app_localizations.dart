@@ -1274,18 +1274,6 @@ abstract class AppLocalizations {
   /// **'Sender with this code was not found on your local network. Make sure both devices are on the same Wi-Fi network.'**
   String get codeReceiveNotFoundLan;
 
-  /// No description provided for @codeReceiveTryBluetooth.
-  ///
-  /// In en, this message translates to:
-  /// **'Search over Bluetooth'**
-  String get codeReceiveTryBluetooth;
-
-  /// No description provided for @codeReceiveBluetoothWaiting.
-  ///
-  /// In en, this message translates to:
-  /// **'This device is visible over Bluetooth. On the sender, pick it from the nearby list — you do not need the code.'**
-  String get codeReceiveBluetoothWaiting;
-
   /// No description provided for @codeReceiveNotAShareLink.
   ///
   /// In en, this message translates to:

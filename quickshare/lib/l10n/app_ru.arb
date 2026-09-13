@@ -206,8 +206,6 @@
   "codeReceiveSignalingError": "Сервер сигнализации недоступен ({url}). Укажите свой сервер через:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com",
   "codeReceiveTryAnother": "Попробовать другой код",
   "codeReceiveNotFoundLan": "Отправитель с этим кодом не найден в локальной сети. Убедитесь, что оба устройства подключены к одной сети Wi-Fi.",
-  "codeReceiveTryBluetooth": "Искать по Bluetooth",
-  "codeReceiveBluetoothWaiting": "Это устройство видно по Bluetooth. На отправителе выберите его в списке рядом — код для этого не нужен.",
   "codeReceiveNotAShareLink": "Это не ссылка DirectDrop. Скопируйте ссылку под QR у отправителя — не адрес Wi-Fi.",
   "codeReceiveInvalidQr": "Неверный QR-код. Наведите камеру на QR на экране отправителя — не на текст Wi-Fi под ним.",
   "codeReceiveSearchingLan": "Поиск отправителя в локальной сети…",

@@ -690,13 +690,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'Sender with this code was not found on your local network. Make sure both devices are on the same Wi-Fi network.';
 
   @override
-  String get codeReceiveTryBluetooth => 'Search over Bluetooth';
-
-  @override
-  String get codeReceiveBluetoothWaiting =>
-      'This device is visible over Bluetooth. On the sender, pick it from the nearby list — you do not need the code.';
-
-  @override
   String get codeReceiveNotAShareLink =>
       'That is not a DirectDrop share link. Copy the link under the QR on the sender — not the Wi-Fi address.';
 
