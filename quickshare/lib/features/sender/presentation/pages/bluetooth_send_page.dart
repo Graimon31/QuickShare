@@ -270,7 +270,11 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                                             setState(() => _connectingDevice = peer.id);
                                             context
                                                 .read<SenderBloc>()
-                                                .add(SendToWaitingReceiver(peer.id));
+                                                .add(SendToWaitingReceiver(
+                                                  peer.id,
+                                                  alreadyConnected:
+                                                      peer.alreadyConnected,
+                                                ));
                                           },
                                   ),
                                 );

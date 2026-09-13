@@ -168,6 +168,7 @@ void main() {
     bloc.add(StartQhtpSend(paths, mode: TransportType.bluetooth));
     await advertising.timeout(const Duration(seconds: 20));
 
+    expect(nativeCalls.any((c) => c.method == 'startAdvertising'), isTrue);
     final call = nativeCalls.firstWhere((c) => c.method == 'startScanning');
     return call.arguments as Map;
   }

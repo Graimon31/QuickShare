@@ -1103,7 +1103,7 @@ abstract class AppLocalizations {
   /// No description provided for @btSendAutoConnectNote.
   ///
   /// In en, this message translates to:
-  /// **'The receiving device will connect over Bluetooth and start the transfer automatically.'**
+  /// **'Pick a device from the list. The handshake should finish within 3 seconds.'**
   String get btSendAutoConnectNote;
 
   /// No description provided for @btReceiveLookingForLink.

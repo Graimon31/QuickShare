@@ -601,7 +601,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get btSendAutoConnectNote =>
-      'Принимающее устройство подключится по Bluetooth и начнёт передачу автоматически.';
+      'Выберите устройство в списке. Соединение должно установиться за 3 секунды.';
 
   @override
   String get btReceiveLookingForLink => 'Ищем прямую связь…';

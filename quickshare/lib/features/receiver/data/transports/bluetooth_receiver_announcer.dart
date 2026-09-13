@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/network/device_presence.dart';
@@ -27,12 +28,14 @@ class BluetoothReceiverAnnouncer {
   final NetworkInfoService _networkInfo;
   final LocalHotspotService _hotspotService;
 
+  StreamSubscription? _deviceSub;
   StreamSubscription? _progressSub;
   StreamSubscription? _serveSub;
   int? _peerLinkPort;
   Completer<int?>? _peerLinkCompleter;
   bool _joinedAsGuest = false;
   bool _isActive = false;
+  bool _isConnecting = false;
 
   final void Function(QRPayload payload)? onServeReceived;
 
@@ -56,6 +59,26 @@ class BluetoothReceiverAnnouncer {
     _isActive = true;
     _peerLinkPort = null;
     _peerLinkCompleter = null;
+
+    _deviceSub = _transport.devices.listen((device) async {
+      if (!_isActive || _isConnecting) return;
+      if (!device.name.startsWith('QuickShare-')) return;
+      _isConnecting = true;
+      AppLogger.info(
+        'Found sender "${device.name}", connecting as central (≤3s handshake)…',
+        tag: 'BT_ANNOUNCE',
+      );
+      try {
+        await _transport.connect(
+          device.id,
+          token: null,
+          targetDir: Directory.systemTemp.path,
+        );
+      } catch (e) {
+        AppLogger.warning('Could not connect to sender: $e', tag: 'BT_ANNOUNCE');
+        _isConnecting = false;
+      }
+    });
 
     _progressSub = _transport.progressStream.listen((progress) {
       if (!_isActive) return;
@@ -127,6 +150,13 @@ class BluetoothReceiverAnnouncer {
       AppLogger.warning('Could not advertise over Bluetooth: $e',
           tag: 'BT_ANNOUNCE');
     }
+    try {
+      await _transport.startScanning(sessionToken: null, publicId: null);
+      AppLogger.info('Bluetooth receiver also scanning for senders',
+          tag: 'BT_ANNOUNCE');
+    } catch (e) {
+      AppLogger.warning('Could not scan for senders: $e', tag: 'BT_ANNOUNCE');
+    }
   }
 
   Future<void> _negotiateDirectLink() async {
@@ -173,6 +203,8 @@ class BluetoothReceiverAnnouncer {
   /// any active direct link alive for download.
   Future<void> detachForTransfer() async {
     _isActive = false;
+    await _deviceSub?.cancel();
+    _deviceSub = null;
     await _progressSub?.cancel();
     _progressSub = null;
     await _serveSub?.cancel();
@@ -187,6 +219,8 @@ class BluetoothReceiverAnnouncer {
       _peerLinkCompleter!.complete(null);
     }
     _peerLinkCompleter = null;
+    await _deviceSub?.cancel();
+    _deviceSub = null;
     await _progressSub?.cancel();
     _progressSub = null;
     await _serveSub?.cancel();

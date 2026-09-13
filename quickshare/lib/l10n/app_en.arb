@@ -292,7 +292,7 @@
   "btSendPreparing": "Preparing Bluetooth…",
   "btSendPreparingDetail": "Making this device discoverable",
   "btSendScanPrompt": "Scan this QR code on the receiving device",
-  "btSendAutoConnectNote": "The receiving device will connect over Bluetooth and start the transfer automatically.",
+  "btSendAutoConnectNote": "Pick a device from the list. The handshake should finish within 3 seconds.",
   "btReceiveLookingForLink": "Looking for a direct link…",
   "btReceiveDirectLinkPlaceholder": "Receiving over direct Wi-Fi",
   "btReceiveTitle": "Nearby devices",

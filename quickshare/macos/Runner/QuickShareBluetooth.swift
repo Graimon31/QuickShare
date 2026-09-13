@@ -694,7 +694,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         emit(["type": "connecting"])
 
         centralConnectTimeoutTimer?.invalidate()
-        centralConnectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+        centralConnectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
             guard let self = self, self.targetPeripheral != nil, self.remoteControlChar == nil else { return }
             if let p = self.targetPeripheral {
                 self.centralManager?.cancelPeripheralConnection(p)

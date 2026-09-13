@@ -156,17 +156,23 @@ class NoPathFound extends SenderEvent {
 class BluetoothReceiverAnnounced extends SenderEvent {
   final String id;
   final String name;
-  const BluetoothReceiverAnnounced({required this.id, required this.name});
+  final bool alreadyConnected;
+  const BluetoothReceiverAnnounced({
+    required this.id,
+    required this.name,
+    this.alreadyConnected = false,
+  });
   @override
-  List<Object?> get props => [id, name];
+  List<Object?> get props => [id, name, alreadyConnected];
 }
 
 /// The person picked one of them.
 class SendToWaitingReceiver extends SenderEvent {
   final String deviceId;
-  const SendToWaitingReceiver(this.deviceId);
+  final bool alreadyConnected;
+  const SendToWaitingReceiver(this.deviceId, {this.alreadyConnected = false});
   @override
-  List<Object?> get props => [deviceId];
+  List<Object?> get props => [deviceId, alreadyConnected];
 }
 
 class TransferProgressEvent extends SenderEvent {
@@ -562,17 +568,43 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     on<BluetoothReceiverAnnounced>((event, emit) {
       final current = state;
       if (current is! BluetoothAdvertising) return;
-      if (current.waiting.any((p) => p.id == event.id)) return;
+      final peer = BleWaitingPeer(
+        id: event.id,
+        name: event.name,
+        alreadyConnected: event.alreadyConnected,
+      );
+      final withoutSame = current.waiting
+          .where((p) => p.id != peer.id && p.name != peer.name)
+          .toList();
+      if (!peer.alreadyConnected &&
+          withoutSame.any((p) => p.name == peer.name && p.alreadyConnected)) {
+        return;
+      }
       AppLogger.info('${event.name} is waiting to be sent something',
           tag: 'SENDER');
-      emit(current.withWaiting([
-        ...current.waiting,
-        BleWaitingPeer(id: event.id, name: event.name),
-      ]));
+      emit(current.withWaiting([...withoutSame, peer]));
     });
 
     on<SendToWaitingReceiver>((event, emit) async {
-      await _activeBluetoothTransport?.connectToReceiver(event.deviceId);
+      final transport = _activeBluetoothTransport;
+      if (transport == null) return;
+      try {
+        if (event.alreadyConnected) {
+          await transport.beginTransfer();
+        } else {
+          await transport.connectToReceiver(event.deviceId);
+        }
+      } on TimeoutException {
+        add(const TransferFailed(
+          'Bluetooth handshake timed out after 3 seconds. Keep both apps open and try again.',
+          code: FailureCode.bluetoothTransferFailed,
+        ));
+      } catch (e) {
+        add(TransferFailed(
+          'Bluetooth handshake failed: $e',
+          code: FailureCode.bluetoothTransferFailed,
+        ));
+      }
     });
     on<IndexProgressed>((event, emit) async {
       // A walk belonging to a session the user has already left.
@@ -907,6 +939,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
             .listen((peer) => add(BluetoothReceiverAnnounced(
                   id: peer.id,
                   name: peer.name,
+                  alreadyConnected: peer.alreadyConnected,
                 )));
 
         _statusSubscription?.cancel();

@@ -177,7 +177,7 @@
   "btSendPreparing": "Готовим Bluetooth…",
   "btSendPreparingDetail": "Делаем устройство видимым",
   "btSendScanPrompt": "Отсканируйте этот QR-код на принимающем устройстве",
-  "btSendAutoConnectNote": "Принимающее устройство подключится по Bluetooth и начнёт передачу автоматически.",
+  "btSendAutoConnectNote": "Выберите устройство в списке. Соединение должно установиться за 3 секунды.",
   "btReceiveLookingForLink": "Ищем прямую связь…",
   "btReceiveDirectLinkPlaceholder": "Получаем напрямую по Wi-Fi",
   "btReceiveTitle": "Устройства рядом",

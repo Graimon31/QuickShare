@@ -595,7 +595,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get btSendAutoConnectNote =>
-      'The receiving device will connect over Bluetooth and start the transfer automatically.';
+      'Pick a device from the list. The handshake should finish within 3 seconds.';
 
   @override
   String get btReceiveLookingForLink => 'Looking for a direct link…';

@@ -17,7 +17,16 @@ import 'linux_bluetooth_sender.dart';
 class BleWaitingPeer {
   final String id;
   final String name;
-  const BleWaitingPeer({required this.id, required this.name});
+
+  /// True when the receiver already opened a GATT connection to us (HELLO).
+  /// Tapping that row is `beginTransfer`, not a new connect.
+  final bool alreadyConnected;
+
+  const BleWaitingPeer({
+    required this.id,
+    required this.name,
+    this.alreadyConnected = false,
+  });
 }
 
 /// BLE sender shared by the desktop and mobile builds.
@@ -267,6 +276,12 @@ class BluetoothTransferTransport implements TransferTransport {
 
   String? _scanSessionToken;
 
+  /// Hard cap on the Bluetooth handshake. The transfer itself (Wi-Fi) can
+  /// take as long as the files need; finding the other device must not.
+  static const handshakeTimeout = Duration(seconds: 3);
+
+
+
   /// Starts sending to the device the person picked off that list.
   ///
   /// Nothing new is negotiated: the receiver connected and subscribed when it
@@ -282,20 +297,24 @@ class BluetoothTransferTransport implements TransferTransport {
   }
 
   /// Connect to a waiting receiver and start the rendezvous as GATT central.
+  ///
+  /// Completes when the handshake is up, or throws after [handshakeTimeout].
   Future<void> connectToReceiver(String deviceId) async {
     final token = _scanSessionToken;
     if (token == null || token.isEmpty) {
       throw StateError('Bluetooth session has no token');
     }
+    final ready = _receiverReadyController.stream.first;
     if (_usesNativeAppleBridge) {
       await _method.invokeMethod('connect', {
         'deviceId': deviceId,
         'asSender': true,
         'sessionToken': token,
       });
-      return;
+    } else {
+      await _connectUniversalReceiver(deviceId, token);
     }
-    await _connectUniversalReceiver(deviceId, token);
+    await ready.timeout(handshakeTimeout);
   }
 
   void _handleNativeEvent(dynamic event) {
@@ -310,7 +329,11 @@ class BluetoothTransferTransport implements TransferTransport {
       case 'receiverAnnounced':
         final name = map['name'] as String?;
         if (name != null && name.isNotEmpty) {
-          _waitingController.add(BleWaitingPeer(id: name, name: name));
+          _waitingController.add(BleWaitingPeer(
+            id: name,
+            name: name,
+            alreadyConnected: true,
+          ));
         }
         break;
       case 'deviceDiscovered':
@@ -383,7 +406,28 @@ class BluetoothTransferTransport implements TransferTransport {
     _scanSessionToken = token;
     if (_usesNativeAppleBridge) {
       try {
-        // Sender finds receivers: we scan, they advertise.
+        // Both roles at once: we advertise so an iPhone can find us (it is
+        // a strong scanner, a weak advertiser), and we scan so we can list
+        // waiting receivers. Mac-as-central to iPhone-as-peripheral is the
+        // path that hangs; iPhone-as-central to Mac-as-peripheral is not.
+        await _method.invokeMethod('startAdvertising', {
+          'files': [
+            for (final f in session)
+              {
+                'filePath': f.path,
+                'fileName': f.name,
+                'relativePath': f.relPath,
+                'fileSize': f.size,
+                'mimeType': f.mimeType,
+              },
+          ],
+          'filePath': file.path,
+          'fileName': file.name,
+          'fileSize': file.size,
+          'mimeType': file.mimeType,
+          'sessionToken': token,
+          if (publicId.isNotEmpty) 'publicId': publicId,
+        });
         await _method.invokeMethod('startScanning', {
           'sessionToken': token,
           if (publicId.isNotEmpty) 'publicId': publicId,
@@ -391,7 +435,7 @@ class BluetoothTransferTransport implements TransferTransport {
         });
         _statusController.add(TransferStatus.serving);
       } on PlatformException catch (e) {
-        throw Exception('Failed to start Bluetooth scan: ${e.message}');
+        throw Exception('Failed to start Bluetooth: ${e.message}');
       } on MissingPluginException {
         throw Exception('Bluetooth is unavailable in this platform build.');
       }
