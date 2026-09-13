@@ -308,11 +308,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
                 result(FlutterError(code: "BAD_ARGS", message: "sendApOffer needs sealed credentials", details: nil))
                 return
             }
-            if waitingAsReceiver {
-                notifyWaitingReceiver(BTControl.apOffer(sealed), result)
-            } else {
-                writeControl(BTControl.apOffer(sealed), result)
-            }
+            sendTowardsPeer(BTControl.apOffer(sealed), result)
 
         case "sendKeyExchange":
             guard let args = call.arguments as? [String: Any],
@@ -321,11 +317,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
                 result(FlutterError(code: "BAD_ARGS", message: "sendKeyExchange needs a key", details: nil))
                 return
             }
-            if waitingAsReceiver {
-                notifyWaitingReceiver(BTControl.keyExchange(key), result)
-            } else {
-                writeControl(BTControl.keyExchange(key), result)
-            }
+            sendTowardsPeer(BTControl.keyExchange(key), result)
 
         case "startScanning":
             let scanArgs = call.arguments as? [String: Any]
@@ -408,6 +400,16 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         waitingAsReceiver = true
         senderAsCentral = false
         startAdvertising(items: [], sessionToken: nil, publicId: nil, localName: deviceName)
+    }
+
+    private func sendTowardsPeer(_ command: String, _ result: @escaping FlutterResult) {
+        if targetPeripheral != nil {
+            writeControl(command, result)
+        } else if waitingAsReceiver {
+            notifyWaitingReceiver(command, result)
+        } else {
+            writeControl(command, result)
+        }
     }
 
     private func notifyWaitingReceiver(_ command: String, _ result: @escaping FlutterResult) {

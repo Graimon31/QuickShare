@@ -93,6 +93,10 @@ class UniversalBleReceiverTransport {
   /// Tells the sender about a network this receiver raised: an `AP:` write
   /// on its control characteristic, carrying the sealed credentials.
   Future<void> sendApOffer(String sealed) async {
+    if (_targetDeviceId != null) {
+      await _writeControl(BleControlProtocol.apOffer(sealed));
+      return;
+    }
     if (_waitingAdvertisement) {
       await _notifyMetadata(utf8.encode(BleControlProtocol.apOffer(sealed)));
       return;
@@ -102,6 +106,10 @@ class UniversalBleReceiverTransport {
 
   /// Hands the sender this side's public half for the negotiation.
   Future<void> sendKeyExchange(String publicKey) async {
+    if (_targetDeviceId != null) {
+      await _writeControl(BleControlProtocol.keyExchange(publicKey));
+      return;
+    }
     if (_waitingAdvertisement) {
       await _notifyMetadata(utf8.encode(BleControlProtocol.keyExchange(publicKey)));
       return;

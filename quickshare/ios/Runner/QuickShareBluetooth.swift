@@ -319,11 +319,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
         result(FlutterError(code: "BAD_ARGS", message: "sendApOffer needs sealed credentials", details: nil))
         return
       }
-      if waitingAsReceiver {
-        notifyWaitingReceiver(QuickShareBleControl.apOffer(sealed), result)
-      } else {
-        writeControl(QuickShareBleControl.apOffer(sealed), result)
-      }
+      sendTowardsPeer(QuickShareBleControl.apOffer(sealed), result)
 
     case "sendKeyExchange":
       guard let args = call.arguments as? [String: Any],
@@ -331,11 +327,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
         result(FlutterError(code: "BAD_ARGS", message: "sendKeyExchange needs a key", details: nil))
         return
       }
-      if waitingAsReceiver {
-        notifyWaitingReceiver(QuickShareBleControl.keyExchange(key), result)
-      } else {
-        writeControl(QuickShareBleControl.keyExchange(key), result)
-      }
+      sendTowardsPeer(QuickShareBleControl.keyExchange(key), result)
 
     default:
       result(FlutterMethodNotImplemented)
@@ -464,6 +456,19 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     waitingAsReceiver = true
     senderAsCentral = false
     startAdvertising(items: [], sessionToken: nil, publicId: nil, localName: deviceName)
+  }
+
+  /// KEX and AP must go to the sender we are connected to as central.
+  /// Advertising as a waiting receiver at the same time used to steal those
+  /// writes onto our own GATT notify, so the Mac never saw the key exchange.
+  private func sendTowardsPeer(_ command: String, _ result: @escaping FlutterResult) {
+    if targetPeripheral != nil {
+      writeControl(command, result)
+    } else if waitingAsReceiver {
+      notifyWaitingReceiver(command, result)
+    } else {
+      writeControl(command, result)
+    }
   }
 
   private func notifyWaitingReceiver(_ command: String, _ result: @escaping FlutterResult) {
