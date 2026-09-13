@@ -254,8 +254,9 @@ class WebRtcReceiverTransport {
 
       final rawSdp = SdpCompressor.decompress(sdpOffer);
 
-      _peerConnection =
-          await createPeerConnection(await _buildIceConfiguration());
+      final ice = await _buildIceConfiguration();
+      final expectingRelay = IceServers.containsTurn(ice);
+      _peerConnection = await createPeerConnection(ice);
       await _startTurnRefresher(); // §9
 
       _peerConnection!.onDataChannel = (RTCDataChannel channel) {
@@ -292,7 +293,7 @@ class WebRtcReceiverTransport {
       await _peerConnection!.setLocalDescription(answer);
 
       await waitForUsableCandidates(_peerConnection!, _gathering,
-          tag: 'WEBRTC_RECEIVER');
+          expectingRelay: expectingRelay, tag: 'WEBRTC_RECEIVER');
 
       final fullLocalDesc = await _peerConnection!.getLocalDescription();
       final finalAnswerSdp = fullLocalDesc?.sdp ?? answer.sdp;

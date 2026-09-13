@@ -29,6 +29,22 @@ class IceServers {
   /// [_fit] so that cannot happen again.
   static const int maxIceServers = 8;
 
+  /// True when [configuration] includes a TURN URL. Gathering can skip the
+  /// long wait for a relay if none was even offered.
+  static bool containsTurn(Map<String, dynamic> configuration) {
+    final servers = configuration['iceServers'];
+    if (servers is! List) return false;
+    bool isTurn(String url) =>
+        url.startsWith('turn:') || url.startsWith('turns:');
+    for (final server in servers) {
+      if (server is! Map) continue;
+      final urls = server['urls'];
+      if (urls is String && isTurn(urls)) return true;
+      if (urls is List && urls.whereType<String>().any(isTurn)) return true;
+    }
+    return false;
+  }
+
   /// Credentials never appear here as literals — they come from
   /// `--dart-define` (or CI secrets) through [AppConstants], so a build can
   /// be pointed at a private TURN account without touching this file.
@@ -146,7 +162,7 @@ class IceServers {
       final dynamicTurnServers = await TurnCredentialService(
         baseUrl: url,
         clientSecret: turnClientSecret ?? AppConstants.turnClientSecret,
-      ).fetchIceServers().timeout(const Duration(seconds: 6));
+      ).fetchIceServers().timeout(const Duration(seconds: 2));
 
       // The Worker hands back its own STUN entry, which overlaps the static
       // pool — `stun.cloudflare.com` is in both. A duplicate is not harmless

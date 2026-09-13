@@ -131,4 +131,52 @@ void main() {
       expect(AppConstants.iceGatheringMaxWait.inMilliseconds, greaterThan(1500));
     });
   });
+
+  group('readyToShip', () {
+    test('host-only is not enough', () {
+      final tracker = IceGatheringTracker()
+        ..observe(_candidate('host', address: '192.168.3.52'));
+      expect(
+        tracker.readyToShip(now: DateTime.now(), expectingRelay: true),
+        isFalse,
+      );
+    });
+
+    test('a relay ships immediately', () {
+      final tracker = IceGatheringTracker()..observe(_candidate('relay'));
+      expect(
+        tracker.readyToShip(now: DateTime.now(), expectingRelay: true),
+        isTrue,
+      );
+    });
+
+    test('srflx ships immediately when no relay is expected', () {
+      final tracker = IceGatheringTracker()..observe(_candidate('srflx'));
+      expect(
+        tracker.readyToShip(now: DateTime.now(), expectingRelay: false),
+        isTrue,
+      );
+    });
+
+    test('srflx waits a short hold for a relay, then ships', () {
+      final tracker = IceGatheringTracker()..observe(_candidate('srflx'));
+      final t0 = DateTime.now();
+      expect(
+        tracker.readyToShip(
+          now: t0,
+          expectingRelay: true,
+          relayHold: const Duration(milliseconds: 400),
+        ),
+        isFalse,
+      );
+      expect(
+        tracker.readyToShip(
+          now: t0.add(const Duration(milliseconds: 400)),
+          expectingRelay: true,
+          relayHold: const Duration(milliseconds: 400),
+        ),
+        isTrue,
+      );
+    });
+  });
 }

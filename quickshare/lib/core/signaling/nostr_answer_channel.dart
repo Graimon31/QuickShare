@@ -57,7 +57,7 @@ class NostrAnswerChannel implements AnswerChannel {
 
   NostrAnswerChannel({
     List<String>? relays,
-    this.connectTimeout = const Duration(seconds: 8),
+    this.connectTimeout = const Duration(seconds: 2),
     Uint8List? secretKey,
   })  : relays = relays ?? defaultRelays,
         _secretKey = secretKey ?? _newSecretKey();
@@ -78,16 +78,31 @@ class NostrAnswerChannel implements AnswerChannel {
 
   @override
   Future<void> subscribe(String topic) async {
-    final results = await Future.wait(
-      relays.map((relay) => _openAndSubscribe(relay, topic)),
-    );
-    final live = results.where((ok) => ok).length;
-    if (live == 0) {
-      throw StateError(
-          'no Nostr relay reachable (${relays.join(', ')})');
+    final first = Completer<void>();
+    var live = 0;
+    var failed = 0;
+
+    for (final relay in relays) {
+      unawaited(_openAndSubscribe(relay, topic).then((ok) {
+        if (ok) {
+          live++;
+          if (!first.isCompleted) {
+            AppLogger.info(
+                'Nostr rendezvous listening (first of ${relays.length}: $relay)',
+                tag: 'SIGNALING');
+            first.complete();
+          }
+        } else {
+          failed++;
+          if (live == 0 && failed == relays.length && !first.isCompleted) {
+            first.completeError(StateError(
+                'no Nostr relay reachable (${relays.join(', ')})'));
+          }
+        }
+      }));
     }
-    AppLogger.info('Nostr rendezvous listening on $live/${relays.length} relays',
-        tag: 'SIGNALING');
+
+    await first.future;
   }
 
   Future<bool> _openAndSubscribe(String relay, String topic) async {

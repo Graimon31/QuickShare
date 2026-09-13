@@ -113,6 +113,8 @@ class WebRtcTransferTransport implements TransferTransport {
   /// §9 — refreshes TURN credentials before they expire.
   TurnCredentialRefresher? _turnRefresher;
 
+  bool _expectingRelay = false;
+
   WebRtcTransferTransport();
 
   @override
@@ -132,8 +134,10 @@ class WebRtcTransferTransport implements TransferTransport {
   Future<RTCPeerConnection> _openPeerConnection() async {
     final ice = await _iceConfiguration();
     final iceCount = (ice['iceServers'] as List?)?.length ?? 0;
+    _expectingRelay = IceServers.containsTurn(ice);
     AppLogger.info(
-      'Creating peer connection ($iceCount ICE servers, cap ${IceServers.maxIceServers})',
+      'Creating peer connection ($iceCount ICE servers, cap ${IceServers.maxIceServers}, '
+      'expectingRelay=$_expectingRelay)',
       tag: 'WEBRTC_SENDER',
     );
     return createPeerConnection(ice);
@@ -314,7 +318,7 @@ class WebRtcTransferTransport implements TransferTransport {
     await _peerConnection!.setLocalDescription(offer);
 
     await waitForUsableCandidates(_peerConnection!, _gathering,
-        tag: 'WEBRTC_SENDER');
+        expectingRelay: _expectingRelay, tag: 'WEBRTC_SENDER');
 
     final fullLocalDesc = await _peerConnection!.getLocalDescription();
     AppLogger.info(

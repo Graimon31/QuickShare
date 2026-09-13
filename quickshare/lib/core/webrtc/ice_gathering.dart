@@ -19,6 +19,7 @@ class IceGatheringTracker {
   bool _sawRelay = false;
   bool _sawServerReflexive = false;
   int _count = 0;
+  DateTime? _srflxAt;
 
   bool get sawRelay => _sawRelay;
   bool get sawServerReflexive => _sawServerReflexive;
@@ -30,7 +31,30 @@ class IceGatheringTracker {
     if (value == null || value.isEmpty) return;
     _count++;
     if (value.contains('typ relay')) _sawRelay = true;
-    if (value.contains('typ srflx')) _sawServerReflexive = true;
+    if (value.contains('typ srflx')) {
+      _sawServerReflexive = true;
+      _srflxAt ??= DateTime.now();
+    }
+  }
+
+  /// Whether the SDP is worth freezing into a QR / answer.
+  ///
+  /// A relay works from anywhere, so it ships at once. A server-reflexive
+  /// candidate is enough for most NATs; if TURN is configured we wait
+  /// [relayHold] after the first srflx in case a relay is about to land,
+  /// otherwise we ship immediately. Host-only is never enough: the peers
+  /// would have to already share a network.
+  bool readyToShip({
+    required DateTime now,
+    required bool expectingRelay,
+    Duration relayHold = const Duration(milliseconds: 400),
+  }) {
+    if (_sawRelay) return true;
+    if (!_sawServerReflexive) return false;
+    if (!expectingRelay) return true;
+    final seen = _srflxAt ?? now;
+    return !now.difference(seen).isNegative &&
+        now.difference(seen) >= relayHold;
   }
 
   String describe() => '$_count candidates '
@@ -160,19 +184,19 @@ bool relayLimitAllows(IcePathKind path, int sessionBytes, {int? limitBytes}) {
 
 /// Waits for [connection] to gather something worth sending.
 ///
-/// Returns as soon as gathering completes, or as soon as a relay candidate
-/// exists — a relay works from anywhere, so there is nothing to gain by
-/// waiting for the rest. Otherwise gives up at [AppConstants.iceGatheringMaxWait]
-/// and lets the caller ship whatever was collected.
+/// Returns as soon as gathering completes, a relay exists, or a reflexive
+/// candidate has been held long enough that a late relay is unlikely.
+/// Host-only sets still wait until [AppConstants.iceGatheringMaxWait].
 Future<void> waitForUsableCandidates(
   RTCPeerConnection connection,
   IceGatheringTracker tracker, {
   Duration? maxWait,
+  bool expectingRelay = true,
   String tag = 'WEBRTC',
 }) async {
   final limit = maxWait ?? AppConstants.iceGatheringMaxWait;
   final started = DateTime.now();
-  const pollInterval = Duration(milliseconds: 100);
+  const pollInterval = Duration(milliseconds: 50);
 
   while (DateTime.now().difference(started) < limit) {
     if (connection.iceGatheringState ==
@@ -184,9 +208,10 @@ Future<void> waitForUsableCandidates(
           tag: tag);
       return;
     }
-    if (tracker.sawRelay) {
+    if (tracker.readyToShip(
+        now: DateTime.now(), expectingRelay: expectingRelay)) {
       AppLogger.info(
-          'ICE has a relay candidate after '
+          'ICE has a usable candidate after '
           '${DateTime.now().difference(started).inMilliseconds} ms, '
           'not waiting for the rest — ${tracker.describe()}',
           tag: tag);

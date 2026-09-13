@@ -54,25 +54,32 @@ class RacingAnswerChannel implements AnswerChannel {
 
   @override
   Future<void> subscribe(String topic) async {
-    final results = await Future.wait(
-      channels.map((c) async {
+    final first = Completer<void>();
+    var live = 0;
+    var failed = 0;
+
+    for (final c in channels) {
+      unawaited(() async {
         try {
           await c.subscribe(topic);
           _subscriptions.add(c.answers.listen(_onPayload));
+          live++;
           AppLogger.info('Answer channel ready: ${c.name}', tag: 'SIGNALING');
-          return true;
+          if (!first.isCompleted) first.complete();
         } catch (e) {
+          failed++;
           AppLogger.warning('Answer channel ${c.name} unavailable: $e',
               tag: 'SIGNALING');
-          return false;
+          if (live == 0 && failed == channels.length && !first.isCompleted) {
+            first.completeError(StateError(
+                'no answer channel could be reached '
+                '(${channels.map((ch) => ch.name).join(', ')})'));
+          }
         }
-      }),
-    );
-
-    if (!results.contains(true)) {
-      throw StateError('no answer channel could be reached '
-          '(${channels.map((c) => c.name).join(', ')})');
+      }());
     }
+
+    await first.future;
   }
 
   @override
