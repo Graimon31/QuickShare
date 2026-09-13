@@ -32,6 +32,12 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# path_provider_android pulls package:jni, which ships a Windows CMake that
+# builds dartjni.dll whenever a JDK is on the machine. GitHub's
+# windows-latest image has one, so CI compiled a JNI shim this desktop app
+# never calls and then died on an unset TARGET_NAME in jni 1.0.3.
+set(CMAKE_DISABLE_FIND_PACKAGE_JNI TRUE CACHE BOOL "Desktop builds do not need JNI" FORCE)
+
 # permission_handler_windows pulls in C++/WinRT headers that still reach for
 # <experimental/coroutine>. A recent MSVC/STL turns that into a hard
 # static_assert failure (error C2338) rather than a warning, which breaks the
