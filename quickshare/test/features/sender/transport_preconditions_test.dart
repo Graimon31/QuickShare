@@ -241,20 +241,29 @@ void main() {
       expect(fakeBle.enableBluetoothCalled, isTrue);
     });
 
-    testWidgets('ensureReceiver blocks when Bluetooth is powered off',
+    testWidgets('ensureReceiver does not block when Wi-Fi is off',
+        (tester) async {
+      // Receive has an internet path. Gating the whole screen on Wi-Fi
+      // (for Bluetooth/PeerLink) made a cellular-only phone unable to
+      // paste a share link.
+      UniversalBle.setInstance(_FakeBle(AvailabilityState.poweredOn));
+      TransportPreconditions.peerLink =
+          _FakePeerLink(ready: false, canEnable: false);
+      TransportPreconditions.networkInfo = _FakeNetwork(wifi: false);
+      final ctx = await host(tester);
+
+      expect(await TransportPreconditions.ensureReceiver(ctx), isTrue);
+      expect(find.text('Cancel'), findsNothing);
+    });
+
+    testWidgets('ensureReceiver does not block when Bluetooth is off',
         (tester) async {
       UniversalBle.setInstance(_FakeBle(AvailabilityState.poweredOff));
       TransportPreconditions.peerLink = _FakePeerLink(ready: true);
       final ctx = await host(tester);
 
-      final pending = TransportPreconditions.ensureReceiver(ctx);
-      await tester.pumpAndSettle();
-
-      expect(find.text('Cancel'), findsOneWidget);
-      await tester.tap(find.text('Cancel'));
-      await tester.pumpAndSettle();
-
-      expect(await pending, isFalse);
+      expect(await TransportPreconditions.ensureReceiver(ctx), isTrue);
+      expect(find.text('Cancel'), findsNothing);
     });
   });
 }

@@ -38,7 +38,11 @@ class TransportPreconditions {
     }
   }
 
-  /// True when the device is ready to receive files via LAN or Bluetooth.
+  /// True when the Receive screen may open.
+  ///
+  /// Receive has three paths: LAN, Bluetooth, and internet. Internet works
+  /// on cellular, so this must not demand Wi-Fi or Bluetooth. Those radios
+  /// are still gated when the user actually picks those transports.
   static Future<bool> ensureReceiver(BuildContext context) async {
     if (PeerLinkService.isSupported) {
       await peerLink.enableWifi();
@@ -46,51 +50,7 @@ class TransportPreconditions {
     try {
       await UniversalBle.enableBluetooth();
     } catch (_) {}
-    AvailabilityState state;
-    try {
-      state = await UniversalBle.getBluetoothAvailabilityState();
-    } catch (_) {
-      state = AvailabilityState.unknown;
-    }
-    if (state != AvailabilityState.poweredOn) {
-      if (!context.mounted) return false;
-      final l10n = AppLocalizations.of(context);
-      final openSettings = await _askEnable(
-        context,
-        title: l10n.precondBluetoothTitle,
-        body: l10n.precondBluetoothBody,
-      );
-      if (!context.mounted) return false;
-      if (openSettings) {
-        await _openWirelessSettings();
-      } else {
-        _showBlocked(context, l10n.precondBluetoothBlocked);
-      }
-      return false;
-    }
-
-    if (PeerLinkService.isSupported) {
-      if (!context.mounted) return false;
-      return _ensureWifiRadioForBluetooth(context);
-    } else {
-      if (!await _networkInfo.hasWifiTransportNetwork()) {
-        if (!context.mounted) return false;
-        final l10n = AppLocalizations.of(context);
-        final openSettings = await _askEnable(
-          context,
-          title: l10n.precondWifiTitle,
-          body: l10n.precondWifiBody,
-        );
-        if (!context.mounted) return false;
-        if (openSettings) {
-          await _openWirelessSettings();
-        } else {
-          _showBlocked(context, l10n.precondWifiBlocked);
-        }
-        return false;
-      }
-    }
-    return true;
+    return context.mounted;
   }
 
   static Future<bool> _ensureWifi(BuildContext context) async {
