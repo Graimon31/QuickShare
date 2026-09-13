@@ -1,7 +1,7 @@
 name: quickshare
 description: P2P file transfer app via QR code over local network.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.27+27
 
 environment:
   sdk: ^3.5.0

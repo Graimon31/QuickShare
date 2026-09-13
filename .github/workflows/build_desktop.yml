@@ -37,21 +37,28 @@ jobs:
           flutter pub get
           flutter build macos --release
 
-      # An .app is a bundle, not a file: a plain zip from a non-Mac tool can
-      # drop the Finder metadata and symlinks inside it, and the result still
-      # looks like an app but refuses to launch. ditto is the archiver macOS
-      # itself uses for bundles.
-      - name: Package macOS app
+      # Drag-to-Applications disk image. An .app is a bundle: zip from a
+      # non-Mac tool can drop Finder metadata. ditto + hdiutil keep it intact.
+      - name: Package macOS DMG
         working-directory: ./quickshare
         run: |
-          ditto -c -k --sequesterRsrc --keepParent \
-            build/macos/Build/Products/Release/DirectDrop.app \
-            DirectDrop-macos.zip
+          mkdir -p dist/macos
+          STAGE="$(mktemp -d)"
+          ditto build/macos/Build/Products/Release/DirectDrop.app \
+            "$STAGE/DirectDrop.app"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname "DirectDrop" \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO \
+            dist/macos/DirectDrop-macos.dmg
+          rm -rf "$STAGE"
+          ls -lh dist/macos/DirectDrop-macos.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: DirectDrop-macos
-          path: quickshare/DirectDrop-macos.zip
+          path: quickshare/dist/macos/DirectDrop-macos.dmg
           retention-days: 30
 
   build_desktop_linux:
@@ -166,12 +173,32 @@ jobs:
           not signed with a code-signing certificate. Choose "More info" then
           "Run anyway".
           "@ | Out-File -FilePath "$out\README.txt" -Encoding utf8
-          Compress-Archive -Path "$out\*" -DestinationPath "$PWD\..\DirectDrop-windows-portable.zip"
+          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
+          Compress-Archive -Path "$out\*" -DestinationPath "$PWD\dist\windows\DirectDrop-windows-portable.zip"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        working-directory: ./quickshare
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\windows | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          & $iscc /DMyAppVersion=1.0.27 packaging\windows\directdrop.iss
+          Get-ChildItem dist\windows | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
           name: DirectDrop-windows-portable
-          path: DirectDrop-windows-portable.zip
+          path: quickshare/dist/windows/DirectDrop-windows-portable.zip
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DirectDrop-windows-setup
+          path: quickshare/dist/windows/DirectDrop-windows-setup.exe
           retention-days: 30
 
   # Run artifacts are only ever visible to someone logged in with access to
@@ -193,6 +220,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: DirectDrop-windows-setup
+          path: dist/windows
+
+      - uses: actions/download-artifact@v4
+        with:
           name: DirectDrop-macos
           path: dist/macos
 
@@ -204,34 +236,33 @@ jobs:
       - name: Generate checksums
         run: |
           (
-            cd dist/windows && sha256sum DirectDrop-windows-portable.zip
-            cd dist/macos && sha256sum DirectDrop-macos.zip
+            cd dist/windows && sha256sum DirectDrop-windows-portable.zip DirectDrop-windows-setup.exe
+            cd dist/macos && sha256sum DirectDrop-macos.dmg
             cd dist/linux && sha256sum DirectDrop-linux-x64.tar.gz
           ) > dist/SHA256SUMS
 
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
+            dist/windows/DirectDrop-windows-setup.exe
             dist/windows/DirectDrop-windows-portable.zip
-            dist/macos/DirectDrop-macos.zip
+            dist/macos/DirectDrop-macos.dmg
             dist/linux/DirectDrop-linux-x64.tar.gz
             dist/SHA256SUMS
           body: |
-            **Windows** — portable, no installer. Download
-            **DirectDrop-windows-portable.zip**, extract it anywhere, run
-            `directdrop.exe`. Nothing is installed and nothing is written to
-            the registry; the extracted folder is the whole application.
-            Windows SmartScreen will warn on first run, because this build
-            carries no code-signing certificate. Choose "More info" then "Run
-            anyway".
+            **Windows installer** — **DirectDrop-windows-setup.exe**. Run it
+            and follow the wizard. Windows SmartScreen will warn on first run
+            (this build is not code-signed): "More info" → "Run anyway".
 
-            **macOS** — download **DirectDrop-macos.zip**, extract it and move
-            `DirectDrop.app` wherever you keep apps. The build is not signed
-            or notarized, so Gatekeeper will refuse the first launch: either
-            right-click the app and choose "Open", or run
-            `xattr -dr com.apple.quarantine /path/to/DirectDrop.app` once.
+            **Windows portable** — **DirectDrop-windows-portable.zip**. Extract
+            anywhere and run `directdrop.exe`. Nothing is installed and
+            nothing is written to the registry.
 
-            **Linux** — download **DirectDrop-linux-x64.tar.gz**, extract it
-            (`tar -xzf DirectDrop-linux-x64.tar.gz`) and run `./directdrop`
-            from the extracted folder. It needs GTK 3 and its usual desktop
-            libraries, which every mainstream distribution ships. x86-64 only.
+            **macOS** — **DirectDrop-macos.dmg**. Open the disk image and drag
+            DirectDrop to Applications. The build is not notarized, so
+            Gatekeeper may refuse the first launch: right-click the app and
+            choose Open, or run
+            `xattr -dr com.apple.quarantine /Applications/DirectDrop.app`.
+
+            **Linux** — **DirectDrop-linux-x64.tar.gz**. Extract and run
+            `./directdrop`. Needs GTK 3. x86-64 only.

@@ -38,6 +38,10 @@ yarn-error.log*
 
 # iOS / macOS builds & binaries
 *.ipa
+*.dmg
+
+# Packaged installers (GitHub Releases, not the repo)
+**/dist/
 *.apk
 *.aab
 **/Pods/
