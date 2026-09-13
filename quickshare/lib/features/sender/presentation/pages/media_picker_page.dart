@@ -105,7 +105,7 @@ class _MediaPickerPageState extends State<MediaPickerPage> {
     if (result.entries.isEmpty) {
       setState(() => _resolving = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(l10n.mediaNotStored),
+        content: Text(l10n.mediaNotStored, style: const TextStyle(color: Colors.white)),
       ));
       return;
     }
@@ -114,7 +114,7 @@ class _MediaPickerPageState extends State<MediaPickerPage> {
       // Sending nine of ten beats sending none, but say so rather than
       // quietly dropping items the user picked.
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(l10n.mediaSkippedICloud(result.unavailable)),
+        content: Text(l10n.mediaSkippedICloud(result.unavailable), style: const TextStyle(color: Colors.white)),
       ));
     }
     Navigator.of(context).pop(result.entries);

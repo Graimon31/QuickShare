@@ -13,6 +13,13 @@ import 'package:quickshare/features/sender/domain/entities/transfer_session.dart
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'linux_bluetooth_sender.dart';
 
+/// A nearby receiver this sender can pick, found by scanning.
+class BleWaitingPeer {
+  final String id;
+  final String name;
+  const BleWaitingPeer({required this.id, required this.name});
+}
+
 /// BLE sender shared by the desktop and mobile builds.
 ///
 /// Apple builds keep using the tested CoreBluetooth bridge in the Runner
@@ -37,7 +44,6 @@ class BluetoothTransferTransport implements TransferTransport {
   static const _controlUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
   static const _metadataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
   static const _dataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
-  static const _cccdUuid = '00002902-0000-1000-8000-00805F9B34FB';
 
   /// The peripheral local name to advertise over BLE.
   ///
@@ -130,6 +136,17 @@ class BluetoothTransferTransport implements TransferTransport {
     }
     if (_usesLinuxBridge) {
       await _linuxSender?.notifyLinkFrame(frame);
+      return;
+    }
+    final clientId = _universalClientId;
+    if (clientId != null) {
+      await UniversalBle.write(
+        clientId,
+        _serviceUuid,
+        _metadataUuid,
+        Uint8List.fromList(utf8.encode(jsonEncode(frame))),
+        withoutResponse: false,
+      );
       return;
     }
     await UniversalBlePeripheral.updateCharacteristicValue(
@@ -243,15 +260,12 @@ class BluetoothTransferTransport implements TransferTransport {
     );
   }
 
-  final _waitingController = StreamController<String>.broadcast();
+  final _waitingController = StreamController<BleWaitingPeer>.broadcast();
 
-  /// Devices that have said they are here and are waiting to be picked.
-  ///
-  /// Bluetooth has the two roles the wrong way round for a list: only the
-  /// sender advertises, and a receiver that found it used to begin the
-  /// transfer itself. One that has nothing to begin with announces instead,
-  /// and arrives here.
-  Stream<String> get waitingReceivers => _waitingController.stream;
+  /// Receivers this sender has seen advertising, waiting to be picked.
+  Stream<BleWaitingPeer> get waitingReceivers => _waitingController.stream;
+
+  String? _scanSessionToken;
 
   /// Starts sending to the device the person picked off that list.
   ///
@@ -267,6 +281,23 @@ class BluetoothTransferTransport implements TransferTransport {
     }
   }
 
+  /// Connect to a waiting receiver and start the rendezvous as GATT central.
+  Future<void> connectToReceiver(String deviceId) async {
+    final token = _scanSessionToken;
+    if (token == null || token.isEmpty) {
+      throw StateError('Bluetooth session has no token');
+    }
+    if (_usesNativeAppleBridge) {
+      await _method.invokeMethod('connect', {
+        'deviceId': deviceId,
+        'asSender': true,
+        'sessionToken': token,
+      });
+      return;
+    }
+    await _connectUniversalReceiver(deviceId, token);
+  }
+
   void _handleNativeEvent(dynamic event) {
     final map = Map<String, dynamic>.from(event as Map);
     switch (map['type']) {
@@ -278,7 +309,19 @@ class BluetoothTransferTransport implements TransferTransport {
         break;
       case 'receiverAnnounced':
         final name = map['name'] as String?;
-        if (name != null && name.isNotEmpty) _waitingController.add(name);
+        if (name != null && name.isNotEmpty) {
+          _waitingController.add(BleWaitingPeer(id: name, name: name));
+        }
+        break;
+      case 'deviceDiscovered':
+        final id = map['id'] as String?;
+        final name = map['name'] as String?;
+        if (id != null && id.isNotEmpty) {
+          _waitingController.add(BleWaitingPeer(
+            id: id,
+            name: (name != null && name.isNotEmpty) ? name : id,
+          ));
+        }
         break;
       case 'receiverReady':
         // A generation-4 receiver is connected and the session may start —
@@ -337,31 +380,18 @@ class BluetoothTransferTransport implements TransferTransport {
     _totalBytes = session.fold<int>(0, (sum, f) => sum + f.size);
     lastFailureReason = null;
     lastFailureCode = null;
+    _scanSessionToken = token;
     if (_usesNativeAppleBridge) {
       try {
-        await _method.invokeMethod('startAdvertising', {
-          // The list the bridge streams. Kept beside the single-file keys
-          // below, which every earlier build sent and which still name the
-          // session in the bridge's own logs.
-          'files': [
-            for (final f in session)
-              {
-                'filePath': f.path,
-                'fileName': f.name,
-                'relativePath': f.relPath,
-                'fileSize': f.size,
-                'mimeType': f.mimeType,
-              },
-          ],
-          'filePath': file.path,
-          'fileName': file.name,
-          'fileSize': file.size,
-          'mimeType': file.mimeType,
+        // Sender finds receivers: we scan, they advertise.
+        await _method.invokeMethod('startScanning', {
           'sessionToken': token,
           if (publicId.isNotEmpty) 'publicId': publicId,
+          'forReceivers': true,
         });
+        _statusController.add(TransferStatus.serving);
       } on PlatformException catch (e) {
-        throw Exception('Failed to start Bluetooth advertising: ${e.message}');
+        throw Exception('Failed to start Bluetooth scan: ${e.message}');
       } on MissingPluginException {
         throw Exception('Bluetooth is unavailable in this platform build.');
       }
@@ -408,73 +438,58 @@ class BluetoothTransferTransport implements TransferTransport {
       return file.name;
     }
 
-    await _startUniversalAdvertising(token, publicId);
+    await _startUniversalScan(token, publicId);
     return file.name;
   }
 
-  Future<void> _startUniversalAdvertising(String token, String publicId) async {
-    await UniversalBle.requestPermissions(withAndroidFineLocation: false);
-    final capabilities = await UniversalBlePeripheral.getCapabilities();
-    if (!capabilities.supportsPeripheralMode) {
-      throw Exception('Bluetooth sending is not supported on this platform.');
-    }
-    final readiness = await UniversalBlePeripheral.getAvailabilityState();
-    if (readiness != PeripheralReadinessState.ready) {
-      throw Exception('Bluetooth is not ready: ${readiness.name}.');
-    }
+  Future<void> _connectUniversalReceiver(String deviceId, String token) async {
+    _universalClientId = deviceId;
+    await UniversalBle.connect(deviceId);
+    await UniversalBle.discoverServices(deviceId);
+    await UniversalBle.subscribeNotifications(
+        deviceId, _serviceUuid, _metadataUuid);
+    UniversalBle.characteristicValueStream(deviceId, _metadataUuid).listen((value) {
+      final text = utf8.decode(value, allowMalformed: true);
+      if (BleControlProtocol.parseApOffer(text) case final sealed?) {
+        _apOfferController.add(sealed);
+        return;
+      }
+      if (BleControlProtocol.parseKeyExchange(text) case final key?) {
+        _rememberPeerKey(key);
+      }
+    });
+    await UniversalBle.write(
+      deviceId,
+      _serviceUuid,
+      _controlUuid,
+      Uint8List.fromList(utf8.encode(BleControlProtocol.capabilities())),
+      withoutResponse: false,
+    );
+    await UniversalBle.write(
+      deviceId,
+      _serviceUuid,
+      _controlUuid,
+      Uint8List.fromList(utf8.encode(BleControlProtocol.start(token))),
+      withoutResponse: false,
+    );
+    _receiverReadyController.add(null);
+  }
 
+  Future<void> _startUniversalScan(String token, String publicId) async {
+    await UniversalBle.requestPermissions(withAndroidFineLocation: false);
     _universalSessionToken = token;
     _lastPeerKey = null;
-    _universalPeerGeneration = null;
+    _universalPeerGeneration = 4;
     _universalClientId = null;
-    _universalDataSubscribed = false;
-    _universalStartReceived = false;
-    _universalTransferStarted = false;
-
-    final notifyDescriptor = BlePeripheralDescriptor(uuid: _cccdUuid);
-    await UniversalBlePeripheral.clearServices();
-    await UniversalBlePeripheral.addService(
-      BlePeripheralService(
-        uuid: _serviceUuid,
-        primary: true,
-        characteristics: [
-          BlePeripheralCharacteristic(
-            uuid: _controlUuid,
-            properties: [
-              CharacteristicProperty.write,
-              CharacteristicProperty.writeWithoutResponse,
-            ],
-            permissions: [PeripheralAttributePermission.writeable],
-          ),
-          BlePeripheralCharacteristic(
-            uuid: _metadataUuid,
-            properties: [CharacteristicProperty.notify],
-            descriptors: [notifyDescriptor],
-            permissions: [PeripheralAttributePermission.readable],
-          ),
-          BlePeripheralCharacteristic(
-            uuid: _dataUuid,
-            properties: [CharacteristicProperty.notify],
-            descriptors: [BlePeripheralDescriptor(uuid: _cccdUuid)],
-            permissions: [PeripheralAttributePermission.readable],
-          ),
-        ],
-      ),
-    );
-
-    // Windows GattServiceProvider does not accept a custom local name. The
-    // service remains discoverable there; the QR token is verified by the
-    // START:<token> command after the connection is established.
-    final isWindows = defaultTargetPlatform == TargetPlatform.windows;
-    await UniversalBlePeripheral.startAdvertising(
-      services: [_serviceUuid],
-      localName: isWindows ? null : bleAdvertisedName(publicId: publicId),
-      platformConfig: PeripheralPlatformConfig(
-        android: PeripheralAndroidOptions(
-          addServicesInScanResponse: false,
-          addManufacturerDataInScanResponse: false,
-        ),
-      ),
+    UniversalBle.scanStream.listen((device) {
+      final name = device.name ?? '';
+      _waitingController.add(BleWaitingPeer(
+        id: device.deviceId,
+        name: name.isNotEmpty ? name : device.deviceId,
+      ));
+    });
+    await UniversalBle.startScan(
+      scanFilter: ScanFilter(withServices: [_serviceUuid]),
     );
     _statusController.add(TransferStatus.serving);
   }
@@ -508,6 +523,9 @@ class BluetoothTransferTransport implements TransferTransport {
   Future<void> stopSharing() async {
     if (_usesNativeAppleBridge) {
       try {
+        await _method.invokeMethod('stopScanning');
+      } catch (_) {}
+      try {
         await _method.invokeMethod('stopAdvertising');
       } catch (_) {
         // best effort
@@ -518,6 +536,9 @@ class BluetoothTransferTransport implements TransferTransport {
       await _linuxSender?.stop();
       _linuxSender = null;
     } else {
+      try {
+        await UniversalBle.stopScan();
+      } catch (_) {}
       try {
         await UniversalBlePeripheral.stopAdvertising();
         await UniversalBlePeripheral.clearServices();

@@ -251,11 +251,13 @@ class _FilePickerPageState extends State<FilePickerPage> {
             _selectionInFlight = false;
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: Text(localizedFailure(
-                    AppLocalizations.of(context),
-                    code: state.code,
-                    fallback: state.message)),
-                backgroundColor: AppColors.error,
+                content: Text(
+                  localizedFailure(
+                      AppLocalizations.of(context),
+                      code: state.code,
+                      fallback: state.message),
+                  style: const TextStyle(color: Colors.white),
+                ),
                 behavior: SnackBarBehavior.floating,
               ),
             );

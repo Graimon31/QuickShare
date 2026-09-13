@@ -198,16 +198,35 @@ class LinkServeInfo {
   /// than falling back to plaintext, so a frame without this reaches the
   /// person as "update the sending device" and no file at all.
   final String tlsFingerprint;
+  final String fileName;
+  final int fileSize;
+  final int itemCount;
+  final String senderName;
+  final String lanIp;
 
   const LinkServeInfo({
     required this.ip,
     required this.port,
     required this.token,
     required this.tlsFingerprint,
+    this.fileName = '',
+    this.fileSize = 0,
+    this.itemCount = 1,
+    this.senderName = '',
+    this.lanIp = '',
   });
 
-  Map<String, Object?> toJson() =>
-      {'ip': ip, 'port': port, 'token': token, 'tf': tlsFingerprint};
+  Map<String, Object?> toJson() => {
+        'ip': ip,
+        'port': port,
+        'token': token,
+        'tf': tlsFingerprint,
+        if (fileName.isNotEmpty) 'fn': fileName,
+        if (fileSize > 0) 'fs': fileSize,
+        if (itemCount > 0) 'ic': itemCount,
+        if (senderName.isNotEmpty) 'sn': senderName,
+        if (lanIp.isNotEmpty) 'lip': lanIp,
+      };
 
   static LinkServeInfo? fromJson(Map<String, Object?> json) {
     final ip = json['ip'];
@@ -221,8 +240,22 @@ class LinkServeInfo {
     // fingerprint cannot open a session, so treating it as unreadable says
     // so at the edge instead of halfway through a transfer.
     if (fingerprint is! String || fingerprint.isEmpty) return null;
+    final fn = json['fn'] as String? ?? '';
+    final fs = json['fs'] as int? ?? 0;
+    final ic = json['ic'] as int? ?? 1;
+    final sn = json['sn'] as String? ?? '';
+    final lip = json['lip'] as String? ?? '';
     return LinkServeInfo(
-        ip: ip, port: port, token: token, tlsFingerprint: fingerprint);
+      ip: ip,
+      port: port,
+      token: token,
+      tlsFingerprint: fingerprint,
+      fileName: fn,
+      fileSize: fs,
+      itemCount: ic,
+      senderName: sn,
+      lanIp: lip,
+    );
   }
 }
 

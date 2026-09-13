@@ -73,14 +73,14 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     // accept "0 items, 0 bytes". The wait is the walk's, not this button's,
     // and it is over in the time it takes to read the screen.
     if (state.indexing) {
-      messenger.showSnackBar(SnackBar(content: Text(l10n.qrDisplayStillCounting)));
+      messenger.showSnackBar(SnackBar(content: Text(l10n.qrDisplayStillCounting, style: const TextStyle(color: Colors.white))));
       return;
     }
 
     if (!peer.acceptsInvitations) {
       // An older build, or a device that is only browsing. Its own screen
       // never showed a prompt, so waiting for one would time out.
-      messenger.showSnackBar(SnackBar(content: Text(l10n.inviteUnreachable)));
+      messenger.showSnackBar(SnackBar(content: Text(l10n.inviteUnreachable, style: const TextStyle(color: Colors.white))));
       return;
     }
 
@@ -90,7 +90,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     final fingerprint = _fingerprintOf(state);
 
     setState(() => _inviting = true);
-    messenger.showSnackBar(SnackBar(content: Text(l10n.inviteAsking)));
+    messenger.showSnackBar(SnackBar(content: Text(l10n.inviteAsking, style: const TextStyle(color: Colors.white))));
 
     final result = await InvitationSender().invite(
       address: peer.address,
@@ -121,7 +121,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
     };
     messenger
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message)));
+      ..showSnackBar(SnackBar(content: Text(message, style: const TextStyle(color: Colors.white))));
   }
 
   Timer? _timer;

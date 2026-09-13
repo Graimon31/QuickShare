@@ -69,7 +69,7 @@ class CopyValueRow extends StatelessWidget {
               HapticFeedback.mediumImpact();
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text(copiedMessage),
+                  content: Text(copiedMessage, style: const TextStyle(color: Colors.white)),
                   backgroundColor: AppColors.secondaryDark,
                   behavior: SnackBarBehavior.floating,
                 ),

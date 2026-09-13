@@ -92,12 +92,30 @@ class UniversalBleReceiverTransport {
 
   /// Tells the sender about a network this receiver raised: an `AP:` write
   /// on its control characteristic, carrying the sealed credentials.
-  Future<void> sendApOffer(String sealed) =>
-      _writeControl(BleControlProtocol.apOffer(sealed));
+  Future<void> sendApOffer(String sealed) async {
+    if (_waitingAdvertisement) {
+      await _notifyMetadata(utf8.encode(BleControlProtocol.apOffer(sealed)));
+      return;
+    }
+    await _writeControl(BleControlProtocol.apOffer(sealed));
+  }
 
   /// Hands the sender this side's public half for the negotiation.
-  Future<void> sendKeyExchange(String publicKey) =>
-      _writeControl(BleControlProtocol.keyExchange(publicKey));
+  Future<void> sendKeyExchange(String publicKey) async {
+    if (_waitingAdvertisement) {
+      await _notifyMetadata(utf8.encode(BleControlProtocol.keyExchange(publicKey)));
+      return;
+    }
+    await _writeControl(BleControlProtocol.keyExchange(publicKey));
+  }
+
+  Future<void> _notifyMetadata(List<int> value) async {
+    await UniversalBlePeripheral.updateCharacteristicValue(
+      characteristicId: _metadataUuid,
+      value: Uint8List.fromList(value),
+      deviceId: _peripheralClientId,
+    );
+  }
 
   Future<void> _writeControl(String command) async {
     final deviceId = _targetDeviceId;
@@ -223,6 +241,117 @@ class UniversalBleReceiverTransport {
     );
 
     AppLogger.info('UniversalBleReceiver: scan started', tag: 'BLE_RECEIVER');
+  }
+
+  bool _waitingAdvertisement = false;
+  String? _peripheralClientId;
+
+  /// Advertise as a waiting receiver so a sender can scan and pick this device.
+  Future<void> startWaitingAdvertisement({required String deviceName}) async {
+    await UniversalBle.requestPermissions(withAndroidFineLocation: false);
+    final capabilities = await UniversalBlePeripheral.getCapabilities();
+    if (!capabilities.supportsPeripheralMode) {
+      throw Exception('Bluetooth receiving is not supported on this platform.');
+    }
+    final readiness = await UniversalBlePeripheral.getAvailabilityState();
+    if (readiness != PeripheralReadinessState.ready) {
+      throw Exception('Bluetooth is not ready: ${readiness.name}.');
+    }
+
+    _waitingAdvertisement = true;
+    _peripheralClientId = null;
+
+    const cccdUuid = '00002902-0000-1000-8000-00805F9B34FB';
+    final notifyDescriptor = BlePeripheralDescriptor(uuid: cccdUuid);
+    await UniversalBlePeripheral.clearServices();
+    await UniversalBlePeripheral.addService(
+      BlePeripheralService(
+        uuid: _serviceUuid,
+        primary: true,
+        characteristics: [
+          BlePeripheralCharacteristic(
+            uuid: _controlUuid,
+            properties: [
+              CharacteristicProperty.write,
+              CharacteristicProperty.writeWithoutResponse,
+            ],
+            permissions: [PeripheralAttributePermission.writeable],
+          ),
+          BlePeripheralCharacteristic(
+            uuid: _metadataUuid,
+            properties: [
+              CharacteristicProperty.notify,
+              CharacteristicProperty.write,
+              CharacteristicProperty.writeWithoutResponse,
+            ],
+            descriptors: [notifyDescriptor],
+            permissions: [
+              PeripheralAttributePermission.readable,
+              PeripheralAttributePermission.writeable,
+            ],
+          ),
+          BlePeripheralCharacteristic(
+            uuid: _dataUuid,
+            properties: [CharacteristicProperty.notify],
+            descriptors: [BlePeripheralDescriptor(uuid: cccdUuid)],
+            permissions: [PeripheralAttributePermission.readable],
+          ),
+        ],
+      ),
+    );
+
+    UniversalBlePeripheral.setWriteRequestHandlers(
+      (deviceId, characteristicId, offset, value) {
+        if (value == null) return PeripheralWriteRequestResult();
+        _peripheralClientId = deviceId;
+        final id = characteristicId.toLowerCase();
+        if (id == _controlUuid.toLowerCase()) {
+          final command = utf8.decode(value, allowMalformed: true);
+          if (BleControlProtocol.parseCapabilities(command) != null) {
+            return PeripheralWriteRequestResult();
+          }
+          if (BleControlProtocol.parseKeyExchange(command) case final key?) {
+            // Sender's key arrives inside the link directive; ignore extras.
+            AppLogger.info('Waiting receiver got KEX (${key.length} chars)',
+                tag: 'BLE_RECEIVER');
+            return PeripheralWriteRequestResult();
+          }
+          if (command.startsWith('START:')) {
+            _progressController.add(const UniversalBleReceiveProgress(
+              phase: 'waiting',
+              fileName: '',
+              received: 0,
+              total: 0,
+            ));
+            return PeripheralWriteRequestResult();
+          }
+        }
+        if (id == _metadataUuid.toLowerCase()) {
+          _handleMetadata(value);
+        }
+        return PeripheralWriteRequestResult();
+      },
+    );
+
+    UniversalBlePeripheral.characteristicSubscriptionStream.listen((event) {
+      if (!event.isSubscribed) return;
+      _peripheralClientId = event.deviceId;
+      _progressController.add(const UniversalBleReceiveProgress(
+        phase: 'waiting',
+        fileName: '',
+        received: 0,
+        total: 0,
+      ));
+    });
+
+    final isWindows = defaultTargetPlatform == TargetPlatform.windows;
+    await UniversalBlePeripheral.startAdvertising(
+      services: [_serviceUuid],
+      localName: isWindows ? null : deviceName,
+    );
+    AppLogger.info(
+        'UniversalBleReceiver: waiting advertisement started as "$deviceName"',
+        tag: 'BLE_RECEIVER');
   }
 
   /// The session's public identifier, which is what the sender advertises.
@@ -591,6 +720,13 @@ class UniversalBleReceiverTransport {
   }
 
   Future<void> cancel() async {
+    if (_waitingAdvertisement) {
+      _waitingAdvertisement = false;
+      try {
+        await UniversalBlePeripheral.stopAdvertising();
+        await UniversalBlePeripheral.clearServices();
+      } catch (_) {}
+    }
     _failed = true;
     _idleTimer?.cancel();
     _idleTimer = null;

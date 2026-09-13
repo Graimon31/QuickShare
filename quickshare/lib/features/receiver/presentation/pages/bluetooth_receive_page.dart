@@ -14,6 +14,7 @@ import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_transport.dart';
+import 'package:quickshare/features/receiver/data/transports/receiver_link_signal.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
@@ -63,6 +64,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   /// address the sender sends: on a link with no access point the sender's
   /// own address is not routable from here, and its end of the link is.
   int? _peerLinkPort;
+  Future<void>? _negotiationFuture;
 
   /// Bytes are arriving over BLE itself, which only a sender older than
   /// protocol generation 4 still does. Set from the progress stream so the
@@ -132,7 +134,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
   Future<void> _negotiateDirectLink() async {
     final outcome = await DirectLinkCoordinator(
       driver: LocalHotspotDriver(),
-      signal: _ReceiverLinkSignal(_transport),
+      signal: ReceiverLinkSignal(_transport),
       probeLink: () async {
         for (var i = 0; i < 20; i++) {
           final ip = await NetworkInfoService().getLocalIpAddress();
@@ -185,6 +187,22 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       _fileName = AppLocalizations.of(context).btReceiveDirectLinkPlaceholder;
     });
 
+    if (serve.ip == '127.0.0.1' && _peerLinkPort == null) {
+      try {
+        await _negotiationFuture?.timeout(const Duration(seconds: 6));
+      } catch (_) {}
+    }
+
+    String targetIp = serve.ip;
+    int targetPort = serve.port;
+    if (_peerLinkPort != null) {
+      targetIp = '127.0.0.1';
+      targetPort = _peerLinkPort!;
+    } else if (serve.lanIp.isNotEmpty) {
+      targetIp = serve.lanIp;
+      targetPort = serve.port;
+    }
+
     final session = await const TransferCache().sessionDirectory();
     // The worker, like every other receive path: this one runs on a phone by
     // definition, which is where sharing a thread with the screen hurts most.
@@ -195,8 +213,8 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       // exactly what resuming wants.
       payload: QRPayload(
         version: 2,
-        ip: _peerLinkPort != null ? '127.0.0.1' : serve.ip,
-        port: _peerLinkPort ?? serve.port,
+        ip: targetIp,
+        port: targetPort,
         token: serve.token,
         sessionId: serve.token,
         mode: 'http-lan',
@@ -349,7 +367,8 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       final session = await const TransferCache().sessionDirectory();
       final connectFuture = _transport.connect(device.id,
           token: _token, targetDir: session.path);
-      unawaited(_negotiateDirectLink());
+      _negotiationFuture = _negotiateDirectLink();
+      unawaited(_negotiationFuture!);
       final path = await connectFuture;
       if (!mounted || _completed) return;
       _completed = true;
@@ -602,38 +621,4 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
         );
     }
   }
-}
-
-/// The receiver side of the rendezvous' signal channel.
-///
-/// Directives come in over the metadata characteristic; the receiver never
-/// sends one — it does not decide who hosts, it is told. What goes out is
-/// the credentials of the network it was asked to raise.
-class _ReceiverLinkSignal implements DirectLinkSignal {
-  final BleReceiver _transport;
-
-  _ReceiverLinkSignal(this._transport);
-
-  @override
-  Future<void> sendDirective(DirectLinkDirective directive) =>
-      throw UnsupportedError('a receiver sends no directives');
-
-  @override
-  Stream<DirectLinkDirective> get directives => _transport.linkDirectives;
-
-  @override
-  Future<void> sendApOffer(String sealed) => _transport.sendApOffer(sealed);
-
-  @override
-  Stream<String> get apOffers => const Stream.empty();
-
-  @override
-  Future<void> sendKeyExchange(String publicKey) =>
-      _transport.sendKeyExchange(publicKey);
-
-  /// The sender's public half arrives inside the directive, not on a channel
-  /// of its own — it is already travelling that way and one frame is one
-  /// fewer thing to lose.
-  @override
-  Stream<String> get peerKeys => const Stream.empty();
 }

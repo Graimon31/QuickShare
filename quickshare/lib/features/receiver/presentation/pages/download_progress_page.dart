@@ -161,7 +161,7 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
               WakelockPlus.disable();
               unawaited(BackgroundHold.end());
               ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(_errorMessage(l10n, state))));
+                  SnackBar(content: Text(_errorMessage(l10n, state), style: const TextStyle(color: Colors.white))));
               context.go('/');
             }
           },

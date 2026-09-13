@@ -7,6 +7,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
 import 'package:quickshare/core/storage/received_item.dart';
+import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_announcer.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
 import 'package:quickshare/features/receiver/domain/usecases/download_file_usecase.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
@@ -28,12 +29,23 @@ class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
 
 class _MockDownloadFileUseCase extends Mock implements DownloadFileUseCase {}
 class _MockReceiverRepository extends Mock implements ReceiverRepository {}
+class _MockBluetoothReceiverAnnouncer extends Mock
+    implements BluetoothReceiverAnnouncer {}
 
 class _TestReceiverBloc extends ReceiverBloc {
   _TestReceiverBloc({
     required super.downloadFileUseCase,
     required super.repository,
-  });
+  }) : super(
+          bluetoothAnnouncerFactory: ({onServeReceived}) {
+            final mock = _MockBluetoothReceiverAnnouncer();
+            when(() => mock.start()).thenAnswer((_) async {});
+            when(() => mock.stop()).thenAnswer((_) async {});
+            when(() => mock.detachForTransfer()).thenAnswer((_) async {});
+            when(() => mock.isActive).thenReturn(false);
+            return mock;
+          },
+        );
 
   final List<ReceiverEvent> recordedEvents = [];
 
@@ -136,6 +148,59 @@ void main() {
       expect(find.text('Vacation Photos'), findsOneWidget);
       expect(find.byType(ElevatedButton), findsOneWidget);
       expect(find.byType(OutlinedButton), findsOneWidget);
+    });
+
+    testWidgets(
+        'TransferPreviewPage displays Bluetooth icon, sender name, and receive button for Bluetooth session',
+        (tester) async {
+      tester.view.physicalSize = const Size(1000, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      const btPayload = QRPayload(
+        version: 2,
+        ip: 'bt',
+        port: 0,
+        token: 'test-bt-token',
+        sessionId: 'cid-pub-123',
+        fileName: 'ProjectArchive.zip',
+        fileSize: 52428800, // 50 MB
+        itemCount: 1,
+        mode: 'bluetooth',
+        senderName: 'MacBook Pro — Mr.Graimon',
+      );
+
+      final bloc = _TestReceiverBloc(
+        downloadFileUseCase: _MockDownloadFileUseCase(),
+        repository: _MockReceiverRepository(),
+      );
+      bloc.emit(const QRParsed(btPayload));
+
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump(const Duration(seconds: 1));
+        await bloc.close();
+      });
+
+      await tester.pumpWidget(wrapWithRouterAndBloc(
+        child: const TransferPreviewPage(),
+        bloc: bloc,
+      ));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.byIcon(Icons.bluetooth_rounded), findsOneWidget);
+      expect(find.text('ProjectArchive.zip'), findsOneWidget);
+      expect(find.textContaining('MacBook Pro — Mr.Graimon'), findsOneWidget);
+      expect(find.byType(ElevatedButton), findsOneWidget);
+      expect(find.byType(OutlinedButton), findsOneWidget);
+
+      await tester.tap(find.byType(ElevatedButton));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(bloc.recordedEvents.any((e) => e is StartDownload && e.payload == btPayload), isTrue);
+      expect(find.byType(DownloadProgressPage), findsOneWidget);
     });
 
     testWidgets(

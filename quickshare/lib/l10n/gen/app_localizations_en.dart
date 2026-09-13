@@ -693,6 +693,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get codeReceiveTryBluetooth => 'Search over Bluetooth';
 
   @override
+  String get codeReceiveBluetoothWaiting =>
+      'This device is visible over Bluetooth. On the sender, pick it from the nearby list — you do not need the code.';
+
+  @override
+  String get codeReceiveNotAShareLink =>
+      'That is not a DirectDrop share link. Copy the link under the QR on the sender — not the Wi-Fi address.';
+
+  @override
+  String get codeReceiveInvalidQr =>
+      'Invalid QR code. Point the camera at the QR on the sender screen — not at the Wi-Fi address text under it.';
+
+  @override
   String get codeReceiveSearchingLan =>
       'Searching for sender on local network…';
 

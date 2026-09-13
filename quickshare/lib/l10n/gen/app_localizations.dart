@@ -1280,6 +1280,24 @@ abstract class AppLocalizations {
   /// **'Search over Bluetooth'**
   String get codeReceiveTryBluetooth;
 
+  /// No description provided for @codeReceiveBluetoothWaiting.
+  ///
+  /// In en, this message translates to:
+  /// **'This device is visible over Bluetooth. On the sender, pick it from the nearby list — you do not need the code.'**
+  String get codeReceiveBluetoothWaiting;
+
+  /// No description provided for @codeReceiveNotAShareLink.
+  ///
+  /// In en, this message translates to:
+  /// **'That is not a DirectDrop share link. Copy the link under the QR on the sender — not the Wi-Fi address.'**
+  String get codeReceiveNotAShareLink;
+
+  /// No description provided for @codeReceiveInvalidQr.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid QR code. Point the camera at the QR on the sender screen — not at the Wi-Fi address text under it.'**
+  String get codeReceiveInvalidQr;
+
   /// No description provided for @codeReceiveSearchingLan.
   ///
   /// In en, this message translates to:

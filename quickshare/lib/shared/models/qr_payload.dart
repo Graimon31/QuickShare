@@ -179,6 +179,7 @@ class QRPayload extends Equatable {
       version > 0 &&
       ip.isNotEmpty &&
       (mode == 'webrtc-sdp' ||
+          mode == 'bluetooth' ||
           (sdpOffer != null && sdpOffer!.isNotEmpty) ||
           port > 0) &&
       token.isNotEmpty &&

@@ -145,4 +145,32 @@ void main() {
     final l10n = await AppLocalizations.delegate.load(const Locale('en'));
     expect(find.text(l10n.previewSenderLabel('Alice iPhone')), findsOneWidget);
   });
+
+  testWidgets('shows Bluetooth icon and sender name from Bluetooth payload', (tester) async {
+    const btPayload = QRPayload(
+      version: 2,
+      ip: 'bt',
+      port: 0,
+      token: 'bt-session-token',
+      fileName: 'DocumentsFolder',
+      fileSize: 1048576,
+      itemCount: 4,
+      mode: 'bluetooth',
+      senderName: 'Bob MacBook',
+    );
+    bloc.emit(const QRParsed(btPayload));
+
+    await tester.pumpWidget(underTest());
+    await tester.pump();
+
+    final l10n = await AppLocalizations.delegate.load(const Locale('en'));
+    expect(find.byIcon(Icons.bluetooth_rounded), findsOneWidget);
+    expect(find.text('DocumentsFolder'), findsOneWidget);
+    expect(find.text(l10n.previewSenderLabel('Bob MacBook')), findsOneWidget);
+
+    await tester.tap(find.text(l10n.codeReceiveReceiveButton));
+    await tester.pumpAndSettle();
+
+    expect(bloc.started.single, equals(btPayload));
+  });
 }

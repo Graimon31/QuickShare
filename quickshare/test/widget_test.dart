@@ -1,9 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quickshare/app.dart';
 import 'package:quickshare/core/di/service_locator.dart';
+import 'package:quickshare/core/network/app_presence.dart';
 
 void main() {
   tearDown(() async {
+    await AppPresence.instance.dispose();
     await sl.reset();
   });
 

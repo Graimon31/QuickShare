@@ -25,12 +25,16 @@ class BluetoothReceiveProgress {
   final String fileName;
   final int received;
   final int total;
+  final String? error;
+  final String? errorCode;
 
   const BluetoothReceiveProgress({
     required this.phase,
     required this.fileName,
     required this.received,
     required this.total,
+    this.error,
+    this.errorCode,
   });
 }
 
@@ -49,6 +53,14 @@ abstract interface class BleReceiver {
 
   Future<void> startScanning({String? sessionToken, String? publicId});
   Future<void> stopScanning();
+
+  /// Advertise so a sender can find this device and connect to it.
+  ///
+  /// Generation-4 Bluetooth is sender-finds-receiver: this device lights up
+  /// as a GATT peripheral, the sender scans, and the person sending picks
+  /// the row. The previous direction (this side scanning for the sender)
+  /// is what made a Mac receiving from an iPhone fail to appear in the list.
+  Future<void> startWaitingAdvertisement({required String deviceName});
 
   /// Connects to [deviceId] and resolves with the saved file path once the
   /// transfer completes. [token] authorises the session; the native bridge
@@ -181,6 +193,22 @@ class BluetoothReceiverTransport implements BleReceiver {
     }
   }
 
+  @override
+  Future<void> startWaitingAdvertisement({required String deviceName}) async {
+    _eventSub ??= _events.receiveBroadcastStream().listen(
+          _handleEvent,
+          onError: (Object e) =>
+              debugPrint('Bluetooth receiver event stream error: $e'),
+        );
+    try {
+      await _method.invokeMethod('startReceiverAdvertising', {
+        'deviceName': deviceName,
+      });
+    } on MissingPluginException {
+      throw Exception('Bluetooth is unavailable in this build.');
+    }
+  }
+
   /// Connects to [deviceId] and resolves with the saved file path once the
   /// transfer completes.
   ///
@@ -276,9 +304,22 @@ class BluetoothReceiverTransport implements BleReceiver {
             phase: 'waiting', fileName: '', received: 0, total: 0));
         break;
 
+      case 'receiverDisconnected':
+        _progressController.add(const BluetoothReceiveProgress(
+            phase: 'disconnected', fileName: '', received: 0, total: 0));
+        break;
+
       case 'receiverFailed':
         final err = map['error'] as String? ?? 'Unknown error';
-        debugPrint('Bluetooth receive failed: $err');
+        final errCode = map['code'] as String?;
+        debugPrint('Bluetooth receive failed: $err (code: $errCode)');
+        _progressController.add(BluetoothReceiveProgress(
+            phase: 'failed',
+            fileName: _fileName,
+            received: 0,
+            total: _total,
+            error: err,
+            errorCode: errCode));
         if (_completion?.isCompleted == false) {
           _completion!.completeError(Exception(err));
         }
@@ -288,6 +329,9 @@ class BluetoothReceiverTransport implements BleReceiver {
 
   @override
   Future<void> cancel() async {
+    try {
+      await _method.invokeMethod('stopAdvertising');
+    } catch (_) {}
     try {
       await _method.invokeMethod('cancelTransfer');
     } catch (_) {
@@ -338,6 +382,10 @@ class _UniversalBleReceiverAdapter implements BleReceiver {
   @override
   Future<void> startScanning({String? sessionToken, String? publicId}) =>
       _inner.startScanning(sessionToken: sessionToken, publicId: publicId);
+
+  @override
+  Future<void> startWaitingAdvertisement({required String deviceName}) =>
+      _inner.startWaitingAdvertisement(deviceName: deviceName);
 
   @override
   Future<void> stopScanning() => _inner.stopScanning();

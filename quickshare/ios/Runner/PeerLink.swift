@@ -313,7 +313,7 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
                   serviceName: serviceName)
     }
     graceTimer = timer
-    queue.asyncAfter(deadline: .now() + .milliseconds(2500), execute: timer)
+    queue.asyncAfter(deadline: .now() + .milliseconds(600), execute: timer)
   }
 
   private func settle(on endpoint: NWEndpoint,

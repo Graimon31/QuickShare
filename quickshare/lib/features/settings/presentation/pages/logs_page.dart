@@ -41,7 +41,7 @@ class _LogsPageState extends State<LogsPage> {
     await Clipboard.setData(ClipboardData(text: content));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(AppLocalizations.of(context).settingsDetailsCopied)),
+      SnackBar(content: Text(AppLocalizations.of(context).settingsDetailsCopied, style: const TextStyle(color: Colors.white))),
     );
   }
 

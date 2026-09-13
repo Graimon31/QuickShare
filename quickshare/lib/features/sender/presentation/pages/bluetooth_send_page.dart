@@ -16,7 +16,7 @@ import 'package:quickshare/shared/widgets/copy_value_row.dart';
 import 'package:quickshare/shared/widgets/session_expired_panel.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
-/// Shows the Bluetooth session QR while this device advertises the BLE service.
+/// Shows the Bluetooth session QR while this device scans for waiting receivers.
 class BluetoothSendPage extends StatefulWidget {
   const BluetoothSendPage({super.key});
 
@@ -103,8 +103,11 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
               if (!_expired) context.go('/send');
             } else if (state is SenderError) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(localizedFailure(AppLocalizations.of(context),
-                      code: state.code, fallback: state.message))));
+                  content: Text(
+                    localizedFailure(AppLocalizations.of(context),
+                        code: state.code, fallback: state.message),
+                    style: const TextStyle(color: Colors.white),
+                  )));
               context.go('/send');
             }
           },
@@ -209,13 +212,9 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                             textAlign: TextAlign.center,
                           ).animate().fadeIn(delay: 400.ms),
                           const SizedBox(height: 16),
-                          // Who is waiting, when anyone is. Over Bluetooth a
-                          // device cannot be polled for: only the sender
-                          // advertises, so nothing can be listed until a
-                          // receiver opens its own screen and says it is
-                          // there. Absent rather than empty for that reason —
-                          // an empty list here would promise a search that is
-                          // not happening.
+                          // Receivers advertising themselves. This device
+                          // scans; they light up. Empty until someone opens
+                          // Receive nearby.
                           if (state.waiting.isNotEmpty) ...[
                             Align(
                               alignment: Alignment.centerLeft,
@@ -231,8 +230,8 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                             ),
                             const SizedBox(height: 10),
                             ...state.waiting.map(
-                              (name) {
-                                final isConnecting = _connectingDevice == name;
+                              (peer) {
+                                final isConnecting = _connectingDevice == peer.id;
                                 return Container(
                                   margin: const EdgeInsets.only(bottom: 8),
                                   decoration: BoxDecoration(
@@ -244,7 +243,7 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                                   child: ListTile(
                                     leading: const Icon(Icons.devices_other_rounded,
                                         color: AppColors.primary),
-                                    title: Text(name,
+                                    title: Text(peer.name,
                                         style: const TextStyle(
                                             color: AppColors.textPrimary)),
                                     subtitle: Text(
@@ -268,10 +267,10 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                                     onTap: isConnecting
                                         ? null
                                         : () {
-                                            setState(() => _connectingDevice = name);
+                                            setState(() => _connectingDevice = peer.id);
                                             context
                                                 .read<SenderBloc>()
-                                                .add(const SendToWaitingReceiver());
+                                                .add(SendToWaitingReceiver(peer.id));
                                           },
                                   ),
                                 );

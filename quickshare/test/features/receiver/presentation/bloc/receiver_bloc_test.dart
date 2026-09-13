@@ -8,10 +8,12 @@ import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/core/errors/failures.dart';
 
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
+import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_session.dart';
 
 class MockDownloadFileUseCase extends Mock implements DownloadFileUseCase {}
 class MockReceiverRepository extends Mock implements ReceiverRepository {}
 class MockWebRtcReceiverTransport extends Mock implements WebRtcReceiverTransport {}
+class MockBluetoothReceiverSession extends Mock implements BluetoothReceiverSession {}
 
 void main() {
   late ReceiverBloc receiverBloc;
@@ -27,6 +29,10 @@ void main() {
     fileSize: 1024,
     checksum: 'abc',
   );
+
+  setUpAll(() {
+    registerFallbackValue(tPayload);
+  });
 
   setUp(() {
     mockDownloadFileUseCase = MockDownloadFileUseCase();
@@ -155,5 +161,58 @@ void main() {
 
     verify(() => mockTransport.cancel()).called(1);
     expect(receiverBloc.serverlessTransport, isNull);
+  });
+
+  test('should emit QRParsed with preview when Bluetooth QR code is scanned', () async {
+    const btPayload = QRPayload(
+      version: 2,
+      ip: 'bt',
+      port: 0,
+      token: 'token123',
+      sessionId: 'cid123',
+      mode: 'bluetooth',
+      fileName: 'Docs',
+      fileSize: 2048,
+      itemCount: 3,
+      senderName: 'Sender Mac',
+    );
+    const rawQr = 'quickshare-bt:v1:...';
+    when(() => mockReceiverRepository.parseQRCode(rawQr))
+        .thenAnswer((_) async => const Right(btPayload));
+
+    final expectation = expectLater(
+      receiverBloc.stream,
+      emitsInOrder([
+        predicate<ReceiverState>((state) {
+          if (state is! QRParsed) return false;
+          return state.payload == btPayload &&
+              state.qhtpPreview?.itemCount == 3 &&
+              state.qhtpPreview?.totalBytes == 2048 &&
+              state.qhtpPreview?.senderName == 'Sender Mac';
+        }),
+      ]),
+    );
+
+    receiverBloc.add(const QRCodeScanned(rawQr));
+
+    await expectation;
+    verifyNever(() => mockReceiverRepository.fetchQhtpSessionPreview(any()));
+  });
+
+  test('CancelDownload cancels active bluetooth session', () async {
+    final mockBtSession = MockBluetoothReceiverSession();
+    when(() => mockBtSession.cancel()).thenAnswer((_) => Future<void>.value());
+    when(() => mockReceiverRepository.cancelDownload()).thenReturn(null);
+
+    receiverBloc.bluetoothSession = mockBtSession;
+    receiverBloc.add(CancelDownload());
+
+    await expectLater(
+      receiverBloc.stream,
+      emits(ReceiverInitial()),
+    );
+
+    verify(() => mockBtSession.cancel()).called(1);
+    expect(receiverBloc.bluetoothSession, isNull);
   });
 }

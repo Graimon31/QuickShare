@@ -43,6 +43,13 @@ class _FakeBle extends UniversalBlePlatform {
   _FakeBle(this._state, {this.throws = false});
   final AvailabilityState _state;
   final bool throws;
+  bool enableBluetoothCalled = false;
+
+  @override
+  Future<bool> enableBluetooth() async {
+    enableBluetoothCalled = true;
+    return true;
+  }
 
   @override
   Future<AvailabilityState> getBluetoothAvailabilityState() async {
@@ -216,6 +223,38 @@ void main() {
 
       expect(await pending, isFalse,
           reason: 'a session that cannot build a link must not start');
+    });
+
+    testWidgets('ensureReceiver passes when Bluetooth and Wi-Fi are powered on',
+        (tester) async {
+      final fakeBle = _FakeBle(AvailabilityState.poweredOn);
+      UniversalBle.setInstance(fakeBle);
+      TransportPreconditions.peerLink =
+          _FakePeerLink(ready: true, canEnable: true);
+      TransportPreconditions.networkInfo = _FakeNetwork(wifi: true);
+      final ctx = await host(tester);
+
+      expect(
+        await TransportPreconditions.ensureReceiver(ctx),
+        isTrue,
+      );
+      expect(fakeBle.enableBluetoothCalled, isTrue);
+    });
+
+    testWidgets('ensureReceiver blocks when Bluetooth is powered off',
+        (tester) async {
+      UniversalBle.setInstance(_FakeBle(AvailabilityState.poweredOff));
+      TransportPreconditions.peerLink = _FakePeerLink(ready: true);
+      final ctx = await host(tester);
+
+      final pending = TransportPreconditions.ensureReceiver(ctx);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Cancel'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(await pending, isFalse);
     });
   });
 }

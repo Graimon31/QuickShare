@@ -84,7 +84,8 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
     }
     final payload = parsed.payload;
     final preview = parsed.qhtpPreview;
-    final isQhtp = payload.isQhtp;
+    final isBluetooth = payload.mode == 'bluetooth';
+    final isQhtp = payload.isQhtp || isBluetooth;
     final itemCount = preview?.itemCount ??
         (payload.itemCount > 0 ? payload.itemCount : (isQhtp ? 0 : 1));
     final totalBytes =
@@ -123,11 +124,11 @@ class _TransferPreviewPageState extends State<TransferPreviewPage> {
                         gradient: AppColors.primaryGradient,
                       ),
                       child: Icon(
-                        isQhtp
-                            // A folder now arrives as a folder, so it should
-                            // not be announced with an archive icon.
-                            ? Icons.folder_rounded
-                            : Icons.insert_drive_file_rounded,
+                        isBluetooth
+                            ? Icons.bluetooth_rounded
+                            : (isQhtp
+                                ? Icons.folder_rounded
+                                : Icons.insert_drive_file_rounded),
                         color: Colors.white,
                         size: 48,
                       ),

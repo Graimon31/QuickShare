@@ -700,6 +700,18 @@ class AppLocalizationsRu extends AppLocalizations {
   String get codeReceiveTryBluetooth => 'Искать по Bluetooth';
 
   @override
+  String get codeReceiveBluetoothWaiting =>
+      'Это устройство видно по Bluetooth. На отправителе выберите его в списке рядом — код для этого не нужен.';
+
+  @override
+  String get codeReceiveNotAShareLink =>
+      'Это не ссылка DirectDrop. Скопируйте ссылку под QR у отправителя — не адрес Wi-Fi.';
+
+  @override
+  String get codeReceiveInvalidQr =>
+      'Неверный QR-код. Наведите камеру на QR на экране отправителя — не на текст Wi-Fi под ним.';
+
+  @override
   String get codeReceiveSearchingLan => 'Поиск отправителя в локальной сети…';
 
   @override

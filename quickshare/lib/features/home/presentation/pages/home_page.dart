@@ -8,6 +8,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 class HomePage extends StatefulWidget {
@@ -251,8 +252,14 @@ class _HomePageState extends State<HomePage>
                             radius: 0.9,
                           ),
                           badgeGlowColor: AppColors.primaryDeep,
-                          onTap: () => context
-                              .push(isDesktop ? '/receive/code' : '/receive'),
+                          onTap: () async {
+                            final ready =
+                                await TransportPreconditions.ensureReceiver(
+                                    context);
+                            if (!ready || !context.mounted) return;
+                            context
+                                .push(isDesktop ? '/receive/code' : '/receive');
+                          },
                         )
                             .animate()
                             .fadeIn(delay: 380.ms, duration: 400.ms)

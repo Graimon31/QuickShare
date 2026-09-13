@@ -90,7 +90,7 @@ class _SettingsPageState extends State<SettingsPage> {
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l10n.settingsSaveLocationError(e.toString()))),
+        SnackBar(content: Text(l10n.settingsSaveLocationError(e.toString()), style: const TextStyle(color: Colors.white))),
       );
     } finally {
       if (mounted) setState(() => _changingLocation = false);
@@ -146,9 +146,12 @@ class _SettingsPageState extends State<SettingsPage> {
     });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       // The number is what distinguishes "cleared" from "did nothing".
-      content: Text(freed > 0
-          ? l10n.settingsCacheFreed(TransferCache.formatBytes(freed))
-          : l10n.settingsCacheNothingToClear),
+      content: Text(
+        freed > 0
+            ? l10n.settingsCacheFreed(TransferCache.formatBytes(freed))
+            : l10n.settingsCacheNothingToClear,
+        style: const TextStyle(color: Colors.white),
+      ),
     ));
   }
 
@@ -502,7 +505,7 @@ class _SettingsPageState extends State<SettingsPage> {
     await Clipboard.setData(ClipboardData(text: report.summary));
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(l10n.settingsDetailsCopied)),
+      SnackBar(content: Text(l10n.settingsDetailsCopied, style: const TextStyle(color: Colors.white))),
     );
   }
 

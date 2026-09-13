@@ -10,7 +10,6 @@ import 'package:quickshare/shared/widgets/scan_overlay.dart';
 import 'package:go_router/go_router.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/permissions/permission_service.dart';
-import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/theme/app_motion.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
@@ -69,7 +68,8 @@ class _QRScanPageState extends State<QRScanPage>
       if (mounted && !_isClosing) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content:
-                Text(AppLocalizations.of(context).qrScanCameraPermission)));
+                Text(AppLocalizations.of(context).qrScanCameraPermission,
+                    style: const TextStyle(color: Colors.white))));
         _closeScanner();
       }
       return;
@@ -109,14 +109,6 @@ class _QRScanPageState extends State<QRScanPage>
 
   void _openCodeEntry() => _navigateAfterCameraRelease('/receive/code');
 
-  /// Opening this is what makes this device visible over Bluetooth.
-  ///
-  /// There is no way around the tap: only the sender advertises, so a phone
-  /// sitting on the home screen cannot be found however long the other side
-  /// looks. Somebody who opened the app and waited to appear was waiting for
-  /// something that could not happen.
-  void _openBluetoothReceive() =>
-      _navigateAfterCameraRelease('/receive/bluetooth');
 
   void _navigateAfterCameraRelease(String location, {Object? extra}) {
     if (_isClosing) return;
@@ -216,30 +208,9 @@ class _QRScanPageState extends State<QRScanPage>
     HapticFeedback.mediumImpact();
     _pauseCamera();
 
-    final bluetoothPayload = BluetoothQrPayload.tryDecode(rawValue);
-    if (bluetoothPayload != null) {
-      unawaited(_openBluetoothAfterSuccess(
-          bluetoothPayload.token, bluetoothPayload.publicId));
-      return;
-    }
-
     // Parse is local (no network). Navigation happens in the Bloc listener
     // as soon as QRParsed / ReceiverError is emitted.
     context.read<ReceiverBloc>().add(QRCodeScanned(rawValue));
-  }
-
-  Future<void> _openBluetoothAfterSuccess(String token, String publicId) async {
-    await Future<void>.delayed(AppMotion.scanSuccess);
-    if (!mounted || _isClosing) return;
-    // The identifier travels beside the token because it is what the sender
-    // puts in its advertised name — the token is never broadcast, so matching
-    // on it alone stopped finding anything.
-    final cid = publicId.isEmpty
-        ? ''
-        : '&cid=${Uri.encodeQueryComponent(publicId)}';
-    _navigateAfterCameraRelease(
-      '/receive/bluetooth?token=${Uri.encodeQueryComponent(token)}$cid',
-    );
   }
 
   Future<void> _openPreviewAfterParse() async {
@@ -280,7 +251,7 @@ class _QRScanPageState extends State<QRScanPage>
             } else if (state is ReceiverError) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text(state.message),
+                  content: Text(state.message, style: const TextStyle(color: Colors.white)),
                   backgroundColor: AppColors.error,
                   behavior: SnackBarBehavior.floating,
                   duration: const Duration(seconds: 4),
@@ -380,20 +351,6 @@ class _QRScanPageState extends State<QRScanPage>
                         ),
                         const SizedBox(height: 12),
                       ],
-                      TextButton.icon(
-                        style: TextButton.styleFrom(
-                          backgroundColor:
-                              AppColors.voidBg.withValues(alpha: 0.72),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(20)),
-                        ),
-                        onPressed: _openBluetoothReceive,
-                        icon: const Icon(Icons.bluetooth_rounded,
-                            color: Colors.white),
-                        label: Text(l10n.qrScanBluetoothReceive),
-                      ),
-                      const SizedBox(height: 12),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                         children: [

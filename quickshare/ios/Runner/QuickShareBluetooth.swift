@@ -187,6 +187,13 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   private var receiveItemIndex = 0
   private var receiveItemCount = 1
   private var receivedPaths: [String] = []
+  private var centralConnectTimeoutTimer: Timer?
+  /// This device is waiting to receive: GATT peripheral, sender will connect.
+  private var waitingAsReceiver = false
+  /// This device is sending: GATT central, we scan and connect to a receiver.
+  private var senderAsCentral = false
+  private var scanningForReceivers = false
+  private var remoteMetadata: CBCharacteristic?
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     let instance = QuickShareBluetoothPlugin()
@@ -219,7 +226,14 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     case "startScanning":
       let args = call.arguments as? [String: Any]
       startScanning(sessionToken: args?["sessionToken"] as? String,
-                    publicId: args?["publicId"] as? String)
+                    publicId: args?["publicId"] as? String,
+                    forReceivers: args?["forReceivers"] as? Bool ?? false)
+      result(nil)
+
+    case "startReceiverAdvertising":
+      let args = call.arguments as? [String: Any]
+      let name = args?["deviceName"] as? String ?? UIDevice.current.name
+      startReceiverAdvertising(deviceName: name)
       result(nil)
 
     case "stopScanning":
@@ -228,11 +242,15 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
 
     case "connect":
       guard let args = call.arguments as? [String: Any],
-            let deviceId = args["deviceId"] as? String,
-            let targetDir = args["targetDir"] as? String else {
-        result(FlutterError(code: "BAD_ARGS", message: "deviceId/targetDir required", details: nil))
+            let deviceId = args["deviceId"] as? String else {
+        result(FlutterError(code: "BAD_ARGS", message: "deviceId required", details: nil))
         return
       }
+      let targetDir = args["targetDir"] as? String ?? NSTemporaryDirectory()
+      if let token = args["sessionToken"] as? String, !token.isEmpty {
+        expectedSessionToken = token
+      }
+      senderAsCentral = args["asSender"] as? Bool ?? false
       connect(deviceId: deviceId, targetDir: targetDir)
       result(nil)
 
@@ -273,16 +291,23 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     case "sendLinkFrame":
       guard let args = call.arguments as? [String: Any],
             let frame = args["frame"] as? [String: Any],
-            let data = try? JSONSerialization.data(withJSONObject: frame),
-            let metadata = senderMetadata,
-            let manager = peripheralManager else {
+            let data = try? JSONSerialization.data(withJSONObject: frame) else {
+        result(FlutterError(code: "BAD_ARGS", message: "frame required", details: nil))
+        return
+      }
+      if senderAsCentral, let metadata = remoteMetadata, let peripheral = targetPeripheral {
+        let type: CBCharacteristicWriteType = metadata.properties.contains(.write) ? .withResponse : .withoutResponse
+        peripheral.writeValue(data, for: metadata, type: type)
+        result(nil)
+        return
+      }
+      guard let metadata = senderMetadata, let manager = peripheralManager else {
         result(FlutterError(code: "UNAVAILABLE", message: "no link channel is up", details: nil))
         return
       }
       if manager.updateValue(data, for: metadata, onSubscribedCentrals: nil) {
         result(nil)
       } else {
-        // The queue is full or nobody is listening yet; the caller retries.
         result(FlutterError(code: "BUSY", message: "the notification queue is full", details: nil))
       }
 
@@ -294,7 +319,11 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
         result(FlutterError(code: "BAD_ARGS", message: "sendApOffer needs sealed credentials", details: nil))
         return
       }
-      writeControl(QuickShareBleControl.apOffer(sealed), result)
+      if waitingAsReceiver {
+        notifyWaitingReceiver(QuickShareBleControl.apOffer(sealed), result)
+      } else {
+        writeControl(QuickShareBleControl.apOffer(sealed), result)
+      }
 
     case "sendKeyExchange":
       guard let args = call.arguments as? [String: Any],
@@ -302,21 +331,31 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
         result(FlutterError(code: "BAD_ARGS", message: "sendKeyExchange needs a key", details: nil))
         return
       }
-      writeControl(QuickShareBleControl.keyExchange(key), result)
+      if waitingAsReceiver {
+        notifyWaitingReceiver(QuickShareBleControl.keyExchange(key), result)
+      } else {
+        writeControl(QuickShareBleControl.keyExchange(key), result)
+      }
 
     default:
       result(FlutterMethodNotImplemented)
     }
   }
 
-  private func startScanning(sessionToken: String?, publicId: String? = nil) {
+  private var pendingControlWrites: [String] = []
+
+  private func startScanning(sessionToken: String?, publicId: String? = nil,
+                             forReceivers: Bool = false) {
     discovered.removeAll()
     expectedSessionToken = sessionToken
     expectedPublicId = publicId
+    scanningForReceivers = forReceivers
+    senderAsCentral = forReceivers
     let manager = centralManager ?? CBCentralManager(delegate: self, queue: nil)
     centralManager = manager
+    let options: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: true]
     if manager.state == .poweredOn {
-      manager.scanForPeripherals(withServices: [QuickShareBluetoothIDs.service], options: nil)
+      manager.scanForPeripherals(withServices: [QuickShareBluetoothIDs.service], options: options)
     } else {
       pendingStartScan = true
     }
@@ -348,12 +387,29 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     metadataSubscribed = false
     dataSubscribed = false
     remoteControl = nil
+    pendingControlWrites.removeAll()
     peripheral.delegate = self
     emit(["type": "connecting"])
+
+    centralConnectTimeoutTimer?.invalidate()
+    centralConnectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
+      guard let self = self, self.targetPeripheral != nil, self.remoteControl == nil else { return }
+      if let p = self.targetPeripheral {
+        self.centralManager?.cancelPeripheralConnection(p)
+      }
+      self.emit([
+        "type": "receiverFailed",
+        "error": "Failed to connect: Connection attempt timed out",
+        "code": "timeout"
+      ])
+    }
+
     centralManager?.connect(peripheral, options: nil)
   }
 
   private func cancelTransfer() {
+    centralConnectTimeoutTimer?.invalidate()
+    centralConnectTimeoutTimer = nil
     stopScanning()
     stopAdvertising()
     if let peripheral = targetPeripheral {
@@ -362,6 +418,11 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     receiveFileHandle?.closeFile()
     receiveFileHandle = nil
     targetPeripheral = nil
+    remoteControl = nil
+    metadataSubscribed = false
+    dataSubscribed = false
+    pendingControlWrites.removeAll()
+    discovered.removeAll()
   }
 
   // MARK: Peripheral sender
@@ -399,10 +460,33 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     )]
   }
 
+  private func startReceiverAdvertising(deviceName: String) {
+    waitingAsReceiver = true
+    senderAsCentral = false
+    startAdvertising(items: [], sessionToken: nil, publicId: nil, localName: deviceName)
+  }
+
+  private func notifyWaitingReceiver(_ command: String, _ result: @escaping FlutterResult) {
+    guard let metadata = senderMetadata, let manager = peripheralManager,
+          let payload = command.data(using: .utf8) else {
+      result(FlutterError(code: "UNAVAILABLE", message: "receiver is not advertising", details: nil))
+      return
+    }
+    if manager.updateValue(payload, for: metadata, onSubscribedCentrals: nil) {
+      result(nil)
+    } else {
+      result(FlutterError(code: "BUSY", message: "the notification queue is full", details: nil))
+    }
+  }
+
   private func startAdvertising(items: [QuickShareSenderItem],
                                 sessionToken: String?,
-                                publicId: String? = nil) {
+                                publicId: String? = nil,
+                                localName: String? = nil) {
     stopAdvertising()
+    if localName != nil {
+      waitingAsReceiver = true
+    }
     senderItems = items
     senderItemIndex = 0
     senderItemBytesSent = 0
@@ -429,9 +513,11 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     )
     let metadataCharacteristic = CBMutableCharacteristic(
       type: QuickShareBluetoothIDs.metadata,
-      properties: [.notify],
+      properties: waitingAsReceiver
+        ? [.notify, .write, .writeWithoutResponse]
+        : [.notify],
       value: nil,
-      permissions: [.readable]
+      permissions: waitingAsReceiver ? [.readable, .writeable] : [.readable]
     )
     let data = CBMutableCharacteristic(
       type: QuickShareBluetoothIDs.data,
@@ -452,12 +538,19 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     // to a slice of the token is what every earlier build did, and it puts
     // eight characters of the session's secret in a packet anyone in range
     // can read.
-    if let publicId, !publicId.isEmpty {
+    if let localName, !localName.isEmpty {
+      pendingDeviceName = localName
+    } else if let publicId, !publicId.isEmpty {
       pendingDeviceName = "QuickShare-\(publicId)"
     } else {
       pendingDeviceName = "QuickShare-directdrop"
     }
-    peripheralManager = CBPeripheralManager(delegate: self, queue: nil)
+    let manager = CBPeripheralManager(delegate: self, queue: nil)
+    peripheralManager = manager
+    if manager.state == .poweredOn {
+      pendingServiceToAdd = nil
+      manager.add(service)
+    }
   }
 
   private func stopAdvertising() {
@@ -479,6 +572,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     senderTransferStarted = false
     senderSessionToken = nil
     senderPeerGeneration = nil
+    waitingAsReceiver = false
   }
 
   /// Opens the file at [senderItemIndex] and queues its metadata frame.
@@ -540,8 +634,13 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   /// not locals.
   /// Writes one control command to the sender this device is connected to.
   private func writeControl(_ command: String, _ result: @escaping FlutterResult) {
-    guard let peripheral = targetPeripheral, let control = remoteControl else {
+    guard let peripheral = targetPeripheral else {
       result(FlutterError(code: "UNAVAILABLE", message: "no sender is connected", details: nil))
+      return
+    }
+    guard let control = remoteControl, metadataSubscribed, dataSubscribed else {
+      pendingControlWrites.append(command)
+      result(nil)
       return
     }
     let type: CBCharacteristicWriteType =
@@ -681,7 +780,7 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
   public func centralManagerDidUpdateState(_ central: CBCentralManager) {
     if central.state == .poweredOn, pendingStartScan {
       pendingStartScan = false
-      central.scanForPeripherals(withServices: [QuickShareBluetoothIDs.service], options: nil)
+      central.scanForPeripherals(withServices: [QuickShareBluetoothIDs.service], options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
     } else if central.state == .unauthorized || central.state == .unsupported {
       emit(["type": "receiverFailed", "error": "Bluetooth is not available or not authorized"])
     }
@@ -693,7 +792,7 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
     // from the code and carrying nothing secret. Earlier builds advertised the
     // first eight characters of the token instead, so that match stays as the
     // fallback — dropping it would make this build unable to see them.
-    if name.hasPrefix("QuickShare-") {
+    if !scanningForReceivers, name.hasPrefix("QuickShare-") {
       if let expectedPublicId, !expectedPublicId.isEmpty {
         if !name.contains(expectedPublicId) { return }
       } else if let expectedSessionToken,
@@ -713,10 +812,33 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
   }
 
   public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
-    emit(["type": "receiverFailed", "error": "Failed to connect: \(error?.localizedDescription ?? "unknown error")"])
+    centralConnectTimeoutTimer?.invalidate()
+    centralConnectTimeoutTimer = nil
+    var code = "connectFailed"
+    if let nsError = error as NSError?, nsError.domain == CBErrorDomain, nsError.code == 14 {
+      code = "peerRemovedPairingInformation"
+    }
+    emit([
+      "type": "receiverFailed",
+      "error": "Failed to connect: \(error?.localizedDescription ?? "unknown error")",
+      "code": code
+    ])
   }
 
   public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    centralConnectTimeoutTimer?.invalidate()
+    centralConnectTimeoutTimer = nil
+    targetPeripheral = nil
+    remoteControl = nil
+    metadataSubscribed = false
+    dataSubscribed = false
+    pendingControlWrites.removeAll()
+    discovered.removeAll()
+    receiveFileHandle?.closeFile()
+    receiveFileHandle = nil
+
+    emit(["type": "receiverDisconnected"])
+
     // Session totals, not the current file's: a folder is finished when the
     // whole list has landed, not when its last photo has.
     if receiveTotalBytes == 0 || receiveBytes < receiveTotalBytes {
@@ -754,6 +876,11 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
   }
 
   public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
+    if waitingAsReceiver {
+      senderSubscribedCentral = central
+      emit(["type": "waitingToBeChosen"])
+      return
+    }
     guard characteristic.uuid == QuickShareBluetoothIDs.data else { return }
     senderSubscribedCentral = central
     emit(["type": "centralConnected"])
@@ -762,6 +889,19 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
   public func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
     for request in requests {
       let command = request.value.flatMap { String(data: $0, encoding: .utf8) }
+
+      if waitingAsReceiver, request.characteristic.uuid == QuickShareBluetoothIDs.metadata,
+         let value = request.value,
+         let json = try? JSONSerialization.jsonObject(with: value) as? [String: Any] {
+        peripheral.respond(to: request, withResult: .success)
+        if let link = json["link"] as? [String: Any] {
+          emit(["type": "linkDirective", "link": link])
+        }
+        if let serve = json["serve"] as? [String: Any] {
+          emit(["type": "serveInfo", "serve": serve])
+        }
+        continue
+      }
 
       guard request.characteristic.uuid == QuickShareBluetoothIDs.control else {
         peripheral.respond(to: request, withResult: .requestNotSupported)
@@ -802,6 +942,12 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
         continue
       }
 
+      if waitingAsReceiver, let command, command.hasPrefix("START:") {
+        peripheral.respond(to: request, withResult: .success)
+        emit(["type": "waitingToBeChosen"])
+        continue
+      }
+
       if QuickShareBleControl.isStart(command, token: senderSessionToken) {
         peripheral.respond(to: request, withResult: .success)
         beginSenderTransferIfReady()
@@ -826,7 +972,15 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
 
 extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
   public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    if let error = error {
+      centralConnectTimeoutTimer?.invalidate()
+      centralConnectTimeoutTimer = nil
+      emit(["type": "receiverFailed", "error": "Service discovery failed: \(error.localizedDescription)"])
+      return
+    }
     guard let service = peripheral.services?.first(where: { $0.uuid == QuickShareBluetoothIDs.service }) else {
+      centralConnectTimeoutTimer?.invalidate()
+      centralConnectTimeoutTimer = nil
       emit(["type": "receiverFailed", "error": "QuickShare service not found on device"])
       return
     }
@@ -837,12 +991,26 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
-    guard let characteristics = service.characteristics else { return }
+    if let error = error {
+      centralConnectTimeoutTimer?.invalidate()
+      centralConnectTimeoutTimer = nil
+      emit(["type": "receiverFailed", "error": "Characteristic discovery failed: \(error.localizedDescription)"])
+      return
+    }
+    guard let characteristics = service.characteristics else {
+      centralConnectTimeoutTimer?.invalidate()
+      centralConnectTimeoutTimer = nil
+      emit(["type": "receiverFailed", "error": "No characteristics found on device"])
+      return
+    }
     for characteristic in characteristics {
       switch characteristic.uuid {
       case QuickShareBluetoothIDs.control:
         remoteControl = characteristic
-      case QuickShareBluetoothIDs.metadata, QuickShareBluetoothIDs.data:
+      case QuickShareBluetoothIDs.metadata:
+        remoteMetadata = characteristic
+        peripheral.setNotifyValue(true, for: characteristic)
+      case QuickShareBluetoothIDs.data:
         peripheral.setNotifyValue(true, for: characteristic)
       default:
         break
@@ -851,9 +1019,17 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+    if let error = error {
+      centralConnectTimeoutTimer?.invalidate()
+      centralConnectTimeoutTimer = nil
+      emit(["type": "receiverFailed", "error": "Failed to subscribe to notifications: \(error.localizedDescription)"])
+      return
+    }
     if characteristic.uuid == QuickShareBluetoothIDs.metadata { metadataSubscribed = true }
     if characteristic.uuid == QuickShareBluetoothIDs.data { dataSubscribed = true }
     guard metadataSubscribed, dataSubscribed, let control = remoteControl else { return }
+    centralConnectTimeoutTimer?.invalidate()
+    centralConnectTimeoutTimer = nil
     let writeType: CBCharacteristicWriteType = control.properties.contains(.write) ? .withResponse : .withoutResponse
 
     // Say what this build can take, before START rather than after. A sender
@@ -870,19 +1046,27 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
 
     // Who this is, so the sender can list it. With a token this is a courtesy
     // ahead of START; without one it is the whole point.
-    peripheral.writeValue(
-      Data(QuickShareBleControl.hello(UIDevice.current.name).utf8),
-      for: control, type: writeType)
+    if !senderAsCentral {
+      peripheral.writeValue(
+        Data(QuickShareBleControl.hello(UIDevice.current.name).utf8),
+        for: control, type: writeType)
+    }
+
+    // Flush any control commands buffered while characteristics were resolving
+    for cmd in pendingControlWrites {
+      let pendingType: CBCharacteristicWriteType = control.properties.contains(.write) ? .withResponse : .withoutResponse
+      peripheral.writeValue(Data(cmd.utf8), for: control, type: pendingType)
+    }
+    pendingControlWrites.removeAll()
 
     guard let token = expectedSessionToken, !token.isEmpty else {
-      // No code and no QR. This used to be reported as a failure, which was
-      // true only because the receiver had to be the one to start. It no
-      // longer does: the sender has been told this device is here and waiting
-      // to be picked.
       emit(["type": "waitingToBeChosen"])
       return
     }
     peripheral.writeValue(Data("START:\(token)".utf8), for: control, type: writeType)
+    if senderAsCentral {
+      emit(["type": "receiverReady"])
+    }
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
@@ -893,6 +1077,16 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     guard let value = characteristic.value else { return }
 
     if characteristic.uuid == QuickShareBluetoothIDs.metadata {
+      if let text = String(data: value, encoding: .utf8) {
+        if let sealed = QuickShareBleControl.parseApOffer(text) {
+          emit(["type": "apOffer", "sealed": sealed])
+          return
+        }
+        if let key = QuickShareBleControl.parseKeyExchange(text) {
+          emit(["type": "peerKey", "key": key])
+          return
+        }
+      }
       // A link frame is not a file: the sender is negotiating the Wi-Fi
       // network the transfer will actually cross (generation 4), and a serve
       // frame says where on that network the file then is.

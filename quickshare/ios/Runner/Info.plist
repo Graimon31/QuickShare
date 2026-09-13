@@ -82,6 +82,17 @@
 	<string>DirectDrop uses Bluetooth to discover nearby devices for peer-to-peer file transfers.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>DirectDrop uses Bluetooth to advertise file transfer availability to nearby devices.</string>
+	<!-- The sender's rendezvous has to survive the walk to the other device.
+	     Opening "receive" on the second device backgrounds this one, and iOS
+	     then suspends the peripheral manager: the advertisement loses its
+	     local name and the GATT server stops answering, so the receiver's
+	     connect times out and it never appears on the sender's list.
+	     Only `bluetooth-peripheral` — `voip` here once killed the app at
+	     launch (d0e52d1). -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>bluetooth-peripheral</string>
+	</array>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIFileSharingEnabled</key>

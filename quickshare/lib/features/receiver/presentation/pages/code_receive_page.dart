@@ -573,12 +573,11 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
             const SizedBox(height: 12),
             OutlinedButton.icon(
               onPressed: () {
-                final code = _failedCode!;
-                context.go(
-                  '/receive/bluetooth'
-                  '?token=${Uri.encodeQueryComponent(code.sessionToken)}'
-                  '&cid=${Uri.encodeQueryComponent(code.publicId)}',
-                );
+                setState(() {
+                  _inputError =
+                      AppLocalizations.of(context).codeReceiveBluetoothWaiting;
+                  _failedCode = _failedCode;
+                });
               },
               icon: const Icon(Icons.bluetooth_searching,
                   size: 18, color: AppColors.primary),
@@ -741,6 +740,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
           SnackBar(
             content: Text(
               '${peer.name}: ${l10n.codeReceivePastePrompt.toLowerCase()}',
+              style: const TextStyle(color: Colors.white),
             ),
             duration: const Duration(seconds: 4),
           ),
@@ -753,6 +753,7 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
           SnackBar(
             content: Text(
               '${peer.name} ${l10n.nearbyIdle.toLowerCase()}',
+              style: const TextStyle(color: Colors.white),
             ),
             duration: const Duration(seconds: 3),
           ),

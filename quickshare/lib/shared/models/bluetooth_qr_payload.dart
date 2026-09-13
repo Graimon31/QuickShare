@@ -17,8 +17,19 @@ class BluetoothQrPayload {
   /// session from an older build, which advertised a slice of the token
   /// instead — the receiver falls back to matching on that.
   final String publicId;
+  final String fileName;
+  final int fileSize;
+  final int itemCount;
+  final String senderName;
 
-  const BluetoothQrPayload({required this.token, this.publicId = ''});
+  const BluetoothQrPayload({
+    required this.token,
+    this.publicId = '',
+    this.fileName = '',
+    this.fileSize = 0,
+    this.itemCount = 0,
+    this.senderName = '',
+  });
 
   String encode() {
     final json = jsonEncode(<String, dynamic>{
@@ -26,6 +37,10 @@ class BluetoothQrPayload {
       'token': token,
       if (publicId.isNotEmpty) 'cid': publicId,
       'service': serviceUuid,
+      if (fileName.isNotEmpty) 'name': fileName,
+      if (fileSize > 0) 'size': fileSize,
+      if (itemCount > 0) 'count': itemCount,
+      if (senderName.isNotEmpty) 'sender': senderName,
     });
     return '$prefix${base64Url.encode(utf8.encode(json))}';
   }
@@ -43,9 +58,17 @@ class BluetoothQrPayload {
       final token = json['token'];
       if (token is! String || token.isEmpty || token.length > 128) return null;
       final cid = json['cid'];
+      final name = json['name'] as String? ?? '';
+      final size = (json['size'] as num?)?.toInt() ?? 0;
+      final count = (json['count'] as num?)?.toInt() ?? 0;
+      final sender = json['sender'] as String? ?? '';
       return BluetoothQrPayload(
         token: token,
         publicId: cid is String && cid.length <= 32 ? cid : '',
+        fileName: name,
+        fileSize: size,
+        itemCount: count,
+        senderName: sender,
       );
     } catch (_) {
       return null;

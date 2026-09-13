@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -27,6 +28,7 @@ import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
+import 'package:quickshare/core/network/device_presence.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 
 // Events
@@ -152,15 +154,19 @@ class NoPathFound extends SenderEvent {
 
 /// A device said it is nearby and waiting to be sent something over Bluetooth.
 class BluetoothReceiverAnnounced extends SenderEvent {
+  final String id;
   final String name;
-  const BluetoothReceiverAnnounced(this.name);
+  const BluetoothReceiverAnnounced({required this.id, required this.name});
   @override
-  List<Object?> get props => [name];
+  List<Object?> get props => [id, name];
 }
 
 /// The person picked one of them.
 class SendToWaitingReceiver extends SenderEvent {
-  const SendToWaitingReceiver();
+  final String deviceId;
+  const SendToWaitingReceiver(this.deviceId);
+  @override
+  List<Object?> get props => [deviceId];
 }
 
 class TransferProgressEvent extends SenderEvent {
@@ -303,11 +309,7 @@ class BluetoothAdvertising extends SenderState {
   final SessionCode? code;
 
   /// Devices in range that have said they are ready to be sent something.
-  ///
-  /// Empty until one announces itself, which is the honest state: over
-  /// Bluetooth nothing is listed until a receiver opens its own screen, and
-  /// there is no way to poll for one that has not.
-  final List<String> waiting;
+  final List<BleWaitingPeer> waiting;
 
   const BluetoothAdvertising(this.session,
       {required this.qrData,
@@ -315,7 +317,7 @@ class BluetoothAdvertising extends SenderState {
       this.code,
       this.waiting = const []});
 
-  BluetoothAdvertising withWaiting(List<String> names) => BluetoothAdvertising(
+  BluetoothAdvertising withWaiting(List<BleWaitingPeer> names) => BluetoothAdvertising(
         session,
         qrData: qrData,
         itemCount: itemCount,
@@ -455,7 +457,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   /// Feeds [BluetoothReceiverAnnounced]. Held so a second session does not
   /// leave the first one's listener adding devices to it.
-  StreamSubscription<String>? _waitingSubscription;
+  StreamSubscription<BleWaitingPeer>? _waitingSubscription;
 
   /// Feeds [NoPathFound]. Held so a second session does not leave the first
   /// one's listener opening a fallback screen over it.
@@ -560,14 +562,17 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     on<BluetoothReceiverAnnounced>((event, emit) {
       final current = state;
       if (current is! BluetoothAdvertising) return;
-      if (current.waiting.contains(event.name)) return;
+      if (current.waiting.any((p) => p.id == event.id)) return;
       AppLogger.info('${event.name} is waiting to be sent something',
           tag: 'SENDER');
-      emit(current.withWaiting([...current.waiting, event.name]));
+      emit(current.withWaiting([
+        ...current.waiting,
+        BleWaitingPeer(id: event.id, name: event.name),
+      ]));
     });
 
     on<SendToWaitingReceiver>((event, emit) async {
-      await _activeBluetoothTransport?.beginTransfer();
+      await _activeBluetoothTransport?.connectToReceiver(event.deviceId);
     });
     on<IndexProgressed>((event, emit) async {
       // A walk belonging to a session the user has already left.
@@ -899,7 +904,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
         _waitingSubscription?.cancel();
         _waitingSubscription = _activeBluetoothTransport!.waitingReceivers
-            .listen((name) => add(BluetoothReceiverAnnounced(name)));
+            .listen((peer) => add(BluetoothReceiverAnnounced(
+                  id: peer.id,
+                  name: peer.name,
+                )));
 
         _statusSubscription?.cancel();
         _statusSubscription =
@@ -946,12 +954,19 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
             _activeBluetoothTransport!.receiverReady.listen((_) {
           unawaited(_beginBluetoothDirectLink());
         });
+        final displayFile = _sessionDisplay ?? file;
+        final totalCount = (_sessionFiles ?? [file]).length;
         emit(BluetoothAdvertising(
-          _makeDummySession(_sessionDisplay ?? file),
+          _makeDummySession(displayFile),
           qrData: BluetoothQrPayload(
-                  token: token, publicId: sessionCode.publicId)
-              .encode(),
-          itemCount: (_sessionFiles ?? [file]).length,
+            token: token,
+            publicId: sessionCode.publicId,
+            fileName: displayFile.name,
+            fileSize: displayFile.size,
+            itemCount: totalCount,
+            senderName: DevicePresence.describeThisDevice(),
+          ).encode(),
+          itemCount: totalCount,
           code: sessionCode,
         ));
       } catch (e) {
@@ -1215,10 +1230,22 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         return;
       }
 
+      final receiverName = (state is BluetoothAdvertising)
+          ? (state as BluetoothAdvertising).waiting.lastOrNull?.name ?? ''
+          : '';
+      final isApplePeer = _directLinkDriver.canPeerLink &&
+          (receiverName.toLowerCase().contains('iphone') ||
+              receiverName.toLowerCase().contains('ipad') ||
+              receiverName.toLowerCase().contains('mac') ||
+              receiverName.toLowerCase().contains('apple'));
+
       final outcome = await DirectLinkCoordinator(
         driver: _directLinkDriver,
         signal: transport.linkSignal,
         probeLink: () => repository.waitForFirstClient(timeout: const Duration(seconds: 10)),
+        offerRounds: isApplePeer ? 0 : 1,
+        apOfferTimeout: const Duration(milliseconds: 1200),
+        retryPause: const Duration(milliseconds: 200),
       ).runSender(code, servingPort: session.serverPort);
 
       // The session may have been cancelled while the ladder climbed.
@@ -1244,24 +1271,43 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
       /// Hands the receiver the address to pull from and starts reporting
       /// progress, so the sender's own screen leaves the QR code behind.
-      Future<void> serveAt(String ip) async {
+      Future<void> serveAt(String ip, {String lanIp = ''}) async {
         _sessionLocalAddress = '$ip:${session.serverPort}';
         _fastPathSubscription?.cancel();
         _fastPathSubscription = repository.transferProgress.listen((progress) {
           add(TransferProgressEvent(progress));
           if (progress >= 1.0) add(TransferCompleted());
         });
+
+        final displayFile = _sessionDisplay ??
+            (paths.isNotEmpty
+                ? FileMetadata(
+                    name: _sessionFolderName ??
+                        paths.first.split(Platform.pathSeparator).last,
+                    path: paths.first,
+                    size: _indexedSessionBytes ?? 0,
+                    mimeType: '',
+                  )
+                : null);
+        final totalCount = (_sessionFiles ?? paths).length;
+        final totalBytes = _indexedSessionBytes ?? displayFile?.size ?? 0;
+
         await transport.sendLinkFrame({
           'serve': LinkServeInfo(
             ip: ip,
             port: session.serverPort,
             token: code.sessionToken,
             tlsFingerprint: fingerprint,
+            fileName: displayFile?.name ?? '',
+            fileSize: totalBytes,
+            itemCount: totalCount,
+            senderName: DevicePresence.describeThisDevice(),
+            lanIp: lanIp,
           ).toJson(),
         });
         AppLogger.info(
             'Bluetooth rendezvous done; serving on the direct Wi-Fi link at '
-            '$ip:${session.serverPort}',
+            '$ip:${session.serverPort} (lanIp: $lanIp)',
             tag: 'SENDER');
       }
 
@@ -1276,7 +1322,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           // The link already forwards to this session's port, so the address
           // the receiver needs is its own end of it — which it has, and which
           // is loopback. Only the token has to travel.
-          await serveAt('127.0.0.1');
+          final localIp = await NetworkInfoService().getLocalIpAddress();
+          await serveAt('127.0.0.1', lanIp: (localIp != null && !localIp.startsWith('127.')) ? localIp : '');
 
         case DirectLinkReady(credentials: final credentials, hosting: final hosting):
           if (!hosting) _joinedAsGuest = true;
