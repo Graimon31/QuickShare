@@ -43,6 +43,49 @@ void main() {
       expect(manifest.items[1].id, equals('000002'));
     });
 
+    test('does not descend into node_modules or .git', () async {
+      File(p.join(tempDir.path, 'src.txt'))
+        ..createSync()
+        ..writeAsStringSync('keep');
+      Directory(p.join(tempDir.path, 'node_modules', 'pkg')).createSync(recursive: true);
+      File(p.join(tempDir.path, 'node_modules', 'pkg', 'lib.js'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('skip');
+      Directory(p.join(tempDir.path, '.git', 'objects')).createSync(recursive: true);
+      File(p.join(tempDir.path, '.git', 'objects', 'ab'))
+        ..createSync(recursive: true)
+        ..writeAsStringSync('skip');
+
+      final manifest = await indexer.buildManifest(
+        sessionId: 'skip_dirs',
+        paths: [tempDir.path],
+      );
+
+      expect(manifest.itemCount, equals(1));
+      expect(manifest.items.single.path.endsWith('src.txt'), isTrue);
+    });
+
+    test('indexes hundreds of nested files in one walk', () async {
+      for (var i = 0; i < 8; i++) {
+        final dir = Directory(p.join(tempDir.path, 'b$i'))..createSync();
+        for (var j = 0; j < 40; j++) {
+          File(p.join(dir.path, 'f$j.txt')).writeAsStringSync('x');
+        }
+      }
+
+      final sw = Stopwatch()..start();
+      final result = await indexer.buildResult(
+        sessionId: 'bulk',
+        paths: [tempDir.path],
+        includeChecksums: false,
+      );
+      sw.stop();
+
+      expect(result.manifest.itemCount, equals(320));
+      expect(sw.elapsedMilliseconds, lessThan(2000),
+          reason: 'a local tree of hundreds of files must not sit on per-file awaits');
+    });
+
     test('throws FileIndexerException on empty selection', () async {
       final emptySubDir = Directory(p.join(tempDir.path, 'empty_folder'));
       await emptySubDir.create();

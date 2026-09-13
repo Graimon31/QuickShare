@@ -41,14 +41,108 @@ class _RawIndexedItem {
   });
 }
 
+class _Collected {
+  final List<_RawIndexedItem> items;
+  final int totalBytes;
+  const _Collected(this.items, this.totalBytes);
+}
+
+/// Walks [paths] with synchronous directory reads. Must stay top-level so
+/// [Isolate.run] can ship it to a worker without capturing [FileIndexer].
+_Collected _collectSync(List<String> paths, bool skipHidden) {
+  final items = <_RawIndexedItem>[];
+  var totalBytes = 0;
+
+  for (final rawPath in paths) {
+    final stat = FileStat.statSync(rawPath);
+    if (stat.type == FileSystemEntityType.file) {
+      final name = p.basename(rawPath);
+      FileIndexer._checkLimits(stat.size, totalBytes, items.length + 1, name);
+      totalBytes += stat.size;
+      items.add(_RawIndexedItem(
+        relPath: name,
+        absPath: rawPath,
+        size: stat.size,
+        mtime: stat.modified.millisecondsSinceEpoch,
+        mime: lookupMimeType(rawPath) ?? 'application/octet-stream',
+      ));
+    } else if (stat.type == FileSystemEntityType.directory) {
+      totalBytes = _walkDirSync(
+        dir: Directory(rawPath),
+        prefix: p.basename(rawPath),
+        depth: 1,
+        items: items,
+        skipHidden: skipHidden,
+        totalBytes: totalBytes,
+      );
+    }
+  }
+
+  return _Collected(items, totalBytes);
+}
+
+int _walkDirSync({
+  required Directory dir,
+  required String prefix,
+  required int depth,
+  required List<_RawIndexedItem> items,
+  required bool skipHidden,
+  required int totalBytes,
+}) {
+  if (depth > AppConstants.qhtpMaxPathDepth) {
+    throw FileIndexerException(
+        'Directory depth exceeds limit of ${AppConstants.qhtpMaxPathDepth} levels');
+  }
+
+  final children = dir.listSync(followLinks: false);
+  var running = totalBytes;
+  for (final entity in children) {
+    final baseName = p.basename(entity.path);
+    final baseNameLower = baseName.toLowerCase();
+
+    if (entity is Link) continue;
+
+    if (entity is Directory) {
+      if (FileIndexer._skipDirs.contains(baseNameLower)) continue;
+      if (skipHidden && baseName.startsWith('.')) continue;
+      running = _walkDirSync(
+        dir: entity,
+        prefix: p.posix.join(prefix, baseName),
+        depth: depth + 1,
+        items: items,
+        skipHidden: skipHidden,
+        totalBytes: running,
+      );
+    } else if (entity is File) {
+      if (skipHidden && baseName.startsWith('.')) continue;
+      if (FileIndexer._skipFiles.contains(baseNameLower)) continue;
+
+      final relPath = p.posix.join(prefix, baseName);
+      FileIndexer._validateRelPath(relPath);
+      final stat = entity.statSync();
+      FileIndexer._checkLimits(
+          stat.size, running, items.length + 1, relPath);
+      running += stat.size;
+      items.add(_RawIndexedItem(
+        relPath: relPath,
+        absPath: entity.path,
+        size: stat.size,
+        mtime: stat.modified.millisecondsSinceEpoch,
+        mime: lookupMimeType(entity.path) ?? 'application/octet-stream',
+      ));
+    }
+  }
+  return running;
+}
+
 class FileIndexer {
-  static const Set<String> _defaultSkipFiles = {
+  static const Set<String> _skipFiles = {
     '.ds_store',
     'thumbs.db',
     'desktop.ini',
   };
 
-  static const Set<String> _defaultSkipDirs = {
+  static const Set<String> _skipDirs = {
     '.git',
     'node_modules',
   };
@@ -87,60 +181,21 @@ class FileIndexer {
     }
 
     for (final rawPath in paths) {
-      // One stat per selected entry, and an asynchronous one.
-      //
-      // This used to ask the filesystem four times about the same file --
-      // `typeSync`, `exists`, `length`, `stat` -- where a single stat carries
-      // the type, the size and the modification time together. On a local SSD
-      // nobody could tell; on an external disk that has to spin up, or a
-      // network volume, it is four round-trips per file with a selection's
-      // worth of them in a row. And the first of the four was the synchronous
-      // one, on the isolate that draws the "indexing" screen: the spinner
-      // stopped animating for exactly as long as the disk took to answer,
-      // which is what "it looks frozen" means.
-      final stat = await FileStat.stat(rawPath);
-      if (stat.type == FileSystemEntityType.file) {
-        // No skip check here on purpose. The hidden/junk filter exists to
-        // keep `.DS_Store` and friends out of a folder somebody dragged in
-        // wholesale; a file named on its own was named deliberately, and
-        // dropping it silently left the caller with an empty selection and no
-        // idea why.
-        final name = p.basename(rawPath);
-
-        final size = stat.size;
-        _checkFileLimits(size, totalBytes, rawItems.length + 1, name);
-        totalBytes += size;
-
-        rawItems.add(_RawIndexedItem(
-          relPath: name,
-          absPath: rawPath,
-          size: size,
-          mtime: stat.modified.millisecondsSinceEpoch,
-          mime: lookupMimeType(rawPath) ?? 'application/octet-stream',
-        ));
-        report();
-      } else if (stat.type == FileSystemEntityType.directory) {
-        final dir = Directory(rawPath);
-
-        final rootName = p.basename(rawPath);
-        // Named before the walk, not after: when a folder is the thing that
-        // never answers, this line is the only record of which one it was.
+      if (FileStat.statSync(rawPath).type == FileSystemEntityType.directory) {
         AppLogger.info('Walking $rawPath', tag: 'INDEX');
-        await _walkDirectory(
-          dir: dir,
-          rootAbsPath: dir.path,
-          prefix: rootName,
-          depth: 1,
-          items: rawItems,
-          skipHidden: skipHidden,
-          totalBytesRef: (addedSize) {
-            totalBytes += addedSize;
-          },
-          currentTotalBytes: () => totalBytes,
-          onProgress: report,
-        );
       }
     }
+
+    // One syscall per inode, no event-loop hop. The walk used to
+    // `await entity.stat()` in series, so a tree of thousands of photos
+    // spent most of its time parked on the UI isolate. The worker isolate
+    // keeps the spinner moving and uses `listSync` so the kernel can
+    // return a directory's children in one shot.
+    final collected = await Isolate.run(
+      () => _collectSync(paths, skipHidden),
+    );
+    rawItems.addAll(collected.items);
+    totalBytes = collected.totalBytes;
     report(force: true);
 
     if (rawItems.isEmpty) {
@@ -299,79 +354,7 @@ class FileIndexer {
     return result.manifest;
   }
 
-  Future<void> _walkDirectory({
-    required Directory dir,
-    required String rootAbsPath,
-    required String prefix,
-    required int depth,
-    required List<_RawIndexedItem> items,
-    required bool skipHidden,
-    required void Function(int size) totalBytesRef,
-    required int Function() currentTotalBytes,
-    void Function()? onProgress,
-  }) async {
-    if (depth > AppConstants.qhtpMaxPathDepth) {
-      throw FileIndexerException(
-          'Directory depth exceeds limit of ${AppConstants.qhtpMaxPathDepth} levels');
-    }
-
-    await for (final entity in dir.list(recursive: false, followLinks: false)) {
-      final baseName = p.basename(entity.path);
-      final baseNameLower = baseName.toLowerCase();
-
-      if (entity is Link) {
-        continue;
-      }
-
-      if (entity is Directory) {
-        if (_defaultSkipDirs.contains(baseNameLower)) continue;
-        if (skipHidden && baseName.startsWith('.')) continue;
-
-        final relDir = p.posix.join(prefix, baseName);
-        await _walkDirectory(
-          dir: entity,
-          rootAbsPath: rootAbsPath,
-          prefix: relDir,
-          depth: depth + 1,
-          items: items,
-          skipHidden: skipHidden,
-          totalBytesRef: totalBytesRef,
-          currentTotalBytes: currentTotalBytes,
-          onProgress: onProgress,
-        );
-      } else if (entity is File) {
-        if (_shouldSkipFile(baseName, skipHidden)) continue;
-
-        final relPath = p.posix.join(prefix, baseName);
-        _validatePathString(relPath);
-
-        // Size and mtime from the same stat, for the same reason as above:
-        // a folder walk asked twice per file, and a tree is where that adds up.
-        final stat = await entity.stat();
-        final size = stat.size;
-        _checkFileLimits(size, currentTotalBytes(), items.length + 1, relPath);
-
-        totalBytesRef(size);
-
-        items.add(_RawIndexedItem(
-          relPath: relPath,
-          absPath: entity.path,
-          size: size,
-          mtime: stat.modified.millisecondsSinceEpoch,
-          mime: lookupMimeType(entity.path) ?? 'application/octet-stream',
-        ));
-        onProgress?.call();
-      }
-    }
-  }
-
-  bool _shouldSkipFile(String name, bool skipHidden) {
-    if (skipHidden && name.startsWith('.')) return true;
-    final lower = name.toLowerCase();
-    return _defaultSkipFiles.contains(lower);
-  }
-
-  void _validatePathString(String relPath) {
+  static void _validateRelPath(String relPath) {
     if (relPath.length > AppConstants.qhtpMaxRelPathChars) {
       throw FileIndexerException(
           'Relative path length exceeds limit (${AppConstants.qhtpMaxRelPathChars} chars): $relPath');
@@ -385,7 +368,7 @@ class FileIndexer {
     }
   }
 
-  void _checkFileLimits(
+  static void _checkLimits(
       int fileSize, int currentTotalBytes, int currentCount, String name) {
     if (fileSize > AppConstants.qhtpMaxFileBytes) {
       throw FileIndexerException(
