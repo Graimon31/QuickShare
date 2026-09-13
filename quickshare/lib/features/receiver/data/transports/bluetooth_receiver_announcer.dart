@@ -62,12 +62,15 @@ class BluetoothReceiverAnnouncer {
 
     _deviceSub = _transport.devices.listen((device) async {
       if (!_isActive || _isConnecting) return;
-      if (!device.name.startsWith('QuickShare-')) return;
-      _isConnecting = true;
+      // Native scan is already filtered by our GATT service UUID. The
+      // advertised local name is often missing on iOS (empty / "Unknown
+      // device" / the Mac's Bluetooth name), so requiring `QuickShare-`
+      // dropped the sender and the handshake never started.
       AppLogger.info(
-        'Found sender "${device.name}", connecting as central (≤3s handshake)…',
+        'Scan saw "${device.name}" (${device.id}), connecting as central…',
         tag: 'BT_ANNOUNCE',
       );
+      _isConnecting = true;
       try {
         await _transport.connect(
           device.id,

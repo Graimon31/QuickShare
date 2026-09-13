@@ -109,7 +109,7 @@ void main() {
     await announcer.stop();
   });
 
-  test('connects to a sender advertising QuickShare-, not a random name', () async {
+  test('connects to a scanned sender even when the advertised name is missing', () async {
     final announcer = BluetoothReceiverAnnouncer(
       transport: mockTransport,
       driver: mockDriver,
@@ -119,18 +119,10 @@ void main() {
 
     await announcer.start();
 
-    devicesController.add(const BluetoothDevice(id: 'dev-1', name: "Farman's Mac"));
-    await pumpEventQueue();
-    verifyNever(() => mockTransport.connect(
-          any(),
-          token: any(named: 'token'),
-          targetDir: any(named: 'targetDir'),
-        ));
-
-    devicesController.add(const BluetoothDevice(id: 'dev-2', name: 'QuickShare-ABC12345'));
+    devicesController.add(const BluetoothDevice(id: 'dev-1', name: 'Unknown device'));
     await pumpEventQueue();
     verify(() => mockTransport.connect(
-          'dev-2',
+          'dev-1',
           token: null,
           targetDir: any(named: 'targetDir'),
         )).called(1);

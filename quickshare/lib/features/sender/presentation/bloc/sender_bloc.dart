@@ -169,10 +169,15 @@ class BluetoothReceiverAnnounced extends SenderEvent {
 /// The person picked one of them.
 class SendToWaitingReceiver extends SenderEvent {
   final String deviceId;
+  final String deviceName;
   final bool alreadyConnected;
-  const SendToWaitingReceiver(this.deviceId, {this.alreadyConnected = false});
+  const SendToWaitingReceiver(
+    this.deviceId, {
+    this.deviceName = '',
+    this.alreadyConnected = false,
+  });
   @override
-  List<Object?> get props => [deviceId, alreadyConnected];
+  List<Object?> get props => [deviceId, deviceName, alreadyConnected];
 }
 
 class TransferProgressEvent extends SenderEvent {
@@ -589,11 +594,32 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       final transport = _activeBluetoothTransport;
       if (transport == null) return;
       try {
-        if (event.alreadyConnected) {
-          await transport.beginTransfer();
-        } else {
-          await transport.connectToReceiver(event.deviceId);
+        var connected = event.alreadyConnected;
+        if (!connected) {
+          final current = state;
+          if (current is BluetoothAdvertising) {
+            connected = current.waiting.any((p) =>
+                p.alreadyConnected &&
+                (p.id == event.deviceId ||
+                    p.name == event.deviceName ||
+                    p.name == event.deviceId));
+          }
         }
+        if (!connected) {
+          // An iPhone connecting to this Mac succeeds; this Mac connecting
+          // to an iPhone does not (CoreBluetooth pairing / empty ads).
+          // Wait for the receiver's HELLO instead of opening a doomed GATT
+          // as central.
+          await transport.waitingReceivers
+              .where((p) =>
+                  p.alreadyConnected &&
+                  (p.id == event.deviceId ||
+                      p.name == event.deviceName ||
+                      p.name == event.deviceId))
+              .first
+              .timeout(BluetoothTransferTransport.handshakeTimeout);
+        }
+        await transport.beginTransfer();
       } on TimeoutException {
         add(const TransferFailed(
           'Bluetooth handshake timed out after 3 seconds. Keep both apps open and try again.',
