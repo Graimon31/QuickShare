@@ -383,14 +383,15 @@ void HotspotPlugin::JoinHotspot(
   DWORD reason = 0;
   if (WlanSetProfile(client, &guid, 0, wide_xml.c_str(), nullptr, TRUE,
                      nullptr, &reason) != ERROR_SUCCESS) {
-    wchar_t* explanation = nullptr;
+    // WlanReasonCodeToString writes into a caller-owned buffer and takes the
+    // reason code itself — it neither allocates (no WlanFreeMemory) nor wants
+    // the client handle.
+    WCHAR explanation[512];
     std::string detail = "code " + std::to_string(reason);
-    if (WlanReasonCodeToString(client, reason, nullptr, &explanation) ==
-            ERROR_SUCCESS &&
-        explanation) {
-      detail = ToUtf8(explanation);
+    if (WlanReasonCodeToString(reason, 512, explanation, nullptr) ==
+        ERROR_SUCCESS) {
+      detail = ToUtf8(std::wstring(explanation));
     }
-    if (explanation) WlanFreeMemory(explanation);
     WlanCloseHandle(client, nullptr);
     result->Error("JOIN_FAILED",
                   "Windows refused the network profile: " + detail);

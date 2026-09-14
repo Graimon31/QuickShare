@@ -78,6 +78,11 @@ class NostrAnswerChannel implements AnswerChannel {
 
   @override
   Future<void> subscribe(String topic) async {
+    // With no relays the first-wins race below has nobody to complete it and
+    // would hang forever — an empty list is a misconfiguration, fail loudly.
+    if (relays.isEmpty) {
+      throw StateError('no Nostr relays configured');
+    }
     final first = Completer<void>();
     var live = 0;
     var failed = 0;

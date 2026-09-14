@@ -51,7 +51,6 @@ app.*.map.json
 **/ios/**/*.perspectivev3
 **/ios/**/*sync/
 **/ios/**/.generated/
-**/ios/**/AppIcon.appiconset/
 **/ios/**/Assets.car
 **/ios/**/Build/
 **/ios/**/DerivedData/

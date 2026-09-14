@@ -62,10 +62,14 @@ void main() {
   group('LocalHotspotService capabilities', () {
     final service = LocalHotspotService();
 
-    test('only Android can host a network from inside the app', () {
-      // iOS has no API to create one, so the roles are not symmetric and the
-      // UI must not offer hosting on the wrong side.
-      expect(service.canHost, equals(Platform.isAndroid));
+    test('hosting capability matches the platform APIs', () {
+      // iOS and macOS have no API to create a network from inside an app;
+      // Android (local-only hotspot), Windows (Wi-Fi Direct) and Linux
+      // (NetworkManager) can host.
+      expect(
+        service.canHost,
+        equals(Platform.isAndroid || Platform.isLinux || Platform.isWindows),
+      );
     });
 
     test('refuses to host on a platform that cannot, with a usable message',
@@ -104,6 +108,8 @@ void main() {
     });
 
     test('join sends the credentials the far side generated', () async {
+      // Linux joins through NetworkManager (nmcli), not the method channel.
+      if (Platform.isLinux) return;
       await LocalHotspotService(channel: channel).join(
           const HotspotCredentials(ssid: 'QS_test', passphrase: 'pw'));
 
@@ -114,6 +120,8 @@ void main() {
 
     test('a platform error surfaces as a HotspotException, not a raw crash',
         () async {
+      // Linux joins through NetworkManager (nmcli), not the method channel.
+      if (Platform.isLinux) return;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
         throw PlatformException(

@@ -189,7 +189,11 @@ class QRPayload extends Equatable {
       token.isNotEmpty &&
       (isQhtp
           ? (sessionId != null && sessionId!.isNotEmpty)
-          : (fileName.isNotEmpty && fileSize >= 0));
+          // Bluetooth and serverless locators describe the offer over the
+          // handshake itself; a bare token with no metadata is still valid.
+          : (mode == 'bluetooth' ||
+              mode == 'webrtc-qs1' ||
+              (fileName.isNotEmpty && fileSize >= 0)));
 
   @override
   List<Object?> get props => [
