@@ -1098,6 +1098,17 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       // four files appear at once and forty thousand small ones sit on a
       // spinner. The listing still has to exist before a byte moves — the
       // DataChannel and the hotspot server both wait on [_selectionReady].
+      //
+      // Which transport was asked for, said before anything can fail. The
+      // only line that names the transport is written after the walk comes
+      // back, so a Bluetooth or internet session that died while the
+      // selection was being read left the journal completely silent — the
+      // same nothing as a session the user never started. Two of those are
+      // not the same problem and the log has to be able to tell them apart.
+      AppLogger.info(
+          'Session start: ${mode.name} over ${event.paths.length} selected '
+          'entr${event.paths.length == 1 ? 'y' : 'ies'}',
+          tag: 'SENDER');
       emit(const ServerStarting());
       final placeholder = selectionPlaceholder(event.paths);
       _currentFile = placeholder;
@@ -1127,6 +1138,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         ));
       }, onError: (Object e) {
         if (abandoned() || isClosed) return;
+        // The local-network path logs this from inside `startQhtpTransfer`.
+        // Bluetooth and internet walk the selection here instead and never
+        // reach that code, so this failure only ever reached the screen —
+        // a toast the person reads once, and nothing at all in the journal
+        // afterwards.
+        AppLogger.warning(
+            'Session start: the selection could not be read: $e',
+            tag: 'SENDER');
         add(TransferFailed('Could not read the selection: $e',
             code: FailureCode.selectionUnreadable));
       }));
@@ -1266,9 +1285,24 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       final transport = _activeBluetoothTransport;
       final code = _bluetoothSessionCode;
       final paths = _currentPaths;
+      // Every exit below this line used to be a bare `return`. A Bluetooth
+      // transfer that stopped here left a spinner turning and a journal with
+      // nothing in it — the same silence as a receiver that was never found,
+      // which is a different problem entirely. Whichever piece went missing
+      // is the whole diagnosis, so it is named.
       if (transport == null || code == null || paths == null || paths.isEmpty) {
+        AppLogger.warning(
+            'Bluetooth rendezvous abandoned before it started: '
+            '${transport == null ? 'no transport' : ''}'
+            '${code == null ? ' no session code' : ''}'
+            '${paths == null || paths.isEmpty ? ' nothing selected' : ''}',
+            tag: 'SENDER');
         return;
       }
+
+      AppLogger.info(
+          'Bluetooth receiver is ready; building the direct Wi-Fi link',
+          tag: 'SENDER');
 
       // The session comes up before the link, not after. The peer-to-peer rung
       // forwards a port, so there has to be something listening on it by the
@@ -1322,6 +1356,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
       // The session may have been cancelled while the ladder climbed.
       if (!identical(transport, _activeBluetoothTransport)) {
+        AppLogger.info(
+            'Bluetooth session was replaced while the link was negotiating; '
+            'dropping the server it raised',
+            tag: 'SENDER');
         await repository.stopServer(force: true);
         return;
       }
