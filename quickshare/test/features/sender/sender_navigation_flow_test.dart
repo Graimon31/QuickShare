@@ -177,6 +177,59 @@ void main() {
     });
 
     testWidgets(
+        'a session that fails after the QR route is entered leaves the screen',
+        (tester) async {
+      tester.view.physicalSize = const Size(1000, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+
+      // The server comes up, the QR route is entered, and only then does the
+      // session end — an unreadable selection here, but a dropped server or a
+      // certificate that never arrived look identical from this page: the
+      // state leaves QRReady and never returns to it.
+      when(() => mockRepository.startQhtpTransfer(
+            any(),
+            authToken: any(named: 'authToken'),
+            sessionPublicId: any(named: 'sessionPublicId'),
+            onIndexProgress: any(named: 'onIndexProgress'),
+            onIndexed: any(named: 'onIndexed'),
+            onIndexFailed: any(named: 'onIndexFailed'),
+          )).thenAnswer((invocation) async {
+        final onIndexFailed = invocation.namedArguments[#onIndexFailed]
+            as void Function(Object)?;
+        onIndexFailed?.call(Exception('the selection could not be read'));
+        return Right(testSession());
+      });
+
+      final bloc = createTestBloc();
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump(const Duration(seconds: 1));
+        await bloc.close();
+      });
+
+      await tester
+          .pumpWidget(wrapWithRouterAndBloc(const QRDisplayPage(), bloc));
+
+      bloc.add(const StartQhtpSend(['/tmp/project_notes.pdf'],
+          mode: TransportType.wifi));
+      // Long enough for the route transition to finish as well as the
+      // session to fail: while it is still animating both pages are in the
+      // tree, and the old one's spinner is still findable.
+      for (var i = 0; i < 60; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+
+      expect(bloc.state, isA<SenderError>());
+      // Every state that is not QRReady draws "Preparing share...", and
+      // SenderError was the one this page's listener never handled. So a
+      // dead session kept a spinner turning with no way forward and no way
+      // to tell it apart from a slow one.
+      expect(find.byType(TransferPhaseLoader), findsNothing);
+      expect(find.text('send_page'), findsOneWidget);
+    });
+
+    testWidgets(
         'QRDisplayPage cancel button triggers CancelSending on SenderBloc',
         (tester) async {
       tester.view.physicalSize = const Size(1000, 1600);

@@ -14,6 +14,7 @@ import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/network/app_presence.dart';
 import 'package:quickshare/core/network/device_presence.dart';
 import 'package:quickshare/core/network/lan_discovery.dart';
+import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/transfer/invitation_sender.dart';
 import 'package:quickshare/core/transfer/transfer_invitation.dart';
@@ -210,6 +211,27 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
               if (!_expired) context.go('/send');
             } else if (state is InviteApprovalRequested) {
               _showApprovalDialog(context, state);
+            } else if (state is SenderError) {
+              // The one state this page never handled. Everything that is
+              // not QRReady draws "Preparing share…", so a session that
+              // died after the QR route was entered — an unreadable
+              // selection, a server that dropped, a certificate that never
+              // arrived — left a spinner turning for ever: no reason on
+              // screen, no way forward, and indistinguishable from a walk
+              // that was merely slow. Say what happened and go back to the
+              // screen the session can be started from again, which is what
+              // the Bluetooth page has always done.
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(
+                  localizedFailure(AppLocalizations.of(context),
+                      code: state.code, fallback: state.message),
+                  style: const TextStyle(color: Colors.white),
+                ),
+                behavior: SnackBarBehavior.floating,
+              ));
+              // Unless the session simply ran out, where the expired panel
+              // already owns the screen and offers its own way on.
+              if (!_expired) context.go('/send');
             }
           },
           builder: (context, state) {
