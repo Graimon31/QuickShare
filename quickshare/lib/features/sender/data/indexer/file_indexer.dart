@@ -191,9 +191,7 @@ class FileIndexer {
     // spent most of its time parked on the UI isolate. The worker isolate
     // keeps the spinner moving and uses `listSync` so the kernel can
     // return a directory's children in one shot.
-    final collected = await Isolate.run(
-      () => _collectSync(paths, skipHidden),
-    );
+    final collected = await _collectInIsolate(paths, skipHidden);
     rawItems.addAll(collected.items);
     totalBytes = collected.totalBytes;
     report(force: true);
@@ -252,6 +250,20 @@ class FileIndexer {
       itemIdToAbsPathMap: absPathMap,
     );
   }
+
+  /// Walks [paths] on a worker isolate.
+  ///
+  /// Static, and taking everything it needs as arguments, for the same reason
+  /// [_hashInIsolate] is: the closure handed to [Isolate.run] carries its
+  /// enclosing function's entire context, not only the variables it names.
+  /// Written inline in [buildResult] it shared a context with `onProgress` —
+  /// the caller's callback, which on the send path is a closure from a bloc
+  /// handler and reaches that handler's `Emitter` — so every spawn was
+  /// refused with "object is unsendable" before a single directory was read,
+  /// and every session died on "the selection could not be read".
+  static Future<_Collected> _collectInIsolate(
+          List<String> paths, bool skipHidden) =>
+      Isolate.run(() => _collectSync(paths, skipHidden));
 
   /// `sha256:<hex>` over the file contents, or null if it could not be read.
   ///

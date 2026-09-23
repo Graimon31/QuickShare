@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -84,6 +85,35 @@ void main() {
       expect(result.manifest.itemCount, equals(320));
       expect(sw.elapsedMilliseconds, lessThan(2000),
           reason: 'a local tree of hundreds of files must not sit on per-file awaits');
+    });
+
+    test('walks even when onProgress carries an unsendable context', () async {
+      File(p.join(tempDir.path, 'a.txt'))
+        ..createSync()
+        ..writeAsStringSync('a');
+
+      // The send path hands the indexer a callback that lives in a bloc
+      // handler, and a Dart closure carries its whole enclosing context --
+      // not only the variables it names. A Completer or an Emitter sitting
+      // in that same scope is enough to make the context unsendable, and if
+      // the walk's own Isolate.run closure shares a context with the
+      // callback, the spawn is refused before a single directory is read:
+      // "Illegal argument in isolate message: object is unsendable".
+      final unsendable = Completer<void>();
+      var reports = 0;
+
+      final result = await indexer.buildResult(
+        sessionId: 'progress_capture',
+        paths: [tempDir.path],
+        includeChecksums: false,
+        onProgress: (items, bytes) {
+          if (unsendable.isCompleted) return;
+          reports++;
+        },
+      );
+
+      expect(result.manifest.itemCount, equals(1));
+      expect(reports, greaterThan(0));
     });
 
     test('throws FileIndexerException on empty selection', () async {
