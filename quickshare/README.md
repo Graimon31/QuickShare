@@ -11,6 +11,22 @@ them.
 
 ---
 
+## Download
+
+Release builds live on the
+[Releases page](https://github.com/Graimon31/QuickShare/releases); checksums in
+`SHA256SUMS` beside them.
+
+| Platform | File | First-run notes |
+|---|---|---|
+| **Windows** | `DirectDrop-windows-setup.exe` | SmartScreen warns (the build is not code-signed): "More info" → "Run anyway". `DirectDrop-windows-portable.zip` is the no-install alternative. |
+| **macOS** | `DirectDrop-macos.dmg` | Drag DirectDrop to Applications. Not notarized: right-click → Open on first launch, or `xattr -dr com.apple.quarantine /Applications/DirectDrop.app`. |
+| **Linux** | `DirectDrop-linux-x64.tar.gz` | Extract and run `./directdrop`. Needs GTK 3; x86-64 only. |
+| **Android** | `DirectDrop-android-arm64-v8a.apk` | Right for virtually every phone since 2017; `armeabi-v7a` covers old 32-bit devices, `x86_64` emulators and Chromebooks. Allow the installing app once. |
+| **iOS** | — | No public build: any channel needs a paid Apple Developer account. Until then `tools/deploy_ios.sh` puts a development build on a device the developer's Mac can see. |
+
+---
+
 ## What it does
 
 | Transport | When it is used | Speed |
