@@ -7,14 +7,14 @@ import base64
 def run(cmd):
     return subprocess.run(cmd, shell=True, capture_output=True, text=True)
 
-print("1. Activating macOS quickshare.app...")
-run("osascript -e 'tell application \"quickshare\" to activate'")
+print("1. Activating macOS DirectDrop.app...")
+run("osascript -e 'tell application \"DirectDrop\" to activate'")
 time.sleep(1)
 
 print("2. Activating Android Emulator...")
-run("~/Library/Android/sdk/platform-tools/adb shell am force-stop com.yourorg.quickshare")
+run("~/Library/Android/sdk/platform-tools/adb shell am force-stop com.directdrop.app")
 time.sleep(0.5)
-run("~/Library/Android/sdk/platform-tools/adb shell am start -n com.yourorg.quickshare/.MainActivity")
+run("~/Library/Android/sdk/platform-tools/adb shell am start -n com.directdrop.app/.MainActivity")
 time.sleep(2)
 
 print("3. Tapping 'Receive File' on Android Emulator...")

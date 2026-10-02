@@ -1,6 +1,6 @@
 @echo off
 echo ============================================
-echo  QuickShare Windows Build Script (Portable) 
+echo  DirectDrop Windows Build Script (Portable)
 echo ============================================
 
 echo [+] Fetching Flutter packages...
@@ -17,33 +17,33 @@ if not exist "%WIN_DIST_DIR%" mkdir "%WIN_DIST_DIR%"
 
 if exist "%BUNDLE_DIR%" (
     echo [+] Creating Portable helper launcher & metadata...
-    
-    (
-        echo @echo off
-        echo start "" "%%~dp0quickshare.exe" %%*
-    ) > "%BUNDLE_DIR%\QuickShare-Portable.bat"
 
     (
-        echo QuickShare Windows Portable (Standalone^)
+        echo @echo off
+        echo start "" "%%~dp0directdrop.exe" %%*
+    ) > "%BUNDLE_DIR%\DirectDrop-Portable.bat"
+
+    (
+        echo DirectDrop Windows Portable (Standalone^)
         echo ==========================================
         echo.
         echo No installation required!
         echo.
         echo Run options:
-        echo   - Double-click "quickshare.exe"
-        echo   - Or double-click "QuickShare-Portable.bat"
+        echo   - Double-click "directdrop.exe"
+        echo   - Or double-click "DirectDrop-Portable.bat"
     ) > "%BUNDLE_DIR%\README-PORTABLE.txt"
 
     echo [+] Copying bundle files to %WIN_DIST_DIR%...
     xcopy /E /Y /I "%BUNDLE_DIR%\*" "%WIN_DIST_DIR%\" >nul
 
     echo [+] Packaging Portable Windows release ZIP...
-    powershell -Command "Compress-Archive -Path '%WIN_DIST_DIR%\*' -DestinationPath '%DIST_DIR%\quickshare-portable-windows-x64.zip' -Force"
+    powershell -Command "Compress-Archive -Path '%WIN_DIST_DIR%\*' -DestinationPath '%DIST_DIR%\directdrop-portable-windows-x64.zip' -Force"
 
     echo ============================================
     echo  SUCCESS: Windows artifact created at:
     echo   - Executable folder: %WIN_DIST_DIR%
-    echo   - Portable Zip:      %DIST_DIR%\quickshare-portable-windows-x64.zip
+    echo   - Portable Zip:      %DIST_DIR%\directdrop-portable-windows-x64.zip
     echo ============================================
 ) else (
     echo [-] ERROR: Build directory %BUNDLE_DIR% not found!

@@ -2,7 +2,7 @@
 set -e
 
 echo "=========================================="
-echo " QuickShare Linux Build Script (Portable) "
+echo " DirectDrop Linux Build Script (Portable) "
 echo "=========================================="
 
 # 1. System Dependencies Check / Installation
@@ -36,39 +36,39 @@ mkdir -p "$LINUX_DIST_DIR"
 
 if [ -d "$BUNDLE_DIR" ]; then
     echo "[+] Generating Portable launcher scripts..."
-    
+
     # Executable AppRun wrapper script
-    cat << 'EOF' > "$BUNDLE_DIR/QuickShare.AppRun"
+    cat << 'EOF' > "$BUNDLE_DIR/DirectDrop.AppRun"
 #!/usr/bin/env bash
 HERE="$(dirname "$(readlink -f "$0")")"
 export LD_LIBRARY_PATH="$HERE/lib:$LD_LIBRARY_PATH"
-exec "$HERE/quickshare" "$@"
+exec "$HERE/directdrop" "$@"
 EOF
-    chmod +x "$BUNDLE_DIR/QuickShare.AppRun"
-    chmod +x "$BUNDLE_DIR/quickshare"
+    chmod +x "$BUNDLE_DIR/DirectDrop.AppRun"
+    chmod +x "$BUNDLE_DIR/directdrop"
 
     # Portable Readme
     cat << 'EOF' > "$BUNDLE_DIR/README-PORTABLE.txt"
-QuickShare Linux Portable (Standalone)
+DirectDrop Linux Portable (Standalone)
 =======================================
 No installation required!
 
 Run options:
-  - Double-click 'QuickShare.AppRun'
-  - Or in terminal: ./QuickShare.AppRun or ./quickshare
+  - Double-click 'DirectDrop.AppRun'
+  - Or in terminal: ./DirectDrop.AppRun or ./directdrop
 EOF
 
     # Copy files to dist/linux/
     cp -r "$BUNDLE_DIR"/* "$LINUX_DIST_DIR/"
-    
+
     # Strip symbols from final binary if strip is available
     if command -v strip &> /dev/null; then
         echo "[+] Stripping unneeded symbols from binary..."
-        strip --strip-unneeded "$LINUX_DIST_DIR/quickshare" || true
+        strip --strip-unneeded "$LINUX_DIST_DIR/directdrop" || true
     fi
 
     # Compress archive into dist/
-    ARCHIVE_PATH="$DIST_DIR/quickshare-portable-linux-x64.tar.gz"
+    ARCHIVE_PATH="$DIST_DIR/directdrop-portable-linux-x64.tar.gz"
     echo "[+] Creating release tarball at $ARCHIVE_PATH..."
     tar -czvf "$ARCHIVE_PATH" -C "$LINUX_DIST_DIR" .
 

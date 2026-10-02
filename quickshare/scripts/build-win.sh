@@ -2,7 +2,7 @@
 set -e
 
 echo "=========================================="
-echo " QuickShare Windows Cross-Build Automation"
+echo " DirectDrop Windows Cross-Build Automation"
 echo "=========================================="
 
 echo "[+] Fetching Flutter packages..."
