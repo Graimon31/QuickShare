@@ -218,7 +218,7 @@ void main() {
 
       final freed = await coordinator(isDesktop: false).discardSession([
         SaveOutcome(
-          item: ReceivedItem.fromCacheEntity(folder, 'inode/directory'),
+          item: await ReceivedItem.fromCacheEntity(folder, 'inode/directory'),
         ),
       ]);
 

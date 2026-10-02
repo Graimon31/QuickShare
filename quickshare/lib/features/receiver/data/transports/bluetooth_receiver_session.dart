@@ -119,26 +119,42 @@ class BluetoothReceiverSession {
           );
 
           if (_cancelled || _completed) return;
-          _completed = true;
-          _cleanup();
 
-          result.fold(
-            (failure) => fail(failure.message),
-            (received) {
-              final items = destination.placed
-                  ? received.placedPaths
-                      .map((p) => ReceivedItem.fromCacheFile(
-                            File(p),
-                            lookupMimeType(p) ?? 'application/octet-stream',
-                          ))
-                      .toList()
-                  : TransferCache.itemsIn(Directory(destination.path));
-              completer.complete(BluetoothReceiverSessionResult(
-                preferredPath: received.preferredResultPath,
-                displayName: items.length == 1 ? items.single.name : received.displayName,
-                items: items,
-                placed: destination.placed,
-              ));
+          // A failed session still owes run() its ending: fail() refuses to
+          // act once _completed is set, so marking completion before the fold
+          // would leave the receive screen spinning on a future nobody
+          // finishes. The failure branch must reach fail() with it unset.
+          await result.fold(
+            (failure) async => fail(failure.message),
+            (received) async {
+              _completed = true;
+              _cleanup();
+              try {
+                final items = destination.placed
+                    ? received.placedPaths
+                        .map((p) => ReceivedItem.fromCacheFile(
+                              File(p),
+                              lookupMimeType(p) ?? 'application/octet-stream',
+                            ))
+                        .toList()
+                    : await TransferCache.itemsIn(Directory(destination.path));
+                if (!completer.isCompleted) {
+                  completer.complete(BluetoothReceiverSessionResult(
+                    preferredPath: received.preferredResultPath,
+                    displayName: items.length == 1
+                        ? items.single.name
+                        : received.displayName,
+                    items: items,
+                    placed: destination.placed,
+                  ));
+                }
+              } catch (e) {
+                // fail() is out of reach by now — _completed is set — so the
+                // future is ended here directly.
+                if (!completer.isCompleted) {
+                  completer.completeError(Exception('Download failed: $e'));
+                }
+              }
             },
           );
         } catch (e) {

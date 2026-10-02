@@ -68,21 +68,23 @@ class TransferCache {
   /// agree on.
   ///
   /// Top level only, sorted by name: a folder is one item to decide about,
-  /// not a thousand.
-  static List<ReceivedItem> itemsIn(Directory session) {
+  /// not a thousand. The measuring underneath runs off the caller's isolate —
+  /// this answers on the way to the completion screen, which has frames to
+  /// draw (see [ReceivedItem.treeSizeOf]).
+  static Future<List<ReceivedItem>> itemsIn(Directory session) async {
     try {
-      final entries = session.listSync(followLinks: false)
-        ..sort((a, b) => p
-            .basename(a.path)
-            .toLowerCase()
-            .compareTo(p.basename(b.path).toLowerCase()));
-      return [
+      final entries = await session.list(followLinks: false).toList();
+      entries.sort((a, b) => p
+          .basename(a.path)
+          .toLowerCase()
+          .compareTo(p.basename(b.path).toLowerCase()));
+      return await Future.wait([
         for (final entity in entries)
           ReceivedItem.fromCacheEntity(
             entity,
             lookupMimeType(entity.path) ?? 'application/octet-stream',
           ),
-      ];
+      ]);
     } on FileSystemException catch (e) {
       AppLogger.warning('Could not list a received session: $e', tag: 'CACHE');
       return const [];

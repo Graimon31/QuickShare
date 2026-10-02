@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:path/path.dart' as p;
 
@@ -68,17 +69,26 @@ class ReceivedItem {
         mimeType: mimeType,
       );
 
+  /// The size of a whole directory tree, walked off the caller's isolate.
+  ///
+  /// A received folder can hold thousands of files, and the walk happens on
+  /// the way to the completion screen — run on the isolate that draws that
+  /// screen, every stat call is paid for by the interface.
+  static Future<int> treeSizeOf(String path) =>
+      Isolate.run(() => _treeSize(Directory(path)));
+
   /// Either a file or a folder, whichever [entity] turns out to be.
   ///
   /// Used by the transports that hand back a directory listing rather than a
   /// list of files — QHTP delivers whatever the sender picked, which may be a
   /// folder with a thousand things in it.
-  static ReceivedItem fromCacheEntity(FileSystemEntity entity, String mimeType) {
+  static Future<ReceivedItem> fromCacheEntity(
+      FileSystemEntity entity, String mimeType) async {
     if (entity is Directory) {
       return ReceivedItem(
         cachePath: entity.path,
         name: p.basename(entity.path),
-        size: _treeSize(entity),
+        size: await treeSizeOf(entity.path),
         mimeType: 'inode/directory',
         isDirectory: true,
       );

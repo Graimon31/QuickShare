@@ -142,7 +142,7 @@ void main() {
       final folder = Directory(p.join(session.path, 'A trip'))..createSync();
       File(p.join(folder.path, 'inner.mp4')).writeAsStringSync('1234567890');
 
-      final items = TransferCache.itemsIn(session);
+      final items = await TransferCache.itemsIn(session);
 
       expect(items.map((i) => i.name), equals(['A trip', 'b.jpg']),
           reason: 'sorted by name, and the folder is one item not two');
@@ -153,7 +153,8 @@ void main() {
     });
 
     test('itemsIn on a session that produced nothing is empty', () async {
-      expect(TransferCache.itemsIn(await cache.sessionDirectory()), isEmpty);
+      expect(await TransferCache.itemsIn(await cache.sessionDirectory()),
+          isEmpty);
     });
 
     test('discarding a session leaves no empty folder behind', () async {

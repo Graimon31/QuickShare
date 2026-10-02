@@ -234,8 +234,8 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
     );
     if (!mounted || _completed) return;
 
-    result.fold(
-      (failure) {
+    unawaited(result.fold(
+      (failure) async {
         if (_joinedAsGuest) {
           unawaited(LocalHotspotService().leaveNetwork());
         }
@@ -244,12 +244,13 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
           _error = failure.message;
         });
       },
-      (received) {
+      (received) async {
         if (_joinedAsGuest) {
           unawaited(LocalHotspotService().leaveNetwork());
         }
         _completed = true;
-        final items = TransferCache.itemsIn(session);
+        final items = await TransferCache.itemsIn(session);
+        if (!mounted) return;
         context.go('/receive/complete', extra: {
           'filePath': received.preferredResultPath,
           'fileName':
@@ -257,7 +258,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
           'items': items,
         });
       },
-    );
+    ));
   }
 
   /// Takes the ten digits and looks for the device advertising them.
@@ -378,7 +379,7 @@ class _BluetoothReceivePageState extends State<BluetoothReceivePage> {
       });
       // The completion screen owns placement — gallery, Downloads, or a
       // question — so this page hands over rather than declaring itself done.
-      final items = TransferCache.itemsIn(session);
+      final items = await TransferCache.itemsIn(session);
       if (!mounted) return;
       context.go('/receive/complete', extra: {
         'filePath': path,

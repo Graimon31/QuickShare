@@ -122,7 +122,7 @@ void main() {
 
     // 2. Byte-for-byte, since a placement rule over a corrupted file would be
     //    a pointless thing to verify.
-    final items = TransferCache.itemsIn(session);
+    final items = await TransferCache.itemsIn(session);
     print('received on ${Platform.operatingSystem}: '
         '${items.map((i) => '${i.name} (${i.size}B)').join(', ')}');
     expect(items, hasLength(3));
@@ -160,7 +160,7 @@ void main() {
         .writeAsBytesSync(Uint8List.fromList(List.filled(1024, 9)));
 
     final session = await transfer([folder.path], 'wifi-folder');
-    final items = TransferCache.itemsIn(session);
+    final items = await TransferCache.itemsIn(session);
 
     expect(items, hasLength(1), reason: 'one decision, not one per photo');
     expect(items.single.name, equals('Trip'));
@@ -184,7 +184,7 @@ void main() {
     final held = await cache.size();
     expect(held, greaterThanOrEqualTo(2 * 1024 * 1024));
 
-    final items = TransferCache.itemsIn(session);
+    final items = await TransferCache.itemsIn(session);
     await cache.discard([for (final i in items) i.cachePath]);
 
     expect(await cache.size(), lessThan(held));

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -104,31 +105,44 @@ class _EntryRow extends StatefulWidget {
 
 class _EntryRowState extends State<_EntryRow> {
   bool _open = false;
+  bool _loading = false;
   List<FileSystemEntity>? _children;
 
   void _toggle() {
     setState(() {
       _open = !_open;
-      // Listed once and kept: reopening a folder should not re-walk the disk.
-      if (_open && _children == null) {
-        try {
-          _children = Directory(widget.path).listSync(followLinks: false)
-            ..sort((a, b) {
-              final aDir = a is Directory;
-              final bDir = b is Directory;
-              // Folders first, then names — the order a file manager uses, and
-              // the one that makes a deep tree readable.
-              if (aDir != bDir) return aDir ? -1 : 1;
-              return p
-                  .basename(a.path)
-                  .toLowerCase()
-                  .compareTo(p.basename(b.path).toLowerCase());
-            });
-        } on FileSystemException {
-          _children = const [];
-        }
-      }
     });
+    // Listed once and kept: reopening a folder should not re-walk the disk.
+    if (_open && _children == null && !_loading) {
+      unawaited(_loadChildren());
+    }
+  }
+
+  /// Reads one level of the folder off the frame that answered the tap: a
+  /// received tree can hold thousands of entries, and a synchronous listing
+  /// would be paid for by the animation that is opening the row.
+  Future<void> _loadChildren() async {
+    _loading = true;
+    try {
+      final children =
+          await Directory(widget.path).list(followLinks: false).toList();
+      children.sort((a, b) {
+        final aDir = a is Directory;
+        final bDir = b is Directory;
+        // Folders first, then names — the order a file manager uses, and the
+        // one that makes a deep tree readable.
+        if (aDir != bDir) return aDir ? -1 : 1;
+        return p
+            .basename(a.path)
+            .toLowerCase()
+            .compareTo(p.basename(b.path).toLowerCase());
+      });
+      if (mounted) setState(() => _children = children);
+    } on FileSystemException {
+      if (mounted) setState(() => _children = const []);
+    } finally {
+      _loading = false;
+    }
   }
 
   @override

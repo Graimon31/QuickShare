@@ -135,7 +135,7 @@ void main() {
         'is not in this measurement)');
 
     // Staging still works exactly as it does for every other transport.
-    final items = TransferCache.itemsIn(session);
+    final items = await TransferCache.itemsIn(session);
     expect(items.single.name, equals('clip.mp4'));
   }, timeout: const Timeout(Duration(minutes: 10)));
 

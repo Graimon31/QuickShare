@@ -1,6 +1,5 @@
 import 'dart:async';
-import 'dart:io'
-    show Directory, File, FileSystemEntity, FileSystemException;
+import 'dart:io' show Directory, File, FileSystemEntity;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter/foundation.dart';
@@ -499,13 +498,13 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         await dest.release();
 
         if (transferAttempt != _transferAttempt) return;
-        result.fold(
-          (failure) {
+        await result.fold(
+          (failure) async {
             unawaited(
                 _report(0, failure: failure.message, code: failure.code));
             add(DownloadFailed(failure.message, code: failure.code));
           },
-          (result) {
+          (result) async {
             // Two different questions, depending on where the bytes went.
             //
             // Staged in the cache, the session owns the whole directory and
@@ -514,8 +513,11 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
             // have ever downloaded, so the only honest list is the one the
             // transfer kept of what it wrote.
             final items = dest.placed
-                ? _placedItems(result.placedPaths)
-                : TransferCache.itemsIn(Directory(dest.path));
+                ? await _placedItems(result.placedPaths)
+                : await TransferCache.itemsIn(Directory(dest.path));
+            // The walk above is the first await after the transport handed
+            // over — where a superseded attempt shows itself.
+            if (transferAttempt != _transferAttempt) return;
             unawaited(
                 _report(items.fold<int>(0, (sum, item) => sum + item.size)));
             add(DownloadCompleted(
@@ -723,7 +725,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       if (dest.placed) {
         // Already at its final home: report what the transport wrote, don't
         // walk the destination (it is Downloads now, full of other things).
-        final items = _placedItems(transport.receivedPaths);
+        final items = await _placedItems(transport.receivedPaths);
+        if (attempt != _transferAttempt) return;
         emit(DownloadComplete(
           items.length == 1 ? items.first.savedPath! : dest.path,
           items.length == 1 ? items.first.name : payload.fileName,
@@ -736,7 +739,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         // and the completion screen has one decision to offer about it, not
         // one per photo. The top level of the session directory is exactly
         // what the sender picked.
-        final items = TransferCache.itemsIn(Directory(dest.path));
+        final items = await TransferCache.itemsIn(Directory(dest.path));
+        if (attempt != _transferAttempt) return;
         emit(DownloadComplete(
           items.length == 1 ? items.first.cachePath : dest.path,
           items.length == 1 ? items.first.name : payload.fileName,
@@ -830,15 +834,16 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   }
 
   /// Wraps the paths a transport wrote — files or a folder, already in place —
-  /// as items the completion screen can show as saved.
-  List<ReceivedItem> _placedItems(List<String> paths) {
+  /// as items the completion screen can show as saved. The measuring walks
+  /// happen off this isolate (see [ReceivedItem.treeSizeOf]).
+  Future<List<ReceivedItem>> _placedItems(List<String> paths) async {
     return [
       for (final path in paths)
         if (FileSystemEntity.isDirectorySync(path))
           ReceivedItem(
             cachePath: path,
             name: p.basename(path),
-            size: _treeSize(Directory(path)),
+            size: await ReceivedItem.treeSizeOf(path),
             mimeType: 'inode/directory',
             isDirectory: true,
             savedPath: path,
@@ -852,23 +857,5 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
             savedPath: path,
           ),
     ];
-  }
-
-  static int _treeSize(Directory dir) {
-    var total = 0;
-    try {
-      for (final e in dir.listSync(recursive: true, followLinks: false)) {
-        if (e is File) {
-          try {
-            total += e.lengthSync();
-          } on FileSystemException {
-            // Vanished between listing and measuring.
-          }
-        }
-      }
-    } on FileSystemException {
-      // Unreadable; a size of nothing beats hiding the item.
-    }
-    return total;
   }
 }

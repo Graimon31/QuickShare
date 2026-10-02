@@ -95,7 +95,7 @@ void main() {
     File(p.join(folder.path, 'clip.mov'))
         .writeAsBytesSync(List<int>.filled(2048, 0x42));
 
-    final items = TransferCache.itemsIn(dir);
+    final items = await TransferCache.itemsIn(dir);
 
     expect(items.map((i) => i.name), equals(['photo.heic', 'Trip']),
         reason: 'sorted by name, and the folder counts as one item');
@@ -205,7 +205,7 @@ void main() {
     Directory(p.join(folder.path, 'day 2')).createSync();
     File(p.join(folder.path, 'day 2', 'b.jpg')).writeAsBytesSync([4, 5]);
 
-    final item = ReceivedItem.fromCacheEntity(folder, 'inode/directory');
+    final item = await ReceivedItem.fromCacheEntity(folder, 'inode/directory');
     expect(GalleryFormats.forCurrentPlatform().accepts(item), isFalse,
         reason: 'no photo library takes a directory');
 

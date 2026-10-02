@@ -185,7 +185,7 @@ void main() {
   });
 
   group('folders', () {
-    ReceivedItem cachedFolder(String name) {
+    Future<ReceivedItem> cachedFolder(String name) async {
       final folder = Directory(p.join(cacheDir.path, name))
         ..createSync(recursive: true);
       File(p.join(folder.path, 'top.txt')).writeAsStringSync('a');
@@ -198,7 +198,7 @@ void main() {
       // QHTP sends whatever the sender picked; a folder arrives as a folder
       // and has to leave as one.
       final target = p.join(workspace.path, 'chosen');
-      final saved = await saverWith().saveTo(cachedFolder('Trip'), target);
+      final saved = await saverWith().saveTo(await cachedFolder('Trip'), target);
 
       expect(Directory(saved.savedPath!).existsSync(), isTrue);
       expect(File(p.join(saved.savedPath!, 'top.txt')).existsSync(), isTrue);
@@ -207,7 +207,7 @@ void main() {
     });
 
     test('a folder goes to Downloads like anything else', () async {
-      final saved = await saverWith().saveToDownloads(cachedFolder('Trip'));
+      final saved = await saverWith().saveToDownloads(await cachedFolder('Trip'));
 
       expect(Directory(saved.savedPath!).existsSync(), isTrue);
       expect(p.dirname(saved.savedPath!), equals(downloads.path));
@@ -218,7 +218,7 @@ void main() {
       Directory(p.join(downloads.path, 'Trip')).createSync();
       File(p.join(downloads.path, 'Trip', 'mine.txt')).writeAsStringSync('!');
 
-      final saved = await saverWith().saveToDownloads(cachedFolder('Trip'));
+      final saved = await saverWith().saveToDownloads(await cachedFolder('Trip'));
 
       expect(p.basename(saved.savedPath!), equals('Trip (1)'));
       expect(File(p.join(downloads.path, 'Trip', 'mine.txt')).existsSync(),
