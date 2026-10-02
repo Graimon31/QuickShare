@@ -44,7 +44,7 @@
 | `sender_bloc_test.dart` | existing cases | pass | pass |
 | `ice_servers` + `relay_limit` + `no_route` | pass | pass | pass |
 | `flutter analyze` on touched Dart | 0 issues | 0 after empty-catch fix | pass |
-| Full `flutter test` | — | not run | pending |
+| Full `flutter test` | — | 2026-09-13: 803/803 pass (31s), `flutter analyze` 0 issues (5.6s), HEAD `1cbbe73` | pass |
 | Device e2e | — | not run | pending |
 
 ## Error Log

@@ -40,7 +40,7 @@ Phase 4: Testing & Verification
 
 - [x] Worker `npm test` 19/19
 - [x] Dart: throttle, selection, TURN, sender_bloc, ICE, relay
-- [ ] Full `flutter test` / `flutter analyze` on the whole package
+- [x] Full `flutter test` / `flutter analyze` on the whole package (2026-09-13: 803/803 pass, 0 analyze issues, HEAD `1cbbe73`)
 - [ ] Device run
 - [ ] Worker deploy + matching dart-define
 - **Status:** in_progress
