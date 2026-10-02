@@ -83,6 +83,16 @@ void main() {
       authToken: token,
     );
 
+    // The server speaks TLS with a throwaway per-session certificate, and the
+    // receiver pins it through the QR — unchanged by the tunnel, which is part
+    // of what this test is for. An empty fingerprint would come back as the
+    // "older version ... sends files unencrypted" refusal and look like a
+    // tunnel fault, so it fails here instead, where it names itself.
+    final fingerprint = server!.tlsFingerprint;
+    expect(fingerprint, isNotNull,
+        reason: 'a started session always has a certificate to pin');
+    expect(fingerprint, isNotEmpty, reason: 'the pin is the whole trust decision');
+
     // ---- the link ----
     const serviceName = 'dd-test-${'peerlink'}';
     await link.host(serviceName: serviceName, localPort: qhtpPort);
@@ -105,6 +115,7 @@ void main() {
         token: token,
         sessionId: indexed.manifest.sessionId,
         mode: 'http-lan',
+        tlsFingerprint: fingerprint!,
       ),
       targetBaseDir: session.path,
     );

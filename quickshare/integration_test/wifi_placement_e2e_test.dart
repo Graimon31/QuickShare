@@ -69,6 +69,15 @@ void main() {
       authToken: token,
     );
 
+    // The server speaks TLS with a throwaway per-session certificate, and the
+    // receiver pins it through the QR. Assert it is really there: an empty
+    // fingerprint comes back as "older version ... sends files unencrypted",
+    // which reads as a transfer bug rather than as a test that forgot to pin.
+    final fingerprint = server!.tlsFingerprint;
+    expect(fingerprint, isNotNull,
+        reason: 'a started session always has a certificate to pin');
+    expect(fingerprint, isNotEmpty, reason: 'the pin is the whole trust decision');
+
     // The receiver's own staging area, exactly as the bloc now allocates it.
     final session = await cache.sessionDirectory();
     staged.add(session.path);
@@ -81,6 +90,7 @@ void main() {
         token: token,
         sessionId: indexed.manifest.sessionId,
         mode: 'http-lan',
+        tlsFingerprint: fingerprint!,
       ),
       targetBaseDir: session.path,
     );
