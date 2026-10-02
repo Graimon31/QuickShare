@@ -6,6 +6,7 @@ import 'dart:async';
 // arrives. Reproduced here with a buffer that simply stops draining.
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/webrtc/send_buffer.dart';
 
 void main() {
@@ -262,6 +263,175 @@ void main() {
         ),
         throwsA(isA<TransferStalled>()),
       );
+    });
+  });
+
+  // The ten checks behind the measured DataChannel rate: a 4 MB window, a
+  // 50 ms poll that is only a backstop, and a loop that must not sleep when
+  // the buffer is already inside the window.
+  group('the 4 MB window', () {
+    const window = AppConstants.webRtcMaxBufferedAmount; // 4 MB
+    const chunk = AppConstants.webRtcChunkSizeBytes; // 64 KB
+
+    test('1. already inside the window returns without waiting for the poll',
+        () async {
+      final started = DateTime.now();
+      await SendBuffer.waitForRoom(
+        bufferedAmount: () => window - chunk,
+        isOpen: () => true,
+        limit: window,
+        pollInterval: const Duration(seconds: 5),
+        stallTimeout: const Duration(seconds: 30),
+      );
+      expect(DateTime.now().difference(started).inMilliseconds, lessThan(200));
+    });
+
+    test('2. a buffer sitting exactly on the limit is room, not a wait',
+        () async {
+      final started = DateTime.now();
+      await SendBuffer.waitForRoom(
+        bufferedAmount: () => window,
+        isOpen: () => true,
+        limit: window,
+        pollInterval: const Duration(seconds: 5),
+      );
+      expect(DateTime.now().difference(started).inMilliseconds, lessThan(200));
+    });
+
+    test('3. one byte over the window waits until the buffer comes back',
+        () async {
+      var buffered = window + 1;
+      final done = SendBuffer.waitForRoom(
+        bufferedAmount: () => buffered,
+        isOpen: () => true,
+        limit: window,
+        pollInterval: const Duration(milliseconds: 5),
+        stallTimeout: const Duration(seconds: 2),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      buffered = window;
+      await done;
+    });
+
+    test('4. a channel already closed raises before any poll', () async {
+      final started = DateTime.now();
+      await expectLater(
+        SendBuffer.waitForRoom(
+          bufferedAmount: () => window + chunk,
+          isOpen: () => false,
+          limit: window,
+          pollInterval: const Duration(seconds: 5),
+        ),
+        throwsA(isA<TransferStalled>().having(
+          (e) => e.reason,
+          'reason',
+          contains('closed'),
+        )),
+      );
+      expect(DateTime.now().difference(started).inMilliseconds, lessThan(200));
+    });
+
+    test('5. a slow drain keeps resetting the stall clock', () async {
+      var buffered = window + 20;
+      final done = SendBuffer.waitForRoom(
+        bufferedAmount: () {
+          if (buffered > window) buffered -= 1;
+          return buffered;
+        },
+        isOpen: () => true,
+        limit: window,
+        pollInterval: const Duration(milliseconds: 5),
+        stallTimeout: const Duration(milliseconds: 30),
+      );
+      await done;
+    });
+
+    test('6. the final drain does not finish while one byte is still queued',
+        () async {
+      var buffered = 1;
+      var finished = false;
+      final done = SendBuffer.waitUntilEmpty(
+        bufferedAmount: () => buffered,
+        isOpen: () => true,
+        pollInterval: const Duration(milliseconds: 5),
+        stallTimeout: const Duration(seconds: 2),
+      ).whenComplete(() => finished = true);
+
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      expect(finished, isFalse, reason: 'one queued byte is not an empty buffer');
+      buffered = 0;
+      await done;
+      expect(finished, isTrue);
+    });
+
+    test('7. a drain signal that fires while still over the limit does not let the send through',
+        () async {
+      final immediate = Completer<void>()..complete();
+      await expectLater(
+        SendBuffer.waitForRoom(
+          bufferedAmount: () => window + chunk,
+          isOpen: () => true,
+          limit: window,
+          onDrain: () => immediate.future,
+          pollInterval: const Duration(milliseconds: 1),
+          stallTimeout: const Duration(milliseconds: 40),
+        ),
+        throwsA(isA<TransferStalled>()),
+      );
+    });
+
+    test('8. without a drain event the poll interval is what ends the wait',
+        () async {
+      var buffered = window + chunk;
+      final started = DateTime.now();
+      final done = SendBuffer.waitForRoom(
+        bufferedAmount: () => buffered,
+        isOpen: () => true,
+        limit: window,
+        pollInterval: const Duration(milliseconds: 40),
+        stallTimeout: const Duration(seconds: 2),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 90));
+      buffered = 0;
+      await done;
+      expect(
+        DateTime.now().difference(started).inMilliseconds,
+        greaterThanOrEqualTo(80),
+        reason: 'two 40 ms polls have to pass before the drop is noticed',
+      );
+    });
+
+    test('9. a closed channel reports how many bytes were still queued',
+        () async {
+      try {
+        await SendBuffer.waitForRoom(
+          bufferedAmount: () => window,
+          isOpen: () => false,
+          limit: chunk,
+          pollInterval: const Duration(milliseconds: 1),
+        );
+        fail('expected TransferStalled');
+      } on TransferStalled catch (e) {
+        expect(e.bufferedBytes, equals(window));
+        expect(e.toString(), contains('closed'));
+        expect(e.toString(), contains('$window'));
+      }
+    });
+
+    test('10. a buffer that stops being reported is let through, not parked',
+        () async {
+      var reads = 0;
+      await SendBuffer.waitForRoom(
+        bufferedAmount: () {
+          reads++;
+          return reads == 1 ? window + chunk : null;
+        },
+        isOpen: () => true,
+        limit: window,
+        pollInterval: const Duration(milliseconds: 5),
+        stallTimeout: const Duration(seconds: 2),
+      );
+      expect(reads, greaterThanOrEqualTo(2));
     });
   });
 }
