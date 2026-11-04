@@ -138,9 +138,18 @@ class TransferCache {
 
   /// Sweeps abandoned sessions older than [ttl] (default 24h, aligned with [SessionStateStore]).
   /// Recent partial sessions are preserved so interrupted downloads can be resumed.
-  Future<int> clearExpired({Duration ttl = const Duration(hours: 24)}) async {
+  ///
+  /// [now] is the instant "older than" is counted back from; the clock, when
+  /// it is not given. A folder's age is the time the file system stamped on
+  /// it, and a file system's clock is coarser than a program's (about 16 ms on
+  /// NTFS), so a caller that has to be exact about which side of the line a
+  /// folder falls on passes the instant it has read from those stamps.
+  Future<int> clearExpired({
+    Duration ttl = const Duration(hours: 24),
+    DateTime? now,
+  }) async {
     final dir = await directory();
-    final cutoff = DateTime.now().subtract(ttl);
+    final cutoff = (now ?? DateTime.now()).subtract(ttl);
     var freed = 0;
     try {
       if (!await dir.exists()) return 0;

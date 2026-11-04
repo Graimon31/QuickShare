@@ -17,6 +17,8 @@ import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dar
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 
+import '../../support/scratch_path_provider.dart';
+
 class _MockDownload extends Mock implements DownloadFileUseCase {}
 
 class _MockRepository extends Mock implements ReceiverRepository {}
@@ -28,7 +30,6 @@ class _FakeDestination extends Fake implements ReceiveDestination {}
 void main() {
   final binding = TestWidgetsFlutterBinding.ensureInitialized();
   const bluetooth = MethodChannel('quickshare/bluetooth');
-  const pathProvider = MethodChannel('plugins.flutter.io/path_provider');
 
   late Directory sandbox;
   late List<String> radioCalls;
@@ -41,8 +42,7 @@ void main() {
   setUp(() {
     sandbox = Directory.systemTemp.createTempSync('bt_qr_session');
     radioCalls = [];
-    binding.defaultBinaryMessenger
-        .setMockMethodCallHandler(pathProvider, (call) async => sandbox.path);
+    answerPathProviderWith(sandbox.path);
     binding.defaultBinaryMessenger.setMockMethodCallHandler(bluetooth, (call) async {
       radioCalls.add(call.method);
       return null;
@@ -60,7 +60,6 @@ void main() {
 
   tearDown(() async {
     await bloc.close();
-    binding.defaultBinaryMessenger.setMockMethodCallHandler(pathProvider, null);
     binding.defaultBinaryMessenger.setMockMethodCallHandler(bluetooth, null);
     sandbox.deleteSync(recursive: true);
   });

@@ -22,6 +22,7 @@ import 'package:path/path.dart' as p;
 import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
+import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 
 /// A file that does something to the filesystem right after it commits.
 class _AfterCommit extends DurableFile {
@@ -216,12 +217,78 @@ void main() {
       await bytes(t, List.filled(11, 1));
       // No file-end: the overshoot itself must be the end of it.
       await failed;
-      await Future<void>.delayed(const Duration(milliseconds: 200));
 
+      // Right away, not after a pause: the failure is reported once the file
+      // is closed and its partial is gone, so whoever reacts to it finds a
+      // destination nothing is using. (A fixed wait here is what hid a
+      // failure that raced its own cleanup.)
       expect(File(p.join(dest.path, 'a.bin')).existsSync(), isFalse);
       expect(
           dest.listSync(recursive: true).whereType<File>(), isEmpty,
           reason: 'nothing of the oversized item is left behind');
+    });
+
+    test('every way of hearing about a failure comes after the partial is '
+        'gone', () async {
+      final t = WebRtcReceiverTransport();
+      final partial = File(p.join(dest.path, 'a.bin.qs.partial'));
+      await announce(t, [item('a.bin', 10)]);
+      await frame(t, TransferProtocol.buildFileStart(0));
+      expect(partial.existsSync(), isTrue, reason: 'the partial is open');
+
+      // What each listener finds on disk at the moment it is told.
+      final found = <String, bool>{};
+      final status = t.statusStream.listen((s) {
+        if (s == TransferStatus.failed) found['status'] = partial.existsSync();
+      });
+      final progress = t.progressStream.listen((e) {
+        if (e.phase == 'failed') found['progress'] = partial.existsSync();
+      });
+      addTearDown(status.cancel);
+      addTearDown(progress.cancel);
+      final completion = t.completionForTest.then<void>((_) {},
+          onError: (Object _) => found['completion'] = partial.existsSync());
+
+      await bytes(t, List.filled(11, 1));
+      await completion;
+      await Future<void>.delayed(Duration.zero);
+
+      expect(found, {'status': false, 'progress': false, 'completion': false},
+          reason: 'told of the failure while its file was still on disk, and '
+              'on Windows still open');
+    });
+
+    test('what is queued behind a failure is ignored, not reported as a '
+        'second failure', () async {
+      final t = WebRtcReceiverTransport();
+      final reasons = <String?>[];
+      var failedStatuses = 0;
+      final progress = t.progressStream.listen((e) {
+        if (e.phase == 'failed') reasons.add(e.detail);
+      });
+      final status = t.statusStream.listen((s) {
+        if (s == TransferStatus.failed) failedStatuses++;
+      });
+      addTearDown(progress.cancel);
+      addTearDown(status.cancel);
+      final failed = expectFails(t, 'more than');
+
+      await announce(t, two);
+      // The overshoot fails the session; the frames behind it are what a
+      // sender that has not noticed yet keeps sending.
+      await sendFile(t, 0, List.filled(15, 1));
+      await sendFile(t, 1, List.filled(10, 2));
+      await frame(t, TransferProtocol.buildComplete());
+      await failed;
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(failedStatuses, 1);
+      expect(reasons, hasLength(1),
+          reason: 'the first reason is the one the person is shown; a second '
+              'one, from a seal that ran into the file being closed, would '
+              'replace it with "Failed to write incoming file"');
+      expect(reasons.single, contains('more than'));
+      expect(dest.listSync(recursive: true).whereType<File>(), isEmpty);
     });
 
     test('15 bytes of a 10-byte item followed by a full second item does not '

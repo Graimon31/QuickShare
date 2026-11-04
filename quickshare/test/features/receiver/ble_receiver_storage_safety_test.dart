@@ -14,6 +14,7 @@ import 'package:path/path.dart' as p;
 import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/storage/disk_space.dart';
+import 'package:quickshare/core/storage/safe_path.dart';
 import 'package:quickshare/features/receiver/data/transports/universal_ble_receiver_transport.dart';
 
 class _Fixed extends DiskSpaceProbe {
@@ -53,7 +54,23 @@ void main() {
     transport.setBaseDirForTesting(dest.path);
     transport.setTargetDeviceIdForTesting('device_1');
   });
-  tearDown(() => root.deleteSync(recursive: true));
+  tearDown(() {
+    SafePath.debugRace = null;
+    // Whatever a test left half-way: the handle on a partial (Windows will not
+    // delete a folder with an open file in it) and the 30 s idle timer, which
+    // would otherwise fire long after the test and report a failure of its own.
+    transport.resetSessionStateForTesting();
+    root.deleteSync(recursive: true);
+  });
+
+  // Moving a folder that has an open file in it is something only POSIX
+  // allows; Windows refuses, to anyone. The swaps that can happen there are
+  // the ones after the file is closed, and those tests run everywhere.
+  final Object whileOpen = Platform.isWindows
+      ? 'Windows will not move a folder that has an open file in it, so this '
+          'swap cannot happen there while the partial is open; the swap '
+          'once it is closed is the test next to this one'
+      : false;
 
   Uint8List meta(String name, int size,
           {String? path, int index = 0, int count = 1, int? sessionBytes}) =>
@@ -131,6 +148,31 @@ void main() {
       await done;
       expect(File(p.join(moved, 'f.bin')).existsSync(), isFalse,
           reason: 'the file was given its name outside the destination');
+    }, skip: whileOpen);
+
+    test('a folder moved away and linked back as the file is sealed fails the '
+        'session and names nothing outside', () async {
+      // The same swap at the moment every system allows it: the partial is
+      // whole and closed, and about to be checked and given its name.
+      final moved = p.join(outside.path, 'moved');
+      var swapped = false;
+      SafePath.debugRace = (stage, path) {
+        if (stage != 'seal' || swapped) return;
+        Directory(p.join(dest.path, 'Trip')).renameSync(moved);
+        Link(p.join(dest.path, 'Trip')).createSync(moved);
+        swapped = true;
+      };
+      final done = expectLater(
+          transport.completionForTesting.future,
+          failsWith(FailureCode.unsafeDestination));
+
+      transport.handleMetadataForTesting(meta('f.bin', 3, path: 'Trip/f.bin'));
+      transport.handleDataForTesting(Uint8List.fromList([1, 2, 3]));
+
+      await done;
+      expect(swapped, isTrue, reason: 'the moment was never reached');
+      expect(File(p.join(moved, 'f.bin')).existsSync(), isFalse,
+          reason: 'the file was given its name outside the destination');
     });
 
     test('a dangling link at the final name is occupied', () async {
@@ -190,6 +232,30 @@ void main() {
       transport.handleDataForTesting(Uint8List.fromList([3, 4]));
 
       await done;
+      expect(snapshot(outside), before);
+    }, skip: whileOpen);
+
+    test('a folder swapped for a link as the file is sealed is caught',
+        () async {
+      final before = snapshot(outside);
+      var swapped = false;
+      SafePath.debugRace = (stage, path) {
+        if (stage != 'seal' || swapped) return;
+        Directory(p.join(dest.path, 'Trip'))
+            .renameSync(p.join(dest.path, 'moved'));
+        Link(p.join(dest.path, 'Trip')).createSync(outside.path);
+        swapped = true;
+      };
+      final done = expectLater(
+          transport.completionForTesting.future,
+          failsWith(FailureCode.unsafeDestination));
+
+      transport.handleMetadataForTesting(meta('f.bin', 4, path: 'Trip/f.bin'));
+      transport.handleDataForTesting(Uint8List.fromList([1, 2]));
+      transport.handleDataForTesting(Uint8List.fromList([3, 4]));
+
+      await done;
+      expect(swapped, isTrue, reason: 'the moment was never reached');
       expect(snapshot(outside), before);
     });
 

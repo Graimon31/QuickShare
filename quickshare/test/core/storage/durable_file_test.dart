@@ -1,8 +1,11 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quickshare/core/storage/durable_file.dart';
+
+import '../../support/open_files.dart';
 
 void main() {
   late Directory root;
@@ -51,6 +54,53 @@ void main() {
 
       expect(File(f.partialPath).existsSync(), isFalse);
       expect(File(f.finalPath).existsSync(), isFalse);
+    });
+
+    test('abort while a write is still running closes the handle and removes '
+        'the partial', () async {
+      // An abort comes from a timer or a dropped connection, not from the
+      // code that is writing, so it can land with a write in flight. A handle
+      // with an operation pending does not close — the call returns an error
+      // and the handle stays open — and on Windows an open partial can be
+      // neither deleted nor have its folder removed.
+      final f = DurableFile(p.join(root.path, 'busy.bin'));
+      await f.open();
+      final handle = f.handleForTesting!;
+      final write = f.add(Uint8List(48 * 1024 * 1024)); // still running below
+
+      await f.abort();
+      await write; // it was waited for, not cancelled
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(handleIsClosed(handle), isTrue,
+          reason: 'the close was refused while the write was pending');
+      expect(File(f.partialPath).existsSync(), isFalse);
+      expect(Directory(root.path).listSync(), isEmpty,
+          reason: 'and the folder can be emptied, which an open handle '
+              'forbids on Windows');
+    });
+
+    test('a second abort, while the first is closing, is harmless', () async {
+      final f = DurableFile(p.join(root.path, 'twice.bin'));
+      await f.open();
+      final handle = f.handleForTesting!;
+      final write = f.add(Uint8List(16 * 1024 * 1024));
+
+      await Future.wait([f.abort(), f.abort()]);
+      await write;
+
+      expect(handleIsClosed(handle), isTrue);
+      expect(File(f.partialPath).existsSync(), isFalse);
+    });
+
+    test('a write that comes in after an abort is refused, not made',
+        () async {
+      final f = DurableFile(p.join(root.path, 'late.bin'));
+      await f.open();
+      await f.abort();
+
+      expect(() => f.add([1]), throwsStateError);
+      expect(File(f.partialPath).existsSync(), isFalse);
     });
 
     test('abort after a successful commit keeps the final file', () async {

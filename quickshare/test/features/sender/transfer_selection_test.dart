@@ -24,7 +24,9 @@ void main() {
   });
 
   File write(String relative, [String contents = 'x']) {
-    final file = File(p.join(workspace.path, relative));
+    // [relative] is written with '/', as a path on the wire is; the file is
+    // made the way the system spells a path, which is what the walk reports.
+    final file = File(p.joinAll([workspace.path, ...p.posix.split(relative)]));
     file.parent.createSync(recursive: true);
     file.writeAsStringSync(contents);
     return file;

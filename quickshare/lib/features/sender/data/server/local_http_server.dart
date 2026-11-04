@@ -325,20 +325,31 @@ class LocalHttpServer {
   /// and the socket sits idle for as long as the disk takes to produce the
   /// next one — the two alternate instead of overlapping, which is a large
   /// part of why the measured rate sawtoothed well under what the link could
-  /// carry. Reads on one handle are queued in order, so issuing the next one
-  /// before yielding the current block is safe and keeps the disk busy.
+  /// carry. The next read is issued only after the current one has returned
+  /// (a handle refuses a second operation while one is pending, it does not
+  /// queue it), so it is safe to start it before yielding the current block,
+  /// and it keeps the disk busy.
   ///
   /// Exactly one block may be in flight, so the memory this holds is bounded
   /// at two blocks whatever the file size.
+  ///
+  /// The handle is always closed, and closed only once the look-ahead read has
+  /// finished. A receiver that hangs up leaves the generator parked at the
+  /// `yield` with the next block still being read, and `close()` on a
+  /// [RandomAccessFile] with an operation pending does not wait for it: it
+  /// returns an error ("An async operation is currently pending") and leaves
+  /// the handle open. Open handles are released only when the garbage
+  /// collector gets to them — a descriptor leaked per dropped download, and on
+  /// Windows a source file nobody can rename or delete until then.
   static Stream<List<int>> _readRange(File file, int start, int end) async* {
     final raf = await file.open();
+    Future<Uint8List>? next;
     try {
       if (start > 0) await raf.setPosition(start);
       var remaining = end - start;
       if (remaining <= 0) return;
 
-      Future<Uint8List>? next =
-          raf.read(remaining < _readBlock ? remaining : _readBlock);
+      next = raf.read(remaining < _readBlock ? remaining : _readBlock);
       while (next != null) {
         final block = await next;
         if (block.isEmpty) break;
@@ -349,9 +360,25 @@ class LocalHttpServer {
         yield block;
       }
     } finally {
+      final inFlight = next;
+      if (inFlight != null) {
+        // Whatever that read ends in is of no interest any more — nobody is
+        // left to receive the block — but it has to end before the handle can
+        // be closed.
+        try {
+          await inFlight;
+        } catch (_) {}
+      }
       await raf.close();
     }
   }
+
+  /// [_readRange] for a test, which cannot reach a private member of a server
+  /// it never starts.
+  @visibleForTesting
+  static Stream<List<int>> readRangeForTesting(
+          File file, int start, int end) =>
+      _readRange(file, start, end);
 
   /// Whether a progress update has waited long enough to be worth sending.
   ///

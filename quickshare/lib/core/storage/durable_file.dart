@@ -2,6 +2,7 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 
 import 'package:quickshare/core/storage/safe_path.dart';
@@ -61,6 +62,14 @@ class DurableFile {
   RandomAccessFile? _raf;
   String? _committedPath;
 
+  /// The write most recently handed to the handle, as a future that never
+  /// fails (a failed write is its caller's to deal with). [abort] waits for it:
+  /// a handle with an operation pending refuses to close — the call returns an
+  /// error and the handle stays open — so closing under a running write, which
+  /// is what an abort from a timer or a dropped connection does, left the
+  /// file open and, on Windows, undeletable.
+  Future<void> _writing = Future<void>.value();
+
   String get _root => base ?? p.dirname(finalPath);
 
   /// Creates the parent directory if missing and opens the write target,
@@ -73,13 +82,20 @@ class DurableFile {
   /// Bytes written to the target so far.
   int get length => _raf?.lengthSync() ?? 0;
 
+  /// The open handle, for a test that has to ask it afterwards whether it was
+  /// closed.
+  @visibleForTesting
+  RandomAccessFile? get handleForTesting => _raf;
+
   Future<void> add(List<int> bytes) {
     final raf = _raf;
     if (raf == null) {
       throw StateError(
           'DurableFile.add on $finalPath before open() / after commit()');
     }
-    return raf.writeFrom(bytes);
+    final write = raf.writeFrom(bytes);
+    _writing = write.then<void>((_) {}, onError: (Object _) {});
+    return write;
   }
 
   /// fsync payload → close → (staged) atomic rename → fsync directory.
@@ -107,11 +123,18 @@ class DurableFile {
 
   /// Closes the handle and removes what was written. Safe to call repeatedly,
   /// and a no-op once [commit] has succeeded.
+  ///
+  /// A write still running is waited for first, and the handle is released from
+  /// this object before the wait: a second [abort] then finds nothing to close
+  /// (not a handle already shutting), and an [add] that comes in meanwhile
+  /// fails fast instead of writing into a file that is being thrown away.
   Future<void> abort() async {
-    try {
-      await _raf?.close();
-    } catch (_) {}
+    final raf = _raf;
     _raf = null;
+    await _writing;
+    try {
+      await raf?.close();
+    } catch (_) {}
     if (_committedPath != null) return;
     try {
       // Whatever is at this path now — a file, or a link someone put there —

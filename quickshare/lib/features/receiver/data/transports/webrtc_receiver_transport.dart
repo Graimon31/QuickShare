@@ -171,6 +171,19 @@ class WebRtcReceiverTransport {
   /// session.
   bool _sessionFinished = false;
 
+  /// Set by the first [_fail] (and by [cancel]), before anything else about
+  /// the failure is done. From then on frames still queued in
+  /// [_handlerChain] are ignored — they would write into, or seal, a file
+  /// that is being thrown away — and a second failure, which is only the
+  /// first one seen again from the other side, does not replace the reason
+  /// the person is shown.
+  bool _failed = false;
+
+  /// Whether the session has ended, in either direction. A failure is
+  /// reported only once its file has been put down (see [_fail]), so
+  /// `_completion` being settled is no longer the first sign of one.
+  bool get _ended => _failed || _completion.isCompleted;
+
   /// Holds the connection open briefly after a byte-counted completion, so
   /// the sender's trailing `complete` frame still has somewhere to arrive —
   /// closing immediately would turn the sender's final drain into a stall.
@@ -480,6 +493,11 @@ class WebRtcReceiverTransport {
   /// Binary messages are decompressed if the sender advertised
   /// `"compressed": true` in the `file-meta` JSON.
   Future<void> _processMessage(RTCDataChannelMessage message) async {
+    // Whatever was queued behind a failure belongs to a session that is being
+    // taken apart. Handling it is not harmless: a `file-end` would try to seal
+    // the very file that is being closed and deleted, and what that raised
+    // was then reported as a second, unrelated failure.
+    if (_failed) return;
     try {
       if (message.isBinary) {
         if (_currentFile == null) return;
@@ -605,7 +623,7 @@ class WebRtcReceiverTransport {
           // The seal fails the whole transfer when the item came up short;
           // do not then turn around and declare it delivered on the running
           // total.
-          if (_completion.isCompleted) return;
+          if (_ended) return;
           // A full byte count is completion in its own right: the sender's
           // trailing `complete` frame can die in its closing channel over a
           // relay, and waiting for it is what left receivers hanging on
@@ -663,7 +681,7 @@ class WebRtcReceiverTransport {
           // file-end, so flush whatever is still open.
           await _sealCurrentFile();
           _idleWatchdog?.cancel();
-          if (_completion.isCompleted) return;
+          if (_ended) return;
 
           if (_sessionTotalBytes > 0 &&
               _sessionReceivedBytes < _sessionTotalBytes) {
@@ -846,9 +864,20 @@ class WebRtcReceiverTransport {
 
   /// Aborts whatever file is mid-write and clears every trace of the session
   /// from disk — the in-flight partial, and a staged folder directory whole.
-  Future<void> _discardInFlight() async {
-    await _currentFile?.abort();
+  Future<void> _discardInFlight() => _discarding ??=
+      _discardNow().whenComplete(() => _discarding = null);
+
+  /// The discard in progress, so that a second caller — [cancel] while a
+  /// failure is still putting the file down, say — waits for the same work
+  /// instead of racing it: two closes of one handle, two deletes of one path.
+  Future<void>? _discarding;
+
+  Future<void> _discardNow() async {
+    // Taken out of the way first. Anything that looks for the open file while
+    // it is being closed finds none, rather than a handle that is shutting.
+    final file = _currentFile;
     _currentFile = null;
+    await file?.abort();
     if (_folderMode && _stagedRoot != null) {
       // Looked at without following links. A link standing where the staging
       // folder was is removed as a link; nothing is deleted through it.
@@ -944,7 +973,7 @@ class WebRtcReceiverTransport {
       await _sealCurrentFile();
       // A short final item fails inside the seal. Nothing below should run:
       // no folder commit, no "completed", no successful completion.
-      if (_completion.isCompleted) return;
+      if (_ended) return;
       // The bytes add up; that is not the same as every item being here. An
       // item that was skipped, or one that was replaced before it was sealed,
       // is a hole the running total can paper over.
@@ -1061,12 +1090,11 @@ class WebRtcReceiverTransport {
       // The chain is checked first: if the staging folder has been swapped for
       // a link, the mark would be written into whatever it points at.
       SafePath.assertNoLinksBelow(_baseDir, marker);
-      File(marker)
-        ..createSync(exclusive: true)
-        ..writeAsStringSync(
-            'This folder was received in full but could not be renamed to '
-            'its real name ($cause). Rename it to keep it, then delete this '
-            'file.\n');
+      SafePath.createExclusive(marker);
+      File(marker).writeAsStringSync(
+          'This folder was received in full but could not be renamed to '
+          'its real name ($cause). Rename it to keep it, then delete this '
+          'file.\n');
     } catch (e) {
       AppLogger.warning(
           'Could not mark "$staged" as kept; the startup sweep may remove it: '
@@ -1151,7 +1179,7 @@ class WebRtcReceiverTransport {
     // the person cancelled, and closing the connection is what made ICE report
     // `closed` — and that is not a missing route.
     if (_negotiationFailing ||
-        _completion.isCompleted ||
+        _ended ||
         _sessionFinished ||
         _cancelledBySender) {
       return;
@@ -1165,7 +1193,7 @@ class WebRtcReceiverTransport {
       connection: _peerConnection,
     );
     AppLogger.error(diagnosis.summary, tag: 'WEBRTC_RECEIVER');
-    if (_completion.isCompleted || _sessionFinished || _cancelledBySender) {
+    if (_ended || _sessionFinished || _cancelledBySender) {
       return;
     }
 
@@ -1173,18 +1201,50 @@ class WebRtcReceiverTransport {
     _fail(diagnosis.summary);
   }
 
+  /// How long a failure waits for the file to be put down before it is
+  /// reported anyway. Closing and deleting take milliseconds; they take long
+  /// only on a destination that has stopped answering (a share that went
+  /// away), and the person should still be told.
+  static const Duration _discardGrace = Duration(seconds: 5);
+
+  /// Ends the session with [reason].
+  ///
+  /// The failure reaches everyone who is waiting — the status stream, the
+  /// progress stream, the completion — only once the file being written is
+  /// closed and its partial is gone. Reporting first and cleaning up
+  /// alongside it let the caller act on a destination that was still in use:
+  /// on Windows a folder with an open file in it cannot be renamed or
+  /// deleted, so whoever reacted to the failure by clearing the destination
+  /// got a sharing violation, and a partial was left behind.
   void _fail(String reason, {StorageProblem? problem}) {
+    if (_failed) {
+      debugPrint('WebRTC receive failed again, after it already had: $reason');
+      return;
+    }
+    _failed = true;
     debugPrint('WebRTC receive failed: $reason');
     if (problem != null) _storageFailure ??= problem.toException();
-    unawaited(_discardInFlight());
+    // Decided now, not when the file is down: a later event must not change
+    // what this failure was.
+    final Object error = _cancelledBySender
+        ? const TransferCancelledBySender()
+        : _iceFailure ?? _storageFailure ?? Exception(reason);
+    unawaited(_report(reason, error));
+    _cleanup();
+  }
+
+  Future<void> _report(String reason, Object error) async {
+    try {
+      await _discardInFlight().timeout(_discardGrace);
+    } catch (e) {
+      AppLogger.warning(
+          'The partial file was not put down before the failure was '
+          'reported: $e',
+          tag: 'WEBRTC_RECEIVER');
+    }
     _statusController.add(TransferStatus.failed);
     _emit('failed', detail: reason);
-    if (!_completion.isCompleted) {
-      _completion.completeError(_cancelledBySender
-          ? const TransferCancelledBySender()
-          : _iceFailure ?? _storageFailure ?? Exception(reason));
-    }
-    _cleanup();
+    if (!_completion.isCompleted) _completion.completeError(error);
   }
 
   Future<void> _cleanup() async {
@@ -1204,6 +1264,7 @@ class WebRtcReceiverTransport {
   }
 
   Future<void> cancel() async {
+    _failed = true;
     await _discardInFlight();
     _statusController.add(TransferStatus.cancelled);
     if (!_completion.isCompleted) {

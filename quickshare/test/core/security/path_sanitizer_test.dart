@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/security/path_sanitizer.dart';
 
@@ -170,7 +171,8 @@ void main() {
         const path = r'foo\..\bar\./baz.txt';
         final sanitized = PathSanitizer.sanitizeRelativePath(path);
         expect(sanitized.contains('..'), isFalse);
-        expect(sanitized.contains('/baz.txt'), isTrue);
+        // Joined the way the system joins paths: '\\' on Windows, '/' elsewhere.
+        expect(sanitized, equals(p.join('foo', 'bar', 'baz.txt')));
       });
 
       test('returns defaultName if empty', () {
@@ -192,7 +194,7 @@ void main() {
 
         final res = PathSanitizer.resolveSafePath('docs/report.pdf', base.path);
         expect(res.startsWith(base.path), isTrue);
-        expect(res.endsWith('docs/report.pdf'), isTrue);
+        expect(res.endsWith(p.join('docs', 'report.pdf')), isTrue);
       });
 
       test('neutralizes traversal attempts', () {
@@ -201,7 +203,7 @@ void main() {
 
         final res = PathSanitizer.resolveSafePath('../../../../etc/passwd', base.path);
         expect(res.startsWith(base.path), isTrue);
-        expect(res.endsWith('etc/passwd'), isTrue);
+        expect(res.endsWith(p.join('etc', 'passwd')), isTrue);
         expect(res.contains('..'), isFalse);
       });
     });

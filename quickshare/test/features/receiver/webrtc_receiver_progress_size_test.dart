@@ -31,7 +31,11 @@ void main() {
     dest = Directory.systemTemp.createTempSync('dd_webrtc_recv_');
   });
 
-  tearDown(() {
+  tearDown(() async {
+    // A test that stops with a file half-received leaves its handle open, and
+    // Windows will not delete a folder with an open file in it. Closing the
+    // session is what a real one does when it ends; it removes the partial too.
+    await transport.discardInFlightForTesting();
     if (dest.existsSync()) dest.deleteSync(recursive: true);
   });
 

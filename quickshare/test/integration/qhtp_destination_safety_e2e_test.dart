@@ -21,6 +21,7 @@ import 'package:path/path.dart' as p;
 
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/security/path_sanitizer.dart';
+import 'package:quickshare/core/storage/safe_path.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/features/receiver/domain/entities/qhtp_receive_result.dart';
 
@@ -39,7 +40,22 @@ void main() {
   final z = _bytes(90 * 1024, 12);
 
   setUp(() async => h = await QhtpHarness.create());
-  tearDown(() => h.dispose());
+  tearDown(() {
+    SafePath.debugRace = null;
+    return h.dispose();
+  });
+
+  // Swapping a folder for a link while the receiver has a file open inside it
+  // is something only POSIX allows: Windows refuses to move a folder that has
+  // an open file in it, to anyone, so there the swap cannot happen at that
+  // moment. It can happen once the file is closed — before it is verified, and
+  // before it is moved into place — and the tests for those moments run
+  // everywhere.
+  final Object whileOpen = Platform.isWindows
+      ? 'Windows will not move a folder that has an open file in it, so this '
+          'swap cannot happen there while the partial is open; the swaps '
+          'that can, once it is closed, are the tests next to this one'
+      : false;
 
   Future<Either<Failure, QhtpReceiveResult>> receive({
     RequestHook? onRequest,
@@ -64,13 +80,28 @@ void main() {
   });
 
   group('names near the filesystem limit', () {
-    test('a 250-byte name still lands: its .qs.partial has to fit too',
+    // What the limit is depends on the system. POSIX allows a name of 255
+    // bytes, and the partial beside it is 11 more. Windows allows 259
+    // characters for the whole path, `.qs.partial` included, so a name of 250
+    // bytes can never land there at all — it is refused (see below) — and the
+    // longest name that can depends on how deep the destination is. Either
+    // way: the longest name there is, with room kept for [spare] more
+    // characters (the " (1)" of a numbered name).
+    String longest(String letter, {int spare = 0}) {
+      if (!SafePath.enforcesPathLength) return '${letter * 246}.bin';
+      const partial = '.qs.partial';
+      final room = SafePath.windowsMaxPath - 1 - (top().length + 1) -
+          partial.length - spare;
+      return '${letter * (room - 4)}.bin';
+    }
+
+    test('the longest name still lands: its .qs.partial has to fit too',
         () async {
-      // The final name is within the 255-byte limit; the partial beside it is
-      // 11 bytes longer. A receiver that sanitised to exactly 255 failed such
-      // a transfer after three retries, with "File name too long".
-      final name = '${'n' * 246}.bin';
-      expect(name.length, 250);
+      // The final name is within the limit; the partial beside it is 11 bytes
+      // longer. A receiver that sanitised to exactly 255 failed such a
+      // transfer after three retries, with "File name too long".
+      final name = longest('n');
+      if (!SafePath.enforcesPathLength) expect(name.length, 250);
       await h.serve({name: a});
 
       expectReceived(await receive());
@@ -87,7 +118,7 @@ void main() {
 
     test('and the numbered name beside an existing one fits as well',
         () async {
-      final name = '${'m' * 246}.bin';
+      final name = longest('m', spare: ' (1)'.length);
       await h.serve({name: a});
       Directory(top()).createSync(recursive: true);
       final existing = PathSanitizer.sanitizeSegment(name);
@@ -103,6 +134,55 @@ void main() {
           .toList();
       expect(others, hasLength(1));
       expect(others.single.readAsBytesSync(), a);
+    });
+
+    group('on Windows, where the limit is on the whole path', () {
+      // Run as Windows on every system: the rule is the receiver's, whatever
+      // the disk underneath would have accepted.
+      setUp(() => SafePath.debugOperatingSystem = 'windows');
+      tearDown(() => SafePath.debugOperatingSystem = null);
+
+      test('a name too long for the path is refused before a byte is written, '
+          'saying why — and nothing else of the session is half-received',
+          () async {
+        final tooLong = '${'n' * 246}.bin';
+        await h.serve({tooLong: a, 'short.bin': z});
+
+        final failure = expectRefused(await receive());
+
+        expect(failure.code, FailureCode.pathTooLong);
+        expect(failure.message, contains('too long'));
+        expect(failure.message, contains('${SafePath.windowsMaxPath}'),
+            reason: 'the limit is named, so the person knows what to change');
+        expect(h.target.listSync(recursive: true), isEmpty,
+            reason: 'the short file beside it is not received half a session '
+                'at a time, and no folder or partial is left behind');
+        expect(h.requests.where((r) => r.isFile), isEmpty,
+            reason: 'refused before the first byte was asked for');
+      });
+
+      test('a name that fits on its own but not once numbered is refused '
+          'clearly, and what is there is left alone', () async {
+        // Fits exactly — and the " (1)" a taken name gets does not.
+        final name = longest('k');
+        await h.serve({name: a});
+        Directory(top()).createSync(recursive: true);
+        final existing = PathSanitizer.sanitizeSegment(name);
+        File(p.join(top(), existing)).writeAsStringSync('mine');
+
+        final failure = expectRefused(await receive());
+
+        expect(failure.code, FailureCode.pathTooLong);
+        expect(failure.message, contains('too long'));
+        expect(File(p.join(top(), existing)).readAsStringSync(), 'mine');
+        expect(
+            Directory(top())
+                .listSync()
+                .map((e) => p.basename(e.path))
+                .where((n) => n != existing),
+            isEmpty,
+            reason: 'no partial or half-named file was left behind');
+      });
     });
   });
 
@@ -197,6 +277,30 @@ void main() {
       expect(QhtpHarness.snapshot(h.outside), before,
           reason: 'the rename must not have gone through the new link');
       expect(File(h.received('sub/z.bin')).existsSync(), isFalse);
+    }, skip: whileOpen);
+
+    test('a folder swapped for a link once the partial is closed is caught '
+        'at commit', () async {
+      await h.serve({'sub/z.bin': z});
+      final before = QhtpHarness.snapshot(h.outside);
+      var swapped = false;
+      SafePath.debugRace = (stage, path) {
+        // The partial is whole and closed, and about to be checked and moved:
+        // the one moment a folder holding it can be moved on every system.
+        if (stage != 'seal' || swapped) return;
+        final sub = p.join(top(), 'sub');
+        Directory(sub).renameSync(p.join(top(), 'sub_moved'));
+        Link(sub).createSync(h.outside.path);
+        swapped = true;
+      };
+
+      final failure = expectRefused(await receive());
+
+      expect(swapped, isTrue, reason: 'the moment was never reached');
+      expect(failure.code, FailureCode.unsafeDestination);
+      expect(QhtpHarness.snapshot(h.outside), before,
+          reason: 'the rename must not have gone through the new link');
+      expect(File(h.received('sub/z.bin')).existsSync(), isFalse);
     });
   });
 
@@ -223,6 +327,36 @@ void main() {
     expect(QhtpHarness.snapshot(h.outside), before,
         reason: 'verification must not delete the outside partial on a '
             'size mismatch');
+    expect(victim.readAsStringSync(), 'precious bytes of a different size');
+    expect(File(h.received('sub/z.bin')).existsSync(), isFalse);
+  }, skip: whileOpen);
+
+  test('a parent swapped after the partial is closed cannot get an outside '
+      'partial deleted by the verification that follows', () async {
+    // With no digest in the manifest the receiver asks the sender for each
+    // one, after the partial is closed and the folders above it were last
+    // looked at — a network round trip long. Swapping then leaves the receiver
+    // holding a path that leads outside; reading its length and deleting it on
+    // a mismatch would have been done to somebody else's file.
+    await h.serve({'sub/z.bin': z}, checksums: false);
+    final victim = File(p.join(h.outside.path, 'z.bin.qs.partial'))
+      ..writeAsStringSync('precious bytes of a different size');
+    final before = QhtpHarness.snapshot(h.outside);
+    var swapped = false;
+
+    final failure = expectRefused(await receive(onRequest: (r) {
+      if (!r.isDigest || swapped) return;
+      final sub = p.join(top(), 'sub');
+      Directory(sub).renameSync(p.join(top(), 'sub_moved'));
+      Link(sub).createSync(h.outside.path);
+      swapped = true;
+    }));
+
+    expect(swapped, isTrue, reason: 'the digest was never asked for');
+    expect(failure.code, FailureCode.unsafeDestination);
+    expect(QhtpHarness.snapshot(h.outside), before,
+        reason: 'verification reached through the link and deleted a file '
+            'that was never the receiver\'s');
     expect(victim.readAsStringSync(), 'precious bytes of a different size');
     expect(File(h.received('sub/z.bin')).existsSync(), isFalse);
   });

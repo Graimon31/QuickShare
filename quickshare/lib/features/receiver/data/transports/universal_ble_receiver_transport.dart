@@ -670,6 +670,13 @@ class UniversalBleReceiverTransport {
     int fileReceivedBytes = 0,
     int fileTotalBytes = 0,
   }) {
+    // The handle being replaced is let go, not forgotten: an open one keeps
+    // its partial from being deleted on Windows.
+    if (!identical(_raf, raf)) {
+      try {
+        _raf?.closeSync();
+      } catch (_) {}
+    }
     _raf = raf;
     _partialPath = partialPath;
     _targetPath = targetPath;

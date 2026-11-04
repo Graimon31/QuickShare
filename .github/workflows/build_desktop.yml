@@ -213,10 +213,11 @@ jobs:
   # free-space call, junctions and symbolic links, NTFS rename semantics,
   # MAX_PATH, reserved device names, a genuinely full volume (a small VHD, which
   # diskpart can mount because this runner is an administrator) and a QHTP
-  # transfer with resume on NTFS. The first step is required; the second is a
-  # first look at how the whole suite behaves on Windows and does not gate
-  # anything. `release` deliberately does not wait for this job: a red run here
-  # is a finding to read, not a reason to hold a tagged build.
+  # transfer with resume on NTFS. Both steps are required: the second runs the
+  # whole suite on Windows, and a test that fails there fails the job. What the
+  # job does not do is hold a release back: `release` deliberately does not
+  # wait for it, so a red run here is a finding to fix, not a reason to hold a
+  # tagged build.
   test_windows_native:
     runs-on: windows-latest
     defaults:
@@ -242,8 +243,7 @@ jobs:
       - name: Windows native tests
         run: flutter test --no-pub test/platform/windows_native_test.dart --reporter=expanded
 
-      - name: Full test suite on Windows (first look, does not gate)
-        continue-on-error: true
+      - name: Full test suite on Windows
         run: flutter test --no-pub
 
   # Android answers to the same tag the desktop builds do: its APKs were

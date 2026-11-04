@@ -247,21 +247,100 @@ void main() {
       });
     }
 
-    test('a link put where the partial is about to be created does not make '
-        'its target', () {
-      final ghost = File(p.join(outside.path, 'ghost.txt'));
-      SafePath.debugRace = (stage, path) {
-        if (stage == 'create') Link(path).createSync(ghost.path);
-      };
+    // The two ways a new file is made. POSIX has one call that refuses
+    // anything at the name; Windows' equivalent follows a link standing there
+    // and creates its target, so on Windows (and, through the hook, here) the
+    // file is made under a name nobody can have prepared and moved into place.
+    for (final viaScratch in [false, true]) {
+      group('a new file is made ${viaScratch ? 'under a scratch name' : 'in one call'}',
+          () {
+        setUp(() => SafePath.debugCreateViaScratch = viaScratch);
+        tearDown(() => SafePath.debugCreateViaScratch = false);
 
-      expect(
-          () => SafePath.openPartial(base.path, partialIn(base),
-              truncate: true),
-          throwsA(isA<UnsafePathException>()));
-      expect(ghost.existsSync(), isFalse,
-          reason: 'creation is exclusive: a link there, even a dangling one, '
-              'is a refusal and not a file to be made through');
-    });
+        test('a link put where the partial is about to be created does not '
+            'make its target', () {
+          final ghost = File(p.join(outside.path, 'ghost.txt'));
+          SafePath.debugRace = (stage, path) {
+            if (stage == 'create') Link(path).createSync(ghost.path);
+          };
+
+          expect(
+              () => SafePath.openPartial(base.path, partialIn(base),
+                  truncate: true),
+              throwsA(isA<UnsafePathException>()));
+          expect(ghost.existsSync(), isFalse,
+              reason: 'creation is exclusive: a link there, even a dangling '
+                  'one, is a refusal and not a file to be made through');
+          expect(Directory(base.path).listSync(followLinks: false)
+              .whereType<File>(), isEmpty,
+              reason: 'and the scratch file is not left behind');
+        });
+
+        test('a link to a file that exists is a refusal as well, and the file '
+            'is untouched', () {
+          final victim = File(p.join(outside.path, 'victim.txt'))
+            ..writeAsStringSync('precious');
+          SafePath.debugRace = (stage, path) {
+            if (stage == 'create') Link(path).createSync(victim.path);
+          };
+
+          expect(
+              () => SafePath.openPartial(base.path, partialIn(base),
+                  truncate: true),
+              throwsA(isA<UnsafePathException>()));
+          expect(victim.readAsStringSync(), 'precious');
+        });
+
+        test('a file that turns up at the name first is not replaced', () {
+          SafePath.debugRace = (stage, path) {
+            if (stage == 'create') File(path).writeAsStringSync('theirs');
+          };
+
+          expect(
+              () => SafePath.openPartial(base.path, partialIn(base),
+                  truncate: true),
+              throwsA(isA<UnsafePathException>()));
+          expect(File(partialIn(base)).readAsStringSync(), 'theirs');
+        });
+
+        test('createExclusive refuses a dangling link that is already there',
+            () {
+          // No race to time: the link is simply at the name. What Windows'
+          // own create call does with it is what this exists to avoid.
+          final ghost = File(p.join(outside.path, 'ghost.txt'));
+          final name = p.join(base.path, 'taken');
+          Link(name).createSync(ghost.path);
+
+          expect(() => SafePath.createExclusive(name),
+              throwsA(isA<PathTakenException>()));
+          expect(ghost.existsSync(), isFalse);
+          expect(FileSystemEntity.isLinkSync(name), isTrue,
+              reason: 'the link is left as it was');
+        });
+
+        test('createExclusive makes an empty file where there is nothing', () {
+          final name = p.join(base.path, 'fresh.bin');
+
+          SafePath.createExclusive(name);
+
+          expect(File(name).existsSync(), isTrue);
+          expect(File(name).lengthSync(), 0);
+          expect(base.listSync().map((e) => p.basename(e.path)), ['fresh.bin'],
+              reason: 'no scratch file is left beside it');
+        });
+
+        test('createExclusive refuses a name that is a file or a folder', () {
+          File(p.join(base.path, 'file')).writeAsStringSync('mine');
+          Directory(p.join(base.path, 'folder')).createSync();
+
+          expect(() => SafePath.createExclusive(p.join(base.path, 'file')),
+              throwsA(isA<PathTakenException>()));
+          expect(() => SafePath.createExclusive(p.join(base.path, 'folder')),
+              throwsA(isA<PathTakenException>()));
+          expect(File(p.join(base.path, 'file')).readAsStringSync(), 'mine');
+        });
+      });
+    }
 
     test('a folder swapped for a link just before the partial is opened is '
         'refused', () {
@@ -620,6 +699,37 @@ void main() {
 
       await expectLater(f.commit(), throwsA(isA<UnsafePathException>()));
 
+      expect(File(p.join(moved, 'a.bin')).existsSync(), isFalse,
+          reason: 'the commit followed the link and named the file outside');
+    },
+        // Windows refuses to move a folder that has an open file in it, to
+        // anyone, so there this swap cannot happen while the partial is open.
+        // The swap at the moment it can — once the file is closed — is the
+        // next test, and runs everywhere.
+        skip: Platform.isWindows
+            ? 'Windows will not move a folder that has an open file in it'
+            : false);
+
+    test('DurableFile commit refuses a folder that was moved away and '
+        'linked back once the file is closed', () async {
+      final f = DurableFile(p.join(base.path, 'sub', 'a.bin'), base: base.path);
+      await f.open();
+      await f.add(Uint8List.fromList([1, 2, 3]));
+      final moved = p.join(outside.path, 'moved');
+      var swapped = false;
+      // `commit` has closed the file and is about to look at the folders and
+      // move it: the first moment any system lets the folder be moved.
+      SafePath.debugRace = (stage, path) {
+        if (stage != 'seal' || swapped) return;
+        Directory(p.join(base.path, 'sub')).renameSync(moved);
+        Link(p.join(base.path, 'sub')).createSync(moved);
+        swapped = true;
+      };
+      addTearDown(() => SafePath.debugRace = null);
+
+      await expectLater(f.commit(), throwsA(isA<UnsafePathException>()));
+
+      expect(swapped, isTrue, reason: 'the moment was never reached');
       expect(File(p.join(moved, 'a.bin')).existsSync(), isFalse,
           reason: 'the commit followed the link and named the file outside');
     });

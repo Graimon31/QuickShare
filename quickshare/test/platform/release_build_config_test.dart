@@ -253,6 +253,34 @@ Problems checkReleasePublishesLinux(Json wf) {
   ];
 }
 
+/// The job that runs the whole test suite on Windows.
+const windowsTestJob = 'test_windows_native';
+
+/// The Windows suite is a required check, not a first look: a test that fails
+/// there fails the job, and nothing in the job — or the job itself — is set to
+/// carry on past a failure. The job stays out of the release's `needs`, so a
+/// red run is something to fix rather than a reason to hold a tagged build.
+Problems checkWindowsTestsGate(Json wf) {
+  if (!_hasJob(wf, windowsTestJob)) return ['job $windowsTestJob does not exist'];
+  final job = _job(wf, windowsTestJob);
+  return [
+    if (!_runLines(job).any((l) => RegExp(r'^flutter test --no-pub$').hasMatch(l)))
+      '$windowsTestJob never runs the whole suite (`flutter test --no-pub`)',
+    // Anywhere in the job: on the job, on a step, in a matrix. A failure that
+    // is allowed is a failure that does not gate.
+    for (final s in _allStrings(job))
+      if (s.key.contains('continue-on-error') ||
+          s.key.contains('continueOnError'))
+        '$windowsTestJob lets a failure through at ${s.key}',
+    for (final step in _steps(job))
+      if ('${step['name']}'.contains('does not gate'))
+        'a step of $windowsTestJob is named "${step['name']}"',
+    if (_hasJob(wf, 'release') &&
+        _needs(_job(wf, 'release')).contains(windowsTestJob))
+      'release waits for $windowsTestJob',
+  ];
+}
+
 /// The app no longer reads this define (the Worker takes no client secret), so
 /// a workflow passing it is shipping a dead one — and implying a secret that
 /// protects nothing.
@@ -273,6 +301,7 @@ final Map<String, Problems Function(Json)> desktopChecks = {
   'release downloads Linux': checkReleaseDownloadsLinux,
   'release publishes Linux': checkReleasePublishesLinux,
   'no TURN secret': checkNoTurnSecret,
+  'Windows tests gate their job': checkWindowsTestsGate,
   'every build is a release': checkEveryBuildIsRelease,
   for (final platform in platforms) ...{
     '${platform.name} builds release': (wf) => checkBuildsRelease(wf, platform),
@@ -630,11 +659,19 @@ void main() {
     fail('could not find $relative from ${Directory.current.path}');
   }
 
+  /// The file's text with its line endings as the repository stores them.
+  ///
+  /// A checkout on Windows turns every `\n` into `\r\n` (git's autocrlf), and
+  /// the mutations below replace exact multi-line phrases. With `\r\n` in the
+  /// text none of them is found, so each fails at its own premise and the
+  /// check it was meant to exercise is never run.
+  String textOf(File file) => file.readAsStringSync().replaceAll('\r\n', '\n');
+
   Json workflow(String name) =>
-      parseWorkflow(repoFile('.github/workflows/$name').readAsStringSync());
+      parseWorkflow(textOf(repoFile('.github/workflows/$name')));
 
   group('DD-07 — Android release signing', () {
-    final gradle = File('android/app/build.gradle').readAsStringSync();
+    final gradle = textOf(File('android/app/build.gradle'));
 
     test('an unsigned release fails the build', () {
       expect(gradle, contains('throw new GradleException'));
@@ -740,7 +777,7 @@ void main() {
       expect(workflows, hasLength(greaterThan(1)),
           reason: 'expected every workflow in the directory, not just one');
       for (final f in workflows) {
-        expect(checkNoTurnSecret(parseWorkflow(f.readAsStringSync())), isEmpty,
+        expect(checkNoTurnSecret(parseWorkflow(textOf(f))), isEmpty,
             reason: f.path);
       }
     });
@@ -830,6 +867,26 @@ void main() {
           step['env'] = {'QUICKSHARE_TURN_SECRET': r'${{ secrets.TURN }}'};
         },
         caughtBy: ['no TURN secret'],
+      ),
+      'the Windows suite allowed to fail again': (
+        apply: (wf) {
+          _steps(_job(wf, windowsTestJob)).last['continue-on-error'] = true;
+        },
+        caughtBy: ['Windows tests gate their job'],
+      ),
+      'the Windows job allowed to fail as a whole': (
+        apply: (wf) => _job(wf, windowsTestJob)['continue-on-error'] = true,
+        caughtBy: ['Windows tests gate their job'],
+      ),
+      'the Windows suite step dropped': (
+        apply: (wf) => _list(_job(wf, windowsTestJob)['steps']).removeWhere(
+            (s) => s is Map && '${s['run']}'.trim() == 'flutter test --no-pub'),
+        caughtBy: ['Windows tests gate their job'],
+      ),
+      'the release made to wait for the Windows tests': (
+        apply: (wf) =>
+            (_job(wf, 'release')['needs'] as List).add(windowsTestJob),
+        caughtBy: ['Windows tests gate their job'],
       ),
     };
 

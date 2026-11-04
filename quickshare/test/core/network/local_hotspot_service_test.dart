@@ -136,10 +136,20 @@ void main() {
       );
     });
 
-    test('stopHosting stays quiet when the platform cannot host', () async {
-      await LocalHotspotService(channel: channel).stopHosting();
+    test('stopHosting asks the platform to stop only where it can host',
+        () async {
+      final service = LocalHotspotService(channel: channel);
+
+      await service.stopHosting();
+
+      // Where hosting is not possible there is nothing to stop, and the
+      // native side is not bothered (iOS, macOS). Linux hosts through
+      // NetworkManager, not the channel. Everywhere else — Android and
+      // Windows — it is one call. What counts is what the service itself
+      // says it can do, not a list of systems kept here.
+      final throughChannel = service.canHost && !Platform.isLinux;
       expect(calls.where((c) => c.method == 'stopHotspot').length,
-          equals(Platform.isAndroid ? 1 : 0));
+          equals(throughChannel ? 1 : 0));
     });
 
     test('leaveNetwork invokes native leaveHotspot (except Linux)', () async {

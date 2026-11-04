@@ -38,7 +38,7 @@ void main() {
       final res =
           client.materializePath('photos/2024/vacation.jpg', tempBaseDir.path);
       expect(p.isWithin(tempBaseDir.path, res), isTrue);
-      expect(res.endsWith('photos/2024/vacation.jpg'), isTrue);
+      expect(res.endsWith(p.join('photos', '2024', 'vacation.jpg')), isTrue);
     });
 
     test('materializePath strips path traversal dot segments', () {

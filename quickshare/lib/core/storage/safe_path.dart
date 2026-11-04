@@ -114,7 +114,11 @@ class SafePath {
   ///  * `open` — it exists and is about to be opened;
   ///  * `place` — the media saver chose a free name and is about to move onto
   ///    it;
-  ///  * `commit` — the repository's copy is done and is about to take its name.
+  ///  * `commit` — the repository's copy is done and is about to take its name;
+  ///  * `seal` — a received file is whole and closed, and [commitFile] is about
+  ///    to look at the folders above it and move it into place. The one moment
+  ///    a folder holding the file can be swapped on every system: Windows
+  ///    refuses to move a folder that has an open file in it.
   ///
   /// A race cannot be timed from outside, so a test does here what the racing
   /// process would have done. Nothing else ever sets this.
@@ -287,14 +291,23 @@ class SafePath {
   /// [os] is for tests; it defaults to the platform this runs on, and every
   /// platform but Windows has no such limit worth enforcing here.
   static void assertPathLength(String path, {String? os}) {
-    if ((os ?? Platform.operatingSystem) != 'windows') return;
+    if ((os ?? _operatingSystem) != 'windows') return;
     if (path.length >= windowsMaxPath) {
       throw PathTooLongException(path, windowsMaxPath);
     }
   }
 
   /// Whether [assertPathLength] has anything to enforce on this platform.
-  static bool get enforcesPathLength => Platform.isWindows;
+  static bool get enforcesPathLength => _operatingSystem == 'windows';
+
+  /// Test hook: the system the path-length rule goes by, so what a receiver
+  /// does with a path Windows would not open can be tested on a machine that
+  /// is not one. Null in production.
+  @visibleForTesting
+  static String? debugOperatingSystem;
+
+  static String get _operatingSystem =>
+      debugOperatingSystem ?? Platform.operatingSystem;
 
   // --- creating --------------------------------------------------------------
 
@@ -329,6 +342,75 @@ class SafePath {
             target, '"${p.relative(current, from: canonical)}" is not a folder');
       }
     }
+  }
+
+  /// Test hook: make new files the way Windows needs them made (see
+  /// [createExclusive]) on any system, so the logic that only Windows runs is
+  /// run by a machine that is not one.
+  @visibleForTesting
+  static bool debugCreateViaScratch = false;
+
+  /// Makes a new, empty file at [path], and refuses — never follows — whatever
+  /// is already at that name: a file, a folder, or a link, even one pointing at
+  /// nothing. Throws [PathTakenException] for those.
+  ///
+  /// On POSIX that is one call: `open(O_CREAT | O_EXCL)` fails with EEXIST for
+  /// a link at the name, a dangling one included. Windows' `CreateFile` with
+  /// `CREATE_NEW` does not: it follows a link standing at the name and, when
+  /// the link leads nowhere, creates what it leads to — an empty file outside
+  /// the destination — and reports success. Dart cannot ask for the link
+  /// itself to be opened (there is no `FILE_FLAG_OPEN_REPARSE_POINT`), and
+  /// looking first leaves the gap this exists to close.
+  ///
+  /// So there the file is made under a name nobody can have prepared (ten
+  /// random hex digits, in the folder that was just checked) and then moved to
+  /// [path] by [renameNoClobber], which looks at the name without following
+  /// links and refuses anything there. A link that turns up in the instant
+  /// between that look and the move is replaced by the move, not written
+  /// through: a rename acts on the name, not on what the name leads to.
+  static void createExclusive(String path) {
+    if (!(Platform.isWindows || debugCreateViaScratch)) {
+      try {
+        File(path).createSync(exclusive: true);
+      } on FileSystemException {
+        if (exists(path)) throw PathTakenException(path);
+        rethrow;
+      }
+      return;
+    }
+
+    final scratch = p.join(p.dirname(path), '${_randomHex(10)}.qs.partial');
+    assertPathLength(scratch);
+    final made = File(scratch)..createSync(exclusive: true);
+    try {
+      for (var attempt = 1;; attempt++) {
+        try {
+          renameNoClobber(scratch, path);
+          return;
+        } on PathTakenException {
+          rethrow;
+        } on FileSystemException {
+          // A scanner or indexer looking at a file the instant it appeared
+          // refuses the move for a moment; anything still refusing after a
+          // few tries is a refusal.
+          if (attempt == 4) rethrow;
+          sleep(Duration(milliseconds: 25 * attempt));
+        }
+      }
+    } catch (_) {
+      try {
+        made.deleteSync();
+      } on FileSystemException {
+        // The next sweep clears it: it carries the partial suffix.
+      }
+      rethrow;
+    }
+  }
+
+  static String _randomHex(int digits) {
+    final random = Random.secure();
+    return List.generate(digits, (_) => random.nextInt(16).toRadixString(16))
+        .join();
   }
 
   /// A scratch file proving [dir] can be written to, made the way a received
@@ -397,7 +479,10 @@ class SafePath {
     if (type == FileSystemEntityType.notFound) {
       raceWindow('create', partialPath);
       try {
-        File(partialPath).createSync(exclusive: true);
+        createExclusive(partialPath);
+      } on PathTakenException {
+        throw UnsafePathException(
+            partialPath, 'it appeared while it was being created');
       } on FileSystemException {
         throw UnsafePathException(
             partialPath, 'it appeared while it was being created');
@@ -450,6 +535,7 @@ class SafePath {
   /// an old call site); the link and no-replace guarantees on the file itself
   /// still hold.
   static String commitFile(String? base, String partialPath, String finalPath) {
+    raceWindow('seal', partialPath);
     assertPathLength(finalPath);
     if (base != null) {
       assertNoLinksBelow(base, finalPath);

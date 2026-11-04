@@ -7,6 +7,10 @@ import 'package:quickshare/core/storage/media_saver.dart';
 import 'package:quickshare/core/storage/safe_path.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 
+/// Root writes wherever it likes, so a folder's mode bits stop nothing it does.
+final bool _isRoot =
+    !Platform.isWindows && Process.runSync('id', ['-u']).stdout.toString().trim() == '0';
+
 void main() {
   late Directory workspace;
   late Directory cacheDir;
@@ -82,9 +86,34 @@ void main() {
       // written anywhere must still exist to be offered again.
       final item = cached('report.pdf', 'application/pdf');
 
-      // A directory nothing may be written into: the rename fails, the copy
-      // that follows it fails too, and neither is allowed to have consumed
-      // the source on the way.
+      // The destination is chosen, exists, and is replaced by a file of the
+      // same name just before the item is moved into it: nothing can be placed
+      // under a file, so the rename fails, the copy that follows it fails too,
+      // and neither is allowed to have consumed the source on the way. (Made
+      // this way and not by taking permissions away: a read-only folder only
+      // refuses writes where the system honours `chmod`, and NTFS does not.)
+      final target = Directory(p.join(workspace.path, 'vanishing'))
+        ..createSync();
+      SafePath.debugRace = (stage, path) {
+        if (stage != 'place' || !p.isWithin(target.path, path)) return;
+        target.deleteSync(recursive: true);
+        File(target.path).writeAsStringSync('not a folder');
+      };
+      addTearDown(() => SafePath.debugRace = null);
+
+      final saver = MediaSaver(downloadsHook: () async => target);
+
+      await expectLater(
+          saver.saveToDownloads(item), throwsA(isA<SaveFailed>()));
+      expect(File(item.cachePath).existsSync(), isTrue);
+      expect(File(item.cachePath).readAsStringSync(), 'payload');
+      expect(FileSystemEntity.isFileSync(target.path), isTrue,
+          reason: 'and nothing was made where the folder had been');
+    });
+
+    test('a save into a folder the system will not let it write to leaves the '
+        'cache copy untouched', () async {
+      final item = cached('report.pdf', 'application/pdf');
       final locked = Directory(p.join(workspace.path, 'locked'))..createSync();
       await Process.run('chmod', ['500', locked.path]);
       addTearDown(() => Process.run('chmod', ['700', locked.path]));
@@ -94,7 +123,13 @@ void main() {
       await expectLater(
           saver.saveToDownloads(item), throwsA(isA<SaveFailed>()));
       expect(File(item.cachePath).existsSync(), isTrue);
-    });
+    },
+        // Needs `chmod` to keep writes out, and a user who is not root: NTFS
+        // ignores it, and root ignores it everywhere. The test above makes the
+        // same failure without either.
+        skip: Platform.isWindows || _isRoot
+            ? 'this system does not stop a write on a folder\'s mode bits'
+            : false);
 
     test('a folder is moved whole, structure intact', () async {
       final tree = Directory(p.join(cacheDir.path, 'trip'))..createSync();

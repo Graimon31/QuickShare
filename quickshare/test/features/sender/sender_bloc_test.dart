@@ -493,7 +493,18 @@ void main() {
             .thenAnswer((_) async => const Right('qr-payload'));
         when(() => mockRepository.lastQhtpClientAddress)
             .thenReturn(InternetAddress('192.168.1.77'));
-        return SenderBloc(repository: mockRepository, diagnostics: diagnostics);
+        // Cancelling lets go of whatever network the send used. Where the
+        // platform can host a hotspot (Android, Windows, Linux) the real
+        // service asks the native side to stop it, and a test has no native
+        // side: the call would come back as a missing plugin, long after the
+        // test, as an error of its own. The record is what is under test.
+        final hotspot = _MockLocalHotspotService();
+        when(() => hotspot.stopHosting()).thenAnswer((_) async {});
+        when(() => hotspot.leaveNetwork()).thenAnswer((_) async {});
+        return SenderBloc(
+            repository: mockRepository,
+            diagnostics: diagnostics,
+            hotspotService: hotspot);
       },
       act: (bloc) async {
         bloc.add(

@@ -13,7 +13,6 @@
 // the real ones.
 import 'dart:io';
 
-import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -31,6 +30,8 @@ import 'package:quickshare/features/receiver/domain/usecases/download_file_useca
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
+
+import '../../../../support/scratch_path_provider.dart';
 
 class _MockDownload extends Mock implements DownloadFileUseCase {}
 
@@ -84,12 +85,10 @@ void main() {
   setUp(() {
     // path_provider has no platform side under `flutter test`; the receiver
     // asks for a destination folder before it ever reaches the transport.
+    // The platform object is replaced rather than its channel mocked: the
+    // channel one throws on Windows and Linux before it looks at a mock.
     sandbox = Directory.systemTemp.createTempSync('receiver_ice_failure');
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
-      const MethodChannel('plugins.flutter.io/path_provider'),
-      (call) async => sandbox.path,
-    );
+    answerPathProviderWith(sandbox.path);
 
     transport = _MockTransport();
     when(() => transport.progressStream).thenAnswer((_) => const Stream.empty());
@@ -104,9 +103,6 @@ void main() {
 
   tearDown(() async {
     await bloc.close();
-    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(
-            const MethodChannel('plugins.flutter.io/path_provider'), null);
     sandbox.deleteSync(recursive: true);
   });
 

@@ -319,6 +319,12 @@ class QhtpReceiverClient {
   /// than resuming onto bytes already known to be wrong. Throws to signal the
   /// caller's retry loop.
   ///
+  /// The folders above the partial are looked at again first, inside [base].
+  /// The last look was before the digest was fetched from the sender, a round
+  /// trip ago, and a folder swapped for a link since then would make the
+  /// length read, the read-back and above all the delete below act on a file
+  /// that is somebody else's.
+  ///
   /// [streamedSha256] is the digest computed over the bytes as they were
   /// written, which is the ordinary case and costs nothing: the alternative
   /// is reading the whole file back off the disk a second time, immediately
@@ -332,11 +338,13 @@ class QhtpReceiverClient {
   /// were never in this process's hands. Then, and only then, the file is
   /// read back.
   Future<String?> _verifyPartial({
+    required String base,
     required File partial,
     required QhtpItem item,
     String? expectedSha256,
     String? streamedSha256,
   }) async {
+    SafePath.assertNoLinksBelow(base, partial.path);
     final writtenBytes = await partial.length();
     // Every item has a size, an empty file's being 0: a partial of any other
     // length is not that file, and with no digest the length is all there is.
@@ -955,6 +963,14 @@ class QhtpReceiverClient {
           }
 
           RandomAccessFile? sink;
+          // The write handed to [sink] and not yet finished. Out here so a
+          // failed attempt can wait for it: a handle with an operation pending
+          // does not close — the call returns an error and the handle stays
+          // open — so closing under a running write, which is what an error
+          // thrown from the read loop does, leaked the handle (undeletable on
+          // Windows) and let the write land after the next attempt had already
+          // measured the partial.
+          Future<void>? writeInFlight;
           // Hoisted so a failed attempt can still shut the worker down: an
           // isolate left running per retry is a leak that outlives the
           // transfer.
@@ -1103,7 +1119,6 @@ class QhtpReceiverClient {
               // and the socket both stay busy, and what is held in memory is
               // bounded at two blocks however fast either of them is.
               final pending = BytesBuilder(copy: false);
-              Future<void>? writeInFlight;
 
               Future<void> handOff() async {
                 if (pending.isEmpty) return;
@@ -1241,6 +1256,7 @@ class QhtpReceiverClient {
               );
             }
             final checksumStr = await _verifyPartial(
+              base: resolvedTargetBaseDir,
               partial: partialFile,
               item: item,
               expectedSha256: expectedSha256,
@@ -1252,6 +1268,10 @@ class QhtpReceiverClient {
             // power cut leaves either the whole file under its real name or a
             // `.qs.partial` the next run resumes — never a real name over a
             // half-written body.
+            // Looked at once more: the verification may have taken a while (a
+            // resumed file is read back in full), and opening for append
+            // creates whatever it is pointed at.
+            SafePath.assertNoLinksBelow(resolvedTargetBaseDir, partialPath);
             final fsyncHandle = await partialFile.open(mode: FileMode.append);
             try {
               await fsyncHandle.flush();
@@ -1312,6 +1332,11 @@ class QhtpReceiverClient {
             // handle per retry and — worse — letting buffered bytes land in the
             // file after the next attempt had already measured its length.
             if (sink != null) {
+              // Let a write that is still running finish first (its own error
+              // was already set aside when it was started).
+              try {
+                await writeInFlight;
+              } catch (_) {}
               try {
                 await sink.flush();
               } catch (_) {}
