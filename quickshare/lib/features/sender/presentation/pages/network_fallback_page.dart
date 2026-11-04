@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/core/utils/byte_format.dart';
@@ -16,6 +17,11 @@ class NetworkFallbackPage extends StatelessWidget {
   /// the session is too large for it.
   final int? sessionBytes;
   final int? limitBytes;
+
+  /// Why there was no path, as a `FailureCode` — one of the four
+  /// `noPathRelay…` codes — when the transport knew. Null says only that
+  /// there was none, and then the page does not guess at a cause.
+  final String? noPathCode;
   final VoidCallback? onUseLocalNetwork;
   final VoidCallback? onBack;
 
@@ -28,6 +34,7 @@ class NetworkFallbackPage extends StatelessWidget {
     super.key,
     this.sessionBytes,
     this.limitBytes,
+    this.noPathCode,
     this.onUseLocalNetwork,
     this.onBack,
     this.onCreateNetwork,
@@ -40,9 +47,24 @@ class NetworkFallbackPage extends StatelessWidget {
   String _headline(AppLocalizations l10n) =>
       _isSizeLimited ? l10n.fallbackTooLargeTitle : l10n.fallbackNoRouteTitle;
 
-  String _explanation(AppLocalizations l10n) => _isSizeLimited
-      ? l10n.fallbackTooLargeBody(_humanBytes(sessionBytes!))
-      : l10n.fallbackNoRouteBody;
+  /// Four different things can leave two devices with no path, and the advice
+  /// differs: wait a minute, check the connection, use another build, or look
+  /// at what sits between the devices. The last one — a relay that WAS
+  /// available — must not be blamed on the relay.
+  String _explanation(AppLocalizations l10n) {
+    if (_isSizeLimited) {
+      return l10n.fallbackTooLargeBody(_humanBytes(sessionBytes!));
+    }
+    return switch (noPathCode) {
+      FailureCode.noPathRelayLimited => l10n.fallbackNoRouteBodyRelayLimited,
+      FailureCode.noPathRelayUnreachable =>
+        l10n.fallbackNoRouteBodyRelayUnreachable,
+      FailureCode.noPathRelayOff => l10n.fallbackNoRouteBodyRelayOff,
+      FailureCode.noPathRelayWasAvailable =>
+        l10n.fallbackNoRouteBodyRelayWasAvailable,
+      _ => l10n.fallbackNoRouteBody,
+    };
+  }
 
   @override
   Widget build(BuildContext context) {

@@ -81,10 +81,11 @@ void main() {
           equals(SessionCode.parse('12345 67890')!.publicId));
     });
 
-    test('does not give the code away', () {
-      // It is broadcast to everyone in range, while the code derives the
-      // session token — so anything recoverable here would hand over the
-      // session.
+    test('is not the code or another output verbatim', () {
+      // All this checks is that nothing is copied across. It does not make the
+      // value safe to announce: forty bits of a hash over a 33-bit space can
+      // be searched for the code in seconds, which is why the mDNS record
+      // carries [discoveryHint] and this stays out of every announcement.
       const code = SessionCode('1234567890');
       expect(code.publicId, isNot(contains(code.code)));
       expect(code.publicId, isNot(equals(code.sessionToken)));
@@ -94,6 +95,38 @@ void main() {
     test('different codes get different identifiers', () {
       expect(const SessionCode('1234567890').publicId,
           isNot(equals(const SessionCode('1234567891').publicId)));
+    });
+  });
+
+  group('discoveryHint', () {
+    test('is stable for the same code', () {
+      expect(const SessionCode('1234567890').discoveryHint,
+          equals(SessionCode.parse('12345 67890')!.discoveryHint));
+    });
+
+    test('is one byte, as two lower-case hex digits', () {
+      final random = Random(7);
+      for (var i = 0; i < 500; i++) {
+        final hint = SessionCode.generate(random).discoveryHint;
+        expect(hint, matches(RegExp(r'^[0-9a-f]{2}$')));
+      }
+    });
+
+    test('cannot be searched for the code: about forty million codes share '
+        'every value', () {
+      // Eight bits against a space of ten billion. What matters for the
+      // eavesdropper is that the values spread evenly — a hint that favoured
+      // a few would narrow things further — so over a large sample every one
+      // of the 256 turns up, and none dominates.
+      final random = Random(11);
+      final seen = <String, int>{};
+      const samples = 20000;
+      for (var i = 0; i < samples; i++) {
+        seen.update(SessionCode.generate(random).discoveryHint, (n) => n + 1,
+            ifAbsent: () => 1);
+      }
+      expect(seen.length, equals(256));
+      expect(seen.values.reduce(max), lessThan(samples * 3 ~/ 256));
     });
   });
 

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/di/service_locator.dart';
+import 'package:quickshare/core/platform/device_platform.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/core/theme/app_motion.dart';
@@ -24,7 +25,7 @@ import 'package:quickshare/features/receiver/presentation/pages/download_progres
 import 'package:quickshare/features/receiver/presentation/pages/transfer_preview_page.dart';
 import 'package:quickshare/features/receiver/presentation/pages/complete_page.dart';
 import 'package:quickshare/features/receiver/presentation/pages/code_receive_page.dart';
-import 'package:quickshare/features/receiver/presentation/pages/bluetooth_receive_page.dart';
+import 'package:quickshare/features/receiver/presentation/pages/link_receive_page.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 
@@ -65,9 +66,8 @@ CustomTransitionPage<void> _qsPage(
 /// BLoC providers are scoped to their respective feature routes
 /// using ShellRoute to ensure proper lifecycle management.
 class AppRouter {
-  /// The app's navigator, so something without a screen of its own — an
-  /// invitation arriving from another device — can still put a dialog in front
-  /// of whoever is using it.
+  /// The app's navigator, so something without a screen of its own can still
+  /// put a dialog in front of whoever is using it.
   static final GlobalKey<NavigatorState> navigatorKey =
       GlobalKey<NavigatorState>();
 
@@ -82,20 +82,6 @@ class AppRouter {
           state,
           const HomePage(),
           sharedAxis: false,
-        ),
-      ),
-
-      // Bluetooth receive uses the optional QR token to select the matching
-      // Mac automatically; without it, the page keeps manual discovery.
-      GoRoute(
-        path: '/receive/bluetooth',
-        pageBuilder: (context, state) => _qsPage(
-          state,
-          BluetoothReceivePage(
-            sessionToken: state.uri.queryParameters['token'],
-            publicId: state.uri.queryParameters['cid'],
-          ),
-          sharedAxis: true,
         ),
       ),
 
@@ -134,10 +120,11 @@ class AppRouter {
               GoRoute(
                 path: 'fallback',
                 builder: (context, state) {
-                  final extra = state.extra as Map<String, int?>?;
+                  final extra = state.extra as Map<String, Object?>?;
                   return NetworkFallbackPage(
-                    sessionBytes: extra?['sessionBytes'],
-                    limitBytes: extra?['limitBytes'],
+                    sessionBytes: extra?['sessionBytes'] as int?,
+                    limitBytes: extra?['limitBytes'] as int?,
+                    noPathCode: extra?['noPathCode'] as String?,
                     onBack: () => context.go('/send'),
                     onUseLocalNetwork: () => context.go('/send'),
                     // iOS cannot raise a hotspot from inside an app, so the
@@ -198,32 +185,47 @@ class AppRouter {
         routes: [
           GoRoute(
             path: '/receive',
+            // A computer has no camera worth pointing at a screen; it joins
+            // with the digits and nowhere else, so the scanner is not a place
+            // it can be taken to.
+            redirect: (context, state) =>
+                DevicePlatform.isDesktop ? '/receive/code' : null,
             pageBuilder: (context, state) => _qsPage(
               state,
               const QRScanPage(),
               sharedAxis: false,
             ),
           ),
+          // Ten digits, and nothing else. Not even a query: a share link no
+          // longer lands here (see `/receive/link`).
           GoRoute(
             path: '/receive/code',
+            pageBuilder: (context, state) => _qsPage(
+              state,
+              const CodeReceivePage(),
+              sharedAxis: false,
+            ),
+          ),
+          // Where `directdrop://join?p=…` arrives. Not an interface control —
+          // there is no field for it anywhere — but the one way an internet
+          // transfer reaches a computer, which has no QR to scan and no digits
+          // to type for that path.
+          GoRoute(
+            path: '/receive/link',
+            redirect: (context, state) =>
+                (state.uri.queryParameters['p'] ?? '').isEmpty ? '/' : null,
             pageBuilder: (context, state) {
-              // Only `?p=<payload>` is a real share link now. The `?room=`
-              // form belonged to the room-based WebRTC handshake, which is
-              // gone.
-              final payload = state.uri.queryParameters['p'];
-              String? initial;
-              if (payload != null && payload.isNotEmpty) {
-                initial = DeepLinkService.buildPayloadLink(
-                  payload,
-                  name: state.uri.queryParameters['n'],
-                  bytes: int.tryParse(state.uri.queryParameters['s'] ?? ''),
-                  itemCount:
-                      int.tryParse(state.uri.queryParameters['c'] ?? ''),
-                );
-              }
+              final query = state.uri.queryParameters;
               return _qsPage(
                 state,
-                CodeReceivePage(initialCode: initial),
+                LinkReceivePage(
+                  link: DeepLinkService.buildPayloadLink(
+                    query['p']!,
+                    name: query['n'],
+                    bytes: int.tryParse(query['s'] ?? ''),
+                    itemCount: int.tryParse(query['c'] ?? ''),
+                  ),
+                ),
                 sharedAxis: false,
               );
             },

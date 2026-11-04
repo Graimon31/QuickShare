@@ -30,6 +30,8 @@ import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/features/sender/presentation/pages/qr_display_page.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
+import '../../support/silent_rendezvous.dart';
+
 class MockSenderRepository extends Mock implements SenderRepository {}
 
 void main() {
@@ -73,7 +75,6 @@ void main() {
     id: 'approval-req-1',
     remoteAddress: InternetAddress('192.168.1.77'),
     deviceName: 'Pixel 8',
-    code: '1234567890',
     itemCount: 3,
     totalBytes: 1500000,
   );
@@ -96,7 +97,7 @@ void main() {
         .thenAnswer((_) async => const Right(null));
     when(() => mockRepository.startQhtpTransfer(any(),
             authToken: any(named: 'authToken'),
-            sessionPublicId: any(named: 'sessionPublicId'),
+            sessionCode: any(named: 'sessionCode'),
             onIndexProgress: any(named: 'onIndexProgress'),
             onIndexed: any(named: 'onIndexed'),
             onIndexFailed: any(named: 'onIndexFailed')))
@@ -125,7 +126,10 @@ void main() {
     WidgetTester tester, {
     TransferApprovalRequest? request,
   }) async {
-    bloc = SenderBloc(repository: mockRepository);
+    bloc = SenderBloc(
+      repository: mockRepository,
+      advertiser: SilentRendezvousAdvertiser(),
+    );
     addTearDown(() async {
       // Both QRDisplayPage and the dialog run their own Timer.periodic
       // (session countdown; approval countdown). Nothing else disposes them

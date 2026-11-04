@@ -1,9 +1,9 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/app.dart';
 import 'package:quickshare/core/di/service_locator.dart';
-import 'package:quickshare/core/network/app_presence.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
@@ -13,6 +13,9 @@ import 'package:quickshare/features/receiver/data/store/session_state_store.dart
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // File sharing must remain usable when the internet is unavailable.
+  // All Google Fonts variants used by the UI are bundled as app assets.
+  GoogleFonts.config.allowRuntimeFetching = false;
   await AppLogger.init();
   
   // Initialize dependency injection
@@ -39,7 +42,6 @@ void main() async {
   // limit, and asking them to reproduce it with a debugger attached is not a
   // support process.
   unawaited(_reportWifiCapabilities());
-  unawaited(_reportDiscovery());
 
   runApp(const DirectDropApp());
 }
@@ -93,46 +95,5 @@ Future<void> _reportWifiCapabilities() async {
     }
   } catch (e) {
     AppLogger.warning('Could not report Wi-Fi capabilities: $e', tag: 'WIFI');
-  }
-}
-
-/// Whether this device is discoverable, said once at startup.
-///
-/// The same reasoning as the Wi-Fi line above, and for a failure with the same
-/// shape: not being discoverable looks identical to nobody being nearby, and
-/// the difference is a permission on some platforms and the network on others.
-///
-/// Reports on the app's own presence rather than raising one of its own — two
-/// would announce this device twice and each would list it against itself.
-Future<void> _reportDiscovery() async {
-  try {
-    // Long enough for the responder to publish and for anything already out
-    // there to answer.
-    await Future<void>.delayed(const Duration(seconds: 5));
-    final presence = AppPresence.instance.presence;
-    if (presence == null) {
-      AppLogger.warning('Discovery: no presence was started', tag: 'DISCOVERY');
-      return;
-    }
-    final peers = presence.current;
-    if (peers.isEmpty) {
-      AppLogger.info('Discovery: nothing else on this network yet',
-          tag: 'DISCOVERY');
-      return;
-    }
-    // Named, and with what each is offering. A bare count answers the one
-    // question nobody asks: when a typed code finds nothing, what is wanted
-    // is whether the device holding it was seen at all, and whether it was
-    // seen to be offering anything.
-    final described = peers
-        .map((p) => p.isServing
-            ? '${p.name} offering :${p.port}'
-            : '${p.name} idle')
-        .join(', ');
-    AppLogger.info(
-        'Discovery: ${peers.length} other device(s) visible — $described',
-        tag: 'DISCOVERY');
-  } catch (e) {
-    AppLogger.warning('Discovery probe failed: $e', tag: 'DISCOVERY');
   }
 }

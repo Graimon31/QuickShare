@@ -1,6 +1,29 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/core/webrtc/turn_credential_service.dart';
+
+/// An `RTCConfiguration` map, and what is known about its relay.
+///
+/// [configurationDynamic] used to return the bare map, and a Worker failure
+/// was then a warning in a log and nothing else: by the time ICE failed,
+/// nobody could say whether the relay had been missing from the start. Callers
+/// keep this for the length of the session so they can.
+class IceSetup {
+  const IceSetup(this.configuration, {this.relayUnavailable});
+
+  /// What goes to `createPeerConnection`.
+  final Map<String, dynamic> configuration;
+
+  /// Why [configuration] holds no relay; null when it holds one.
+  final RelayUnavailable? relayUnavailable;
+
+  bool get relayAvailable => relayUnavailable == null;
+}
 
 /// Builds the `iceServers` list both peers hand to WebRTC.
 ///
@@ -28,6 +51,24 @@ class IceServers {
   /// transports is 9. Anything that builds this list has to go through
   /// [_fit] so that cannot happen again.
   static const int maxIceServers = 8;
+
+  /// How long the Worker has to hand over relay credentials before the session
+  /// goes ahead without them.
+  ///
+  /// Two seconds was too tight behind the always-on VPN, where the first
+  /// request pays for a cold TLS handshake through the tunnel; and a session
+  /// that starts without a relay is doomed on that setup anyway, so waiting a
+  /// little longer costs far less than giving up early.
+  static const Duration turnFetchTimeout = Duration(seconds: 5);
+
+  /// `all` normally; `relay` when [forceRelay] — by default
+  /// [AppConstants.forceRelay], honoured in debug mode only — asks for relay
+  /// candidates and nothing else. A direct path is preferable when it exists
+  /// and is free, so `all` is what every real build runs.
+  static String transportPolicy({bool? forceRelay}) {
+    final force = forceRelay ?? (kDebugMode && AppConstants.forceRelay);
+    return force ? 'relay' : 'all';
+  }
 
   /// True when [configuration] includes a TURN URL. Gathering can skip the
   /// long wait for a relay if none was even offered.
@@ -83,8 +124,9 @@ class IceServers {
   /// Same merge [configurationDynamic] uses: static STUN pool plus a
   /// Worker-provided TURN list, de-duplicated and capped at [maxIceServers].
   static Map<String, dynamic> configurationWithTurnServers(
-    List<Map<String, dynamic>> turnServers,
-  ) {
+    List<Map<String, dynamic>> turnServers, {
+    bool? forceRelay,
+  }) {
     final seen = stunUrlsIn(turnServers);
     final stun = <Map<String, dynamic>>[
       for (final stunUrl in AppConstants.stunServers)
@@ -92,7 +134,7 @@ class IceServers {
     ];
     return {
       'iceServers': _fit(stun: stun, turn: turnServers),
-      'iceTransportPolicy': 'all',
+      'iceTransportPolicy': transportPolicy(forceRelay: forceRelay),
     };
   }
 
@@ -139,7 +181,7 @@ class IceServers {
         ),
         // 'all' rather than 'relay': a direct path is still preferable when it
         // exists, and it is free.
-        'iceTransportPolicy': 'all',
+        'iceTransportPolicy': transportPolicy(),
       };
 
   /// Same shape as [configuration], but tries the Worker's `/turn` endpoint
@@ -147,34 +189,69 @@ class IceServers {
   /// the static, build-time [configuration] if that fails or no Worker is
   /// configured at all.
   ///
+  /// The answer says whether the relay made it in, and if not why
+  /// ([IceSetup.relayUnavailable]). Nothing is thrown: a session with STUN
+  /// alone can still connect on an open network, so the setup goes ahead, and
+  /// the reason is kept for the moment it turns out not to have.
+  ///
   /// This does not refresh mid-session — the credentials returned are good
   /// for the Worker's TTL (30 min), and rotating them into a live
   /// `RTCPeerConnection` via `setConfiguration()` before they expire (ТЗ v2.0
-  /// §9) is a separate piece of work, not yet wired in.
-  static Future<Map<String, dynamic>> configurationDynamic({
+  /// §9) is `TurnCredentialRefresher`'s job.
+  ///
+  /// [staticTurnUrls], [staticUsername] and [staticCredential] are the
+  /// build-time relay the fallback is made of, [AppConstants]' own by default.
+  /// They exist so the fallback can be given a relay without rebuilding the
+  /// app: whether a build that has one is told it has none is a question about
+  /// those three values, which are compile-time constants.
+  static Future<IceSetup> configurationDynamic({
     String? workerBaseUrl,
-    String? turnClientSecret,
+    Duration? timeout,
+    TurnCredentialService? service,
+    List<String>? staticTurnUrls,
+    String? staticUsername,
+    String? staticCredential,
   }) async {
     final url = workerBaseUrl ?? AppConstants.workerBaseUrl;
-    if (url.trim().isEmpty) return configuration();
 
     try {
-      final dynamicTurnServers = await TurnCredentialService(
-        baseUrl: url,
-        clientSecret: turnClientSecret ?? AppConstants.turnClientSecret,
-      ).fetchIceServers().timeout(const Duration(seconds: 2));
+      if (url.trim().isEmpty) {
+        throw const RelayUnavailable(RelayUnavailableReason.noWorkerUrl);
+      }
+      final dynamicTurnServers =
+          await (service ?? TurnCredentialService(baseUrl: url))
+              .fetchIceServers()
+              .timeout(timeout ?? turnFetchTimeout);
 
       // The Worker hands back its own STUN entry, which overlaps the static
       // pool — `stun.cloudflare.com` is in both. A duplicate is not harmless
       // here: every extra STUN URL is another query inside the 6-second
       // gathering ceiling that a relay candidate is already competing for.
-      return configurationWithTurnServers(dynamicTurnServers);
+      return IceSetup(configurationWithTurnServers(dynamicTurnServers));
     } catch (e) {
+      final failure = switch (e) {
+        RelayUnavailable() => e,
+        TimeoutException() => RelayUnavailable(RelayUnavailableReason.timeout,
+            detail: 'no answer within '
+                '${(timeout ?? turnFetchTimeout).inMilliseconds} ms'),
+        _ => RelayUnavailable(RelayUnavailableReason.unreachable,
+            detail: '$e'),
+      };
+      final fallback = configuration(
+        turnUrls: staticTurnUrls,
+        username: staticUsername,
+        credential: staticCredential,
+      );
+      // Build-time TURN credentials, if the build was given any, are a relay
+      // too — the Worker failing does not take them away.
+      final stillHasRelay = containsTurn(fallback);
       AppLogger.warning(
-          'Worker TURN credential fetch failed, falling back to static '
-          'config: $e',
+          'Worker TURN credential fetch failed ($failure); falling back to '
+          'the static config, '
+          '${stillHasRelay ? 'which has a relay' : 'STUN only'}',
           tag: 'WEBRTC');
-      return configuration();
+      return IceSetup(fallback,
+          relayUnavailable: stillHasRelay ? null : failure);
     }
   }
 

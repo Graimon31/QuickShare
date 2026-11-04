@@ -26,11 +26,19 @@ class NoRendezvousChannelConfigured implements Exception {
 /// on a channel — so it lives here rather than being spelled out at each call
 /// site, where the two copies had already started to differ in what they
 /// checked before adding the Worker.
-AnswerChannel buildRendezvousChannel() {
+///
+/// [acceptPayload] is the listening side's way of saying what an answer looks
+/// like — the sender can try to open it, the channel cannot — so the Worker's
+/// mailbox, where anyone can leave anything, never reports a payload that is
+/// not the answer as the answer.
+AnswerChannel buildRendezvousChannel({PayloadAcceptor? acceptPayload}) {
   final channels = <AnswerChannel>[
     if (AppConstants.nostrRendezvousEnabled) NostrAnswerChannel(),
     if (AppConstants.workerRendezvousEnabled)
-      WorkerAnswerChannel(baseUrl: AppConstants.workerBaseUrl),
+      WorkerAnswerChannel(
+        baseUrl: AppConstants.workerBaseUrl,
+        acceptPayload: acceptPayload,
+      ),
   ];
 
   if (channels.isEmpty) {

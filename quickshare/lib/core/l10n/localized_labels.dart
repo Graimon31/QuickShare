@@ -1,5 +1,6 @@
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/errors/failures.dart';
+import 'package:quickshare/core/utils/byte_format.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 /// The one place a stored value becomes a sentence a person reads.
@@ -26,6 +27,13 @@ String localizedFailure(
   required String? code,
   required String fallback,
 }) {
+  // The one code that carries numbers: how much was needed and how much there
+  // was. Both go through the same size formatter the rest of the app uses.
+  final space = FailureCode.parseNotEnoughSpace(code);
+  if (space != null) {
+    return l10n.errorNotEnoughSpaceDetail(
+        ByteFormat.size(space.needed), ByteFormat.size(space.available));
+  }
   switch (code) {
     case FailureCode.senderUnreachable:
       return l10n.downloadErrorSenderUnreachable;
@@ -67,6 +75,26 @@ String localizedFailure(
       return l10n.errorSessionWithoutCertificate;
     case FailureCode.cancelledHere:
       return l10n.errorCancelledHere;
+    case FailureCode.offerEnded:
+      return l10n.errorOfferEnded;
+    case FailureCode.noPathRelayLimited:
+      return l10n.errorNoPathRelayLimited;
+    case FailureCode.noPathRelayUnreachable:
+      return l10n.errorNoPathRelayUnreachable;
+    case FailureCode.noPathRelayOff:
+      return l10n.errorNoPathRelayOff;
+    case FailureCode.noPathRelayWasAvailable:
+      return l10n.errorNoPathRelayWasAvailable;
+    case FailureCode.notEnoughSpace:
+      return l10n.errorNotEnoughSpace;
+    case FailureCode.diskFull:
+      return l10n.errorDiskFull;
+    case FailureCode.unsafeDestination:
+      return l10n.errorUnsafeDestination;
+    case FailureCode.pathTooLong:
+      return l10n.errorPathTooLong;
+    case FailureCode.receivedFilesNotIntact:
+      return l10n.errorReceivedFilesNotIntact;
     default:
       return fallback;
   }

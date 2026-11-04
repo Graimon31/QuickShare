@@ -1,11 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quickshare/app.dart';
 import 'package:quickshare/core/di/service_locator.dart';
-import 'package:quickshare/core/network/app_presence.dart';
 
 void main() {
   tearDown(() async {
-    await AppPresence.instance.dispose();
     await sl.reset();
   });
 
@@ -15,8 +15,37 @@ void main() {
     expect(find.byType(DirectDropApp), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 200));
   });
+
+  testWidgets('the running app opens no listening socket of its own at start-up',
+      (WidgetTester tester) async {
+    // The invitation listener used to bind 53317 the moment the app opened,
+    // and with it announced this device to the whole network. If anything in
+    // the app listens there now, the bind below is refused.
+    //
+    // Real sockets, so outside the test's fake clock.
+    Future<ServerSocket?> bind() async => tester.runAsync<ServerSocket?>(() async {
+          try {
+            return await ServerSocket.bind(InternetAddress.anyIPv4, 53317);
+          } on SocketException {
+            return null;
+          }
+        });
+
+    final before = await bind();
+    if (before == null) {
+      markTestSkipped('port 53317 is in use by something else on this machine');
+      return;
+    }
+    await tester.runAsync(before.close);
+
+    await ServiceLocator.init();
+    await tester.pumpWidget(const DirectDropApp());
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 800)));
+    await tester.pump(const Duration(seconds: 1));
+
+    final after = await bind();
+    expect(after, isNotNull, reason: 'the app holds the old invitation port');
+    await tester.runAsync(after!.close);
+  });
 }
-
-
-
-

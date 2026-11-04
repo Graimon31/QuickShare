@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
+import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/core/webrtc/turn_credential_service.dart';
 
 /// Keeps TURN credentials alive for the duration of a peer connection session
@@ -25,10 +26,22 @@ import 'package:quickshare/core/webrtc/turn_credential_service.dart';
 /// // …later, when the session ends:
 /// refresher.cancel();
 /// ```
+///
+/// How it fails follows what the Worker says (see [TurnCredentialService]):
+///
+///  * no Worker URL: it never starts;
+///  * 429 / limiter down: it waits the `Retry-After` the Worker asked for (a
+///    minute if none) and does not count the wait as a failed attempt — being
+///    told to come back later is not the Worker being broken;
+///  * `relay_disabled` / `relay_unconfigured`: terminal, it stops;
+///  * anything else: up to [_maxRetries] attempts a minute apart.
 class TurnCredentialRefresher {
   final RTCPeerConnection peerConnection;
   final String workerBaseUrl;
   final DateTime? expiresAt;
+
+  /// Where credentials come from. The Worker, unless a test supplies one.
+  final Future<TurnCredentials> Function() _fetch;
 
   /// How far ahead of the expiry to start the refresh.
   static const _refreshLeadTime = Duration(minutes: 5);
@@ -39,19 +52,50 @@ class TurnCredentialRefresher {
   /// Maximum number of consecutive fetch failures before giving up.
   static const _maxRetries = 3;
 
+  /// How long to wait after a throttled answer that named no `Retry-After`.
+  static const _defaultThrottleWait = Duration(minutes: 1);
+
+  /// How many throttled answers in a row are waited out before giving up. Not
+  /// the same budget as [_maxRetries]: the Worker asking for time is not the
+  /// Worker failing. Ten waits is about ten minutes, well past any limiter
+  /// window and still finite.
+  static const _maxThrottledWaits = 10;
+
   Timer? _timer;
+  bool _started = false;
   bool _cancelled = false;
+
+  /// Gave up, or was told there is nothing to wait for. Permanent.
+  bool _stopped = false;
+  bool _refreshing = false;
 
   TurnCredentialRefresher({
     required this.peerConnection,
     required this.workerBaseUrl,
     this.expiresAt,
-  });
+    Future<TurnCredentials> Function()? fetch,
+  }) : _fetch = fetch ??
+            (() => TurnCredentialService(baseUrl: workerBaseUrl)
+                .fetchIceServersWithExpiry());
+
+  /// True while a refresh is scheduled or in flight; false before [start],
+  /// after [cancel], and once it has stopped for good.
+  bool get isRunning =>
+      !_cancelled && !_stopped && (_timer != null || _refreshing);
 
   /// Schedules the first refresh. Safe to call multiple times — only the first
-  /// call has any effect.
+  /// call has any effect. Does nothing at all without a Worker URL: there is
+  /// nowhere to refresh from.
   void start() {
-    if (_timer != null || _cancelled) return;
+    if (_started || _cancelled) return;
+    _started = true;
+    if (workerBaseUrl.trim().isEmpty) {
+      AppLogger.info(
+          'TurnCredentialRefresher: no Worker URL, not starting',
+          tag: 'WEBRTC');
+      _stopped = true;
+      return;
+    }
     _scheduleNext(firstCall: true);
   }
 
@@ -87,17 +131,22 @@ class TurnCredentialRefresher {
     _timer = Timer(delay, () => _refresh(retryCount: 0));
   }
 
-  Future<void> _refresh({required int retryCount}) async {
+  Future<void> _refresh({required int retryCount, int throttled = 0}) async {
     if (_cancelled) return;
+    _timer = null;
+    _refreshing = true;
 
     try {
-      final service = TurnCredentialService(baseUrl: workerBaseUrl);
-      final result = await service.fetchIceServersWithExpiry();
+      final result = await _fetch();
+      // Cancelled while the request was out: the connection this was for may
+      // be closed by now, and the answer is of no use to anyone.
+      if (_cancelled) return;
 
       final newConfig =
           IceServers.configurationWithTurnServers(result.servers);
 
       await peerConnection.setConfiguration(newConfig);
+      if (_cancelled) return;
       AppLogger.info(
           'TurnCredentialRefresher: setConfiguration applied, '
           '${result.servers.length} TURN server(s), '
@@ -123,25 +172,74 @@ class TurnCredentialRefresher {
           _timer = Timer(_fallbackInterval, () => _refresh(retryCount: 0));
         }
       }
+    } on RelayUnavailable catch (e) {
+      _onRelayUnavailable(e, retryCount: retryCount, throttled: throttled);
     } catch (e) {
-      AppLogger.warning(
-          'TurnCredentialRefresher: fetch attempt ${retryCount + 1} failed: $e',
-          tag: 'WEBRTC');
+      _retryOrGiveUp(e, retryCount: retryCount, throttled: throttled);
+    } finally {
+      _refreshing = false;
+    }
+  }
 
-      if (retryCount < _maxRetries - 1 && !_cancelled) {
-        const retryDelay = Duration(minutes: 1);
-        AppLogger.info(
-            'TurnCredentialRefresher: retry in ${retryDelay.inSeconds}s',
-            tag: 'WEBRTC');
-        _timer = Timer(
-          retryDelay,
-          () => _refresh(retryCount: retryCount + 1),
-        );
-      } else {
+  void _onRelayUnavailable(RelayUnavailable e,
+      {required int retryCount, required int throttled}) {
+    if (_cancelled) return;
+
+    if (e.reason.isTerminal) {
+      // Switched off, or never configured, will still be so in a minute.
+      AppLogger.warning(
+          'TurnCredentialRefresher: stopping, the relay is not coming back '
+          'this session ($e)',
+          tag: 'WEBRTC');
+      _stopped = true;
+      return;
+    }
+
+    if (e.reason.isThrottle) {
+      if (throttled >= _maxThrottledWaits) {
         AppLogger.warning(
-            'TurnCredentialRefresher: giving up after $_maxRetries attempts',
+            'TurnCredentialRefresher: still throttled after '
+            '$_maxThrottledWaits waits, giving up ($e)',
             tag: 'WEBRTC');
+        _stopped = true;
+        return;
       }
+      final wait = e.retryAfter ?? _defaultThrottleWait;
+      AppLogger.info(
+          'TurnCredentialRefresher: throttled ($e), waiting ${wait.inSeconds}s '
+          'as asked',
+          tag: 'WEBRTC');
+      _timer = Timer(
+        wait,
+        () => _refresh(retryCount: retryCount, throttled: throttled + 1),
+      );
+      return;
+    }
+
+    _retryOrGiveUp(e, retryCount: retryCount, throttled: throttled);
+  }
+
+  void _retryOrGiveUp(Object e,
+      {required int retryCount, required int throttled}) {
+    if (_cancelled) return;
+    AppLogger.warning(
+        'TurnCredentialRefresher: fetch attempt ${retryCount + 1} failed: $e',
+        tag: 'WEBRTC');
+
+    if (retryCount < _maxRetries - 1 && !_cancelled) {
+      const retryDelay = Duration(minutes: 1);
+      AppLogger.info(
+          'TurnCredentialRefresher: retry in ${retryDelay.inSeconds}s',
+          tag: 'WEBRTC');
+      _timer = Timer(
+        retryDelay,
+        () => _refresh(retryCount: retryCount + 1, throttled: throttled),
+      );
+    } else {
+      AppLogger.warning(
+          'TurnCredentialRefresher: giving up after $_maxRetries attempts',
+          tag: 'WEBRTC');
+      _stopped = true;
     }
   }
 }

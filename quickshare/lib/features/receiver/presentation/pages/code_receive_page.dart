@@ -1,6 +1,3 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -10,23 +7,26 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
-import 'package:quickshare/core/constants/app_constants.dart';
-import 'package:quickshare/core/network/app_presence.dart';
-import 'package:quickshare/core/network/device_presence.dart';
-import 'package:quickshare/core/network/lan_discovery.dart';
-import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
-import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
-import 'package:quickshare/shared/models/qr_payload.dart';
-import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
+import 'package:quickshare/features/receiver/data/client/code_lookup.dart';
+import 'package:quickshare/features/receiver/data/client/code_session_resolver.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
+/// Where a receiver types the ten digits a sender is showing.
+///
+/// Digits and nothing else. A computer has no camera to scan with and joins
+/// only this way; a phone reaches the same screen from the scanner's "Enter
+/// code". There is no field for a pasted link or a raw QR: the QR is scanned,
+/// and a share link opens from outside the app (see `LinkReceivePage`).
 class CodeReceivePage extends StatefulWidget {
-  final String? initialCode;
-  const CodeReceivePage({super.key, this.initialCode});
+  /// How the typed code is looked for. The real network search unless a test
+  /// supplies its own.
+  final CodeLookup? lookup;
+
+  const CodeReceivePage({super.key, this.lookup});
 
   @override
   State<CodeReceivePage> createState() => _CodeReceivePageState();
@@ -35,23 +35,12 @@ class CodeReceivePage extends StatefulWidget {
 class _CodeReceivePageState extends State<CodeReceivePage> {
   final _controller = TextEditingController();
 
-  /// The app's own presence, not one of this screen's making: being
-  /// discoverable is not a property of standing on this page, and the typed
-  /// code is matched against the same list the panel draws.
   String? _inputError;
   bool _isSubmitting = false;
 
   final FocusNode _focusNode = FocusNode();
 
-  @override
-  void initState() {
-    super.initState();
-    // initialCode: ten digits, or a directdrop://join?p=<payload> link.
-    if (widget.initialCode != null && widget.initialCode!.isNotEmpty) {
-      _controller.text = widget.initialCode!;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _submit());
-    }
-  }
+  late final CodeLookup _lookup = widget.lookup ?? CodeLookup();
 
   @override
   void dispose() {
@@ -70,323 +59,69 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
 
   Future<void> _submit() async {
     if (_isSubmitting) return;
-    final raw = _controller.text.trim();
-    if (raw.isEmpty) {
+
+    // Only a whole code starts anything. Half of one is not a search, and
+    // searching is the one thing that puts this device on the network.
+    final code = SessionCode.parse(_controller.text);
+    if (code == null) {
       setState(() =>
-          _inputError = AppLocalizations.of(context).codeReceivePasteError);
+          _inputError = AppLocalizations.of(context).codeReceiveCodeInvalid);
       return;
     }
     setState(() {
       _isSubmitting = true;
       _inputError = null;
     });
-
-    // Ten digits mean a device in this room rather than a link from somewhere
-    // else, and those are resolved against what is on the network rather than
-    // parsed — there is nothing inside a code but the code.
-    final code = SessionCode.parse(raw);
-    if (code != null) {
-      await _startFromCode(code);
-      return;
-    }
-
-    try {
-      if (!mounted) return;
-      // The full pasted string so `n`/`s`/`c` preview fields survive; the
-      // bloc routes it to QHTP or the serverless WebRTC path.
-      context.read<ReceiverBloc>().add(QRCodeScanned(raw, fromPaste: true));
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _isSubmitting = false;
-        _inputError = AppLocalizations.of(context).codeReceiveParseError;
-      });
-    }
+    await _startFromCode(code);
   }
 
-
   /// Finds the device offering [code] and starts collecting from it.
   ///
-  /// The code is never sent anywhere. Each side derives the same two things
-  /// from it — a public identifier, which the sender advertises, and the
-  /// session token, which authenticates the fetch — so matching one against
-  /// the network is enough to open a session that nobody else can.
-  /// Finds the device offering [code] and starts collecting from it.
-  ///
-  /// The code is never sent anywhere. Each side derives the same two things
-  /// from it — a public identifier, which the sender advertises, and the
-  /// session token, which authenticates the fetch — so matching one against
-  /// the network is enough to open a session that nobody else can.
-  ///
-  /// If mDNS TXT record is delayed, stale, or cached, this falls back to probing
-  /// candidate peers directly over LAN with the bearer token to verify authorship.
+  /// The code never leaves this device. It is the password of a proof run
+  /// against every device that might be the sender, bound to the TLS
+  /// certificate each presents: a device that does not hold the code cannot
+  /// answer in a way this side accepts, and until one does, nothing — not the
+  /// code, not this device's name — has been sent to anyone. What an
+  /// announcement says about itself (its hint, its fingerprint) only decides
+  /// who is asked first; it is never what is trusted. See
+  /// [CodeSessionResolver].
   Future<void> _startFromCode(SessionCode code) async {
     final l10n = AppLocalizations.of(context);
-    AppLogger.info('Resolving session code: publicId=${code.publicId}', tag: 'CODE');
 
-    final presence = AppPresence.instance.presence;
-    DiscoveredPeer? match = (presence?.current ?? const [])
-        .where((peer) => peer.sessionPublicId == code.publicId)
-        .firstOrNull;
+    final outcome = await _lookup.find(code);
 
-    if (match == null) {
-      if (presence != null) {
-        unawaited(presence.refresh());
-      }
+    if (!mounted) return;
 
-      // Collect candidate IP addresses and ports to probe
-      final candidateAddresses = <InternetAddress>{};
-      final candidatePorts = <InternetAddress, Set<int>>{};
-
-      for (final peer in presence?.current ?? const <DiscoveredPeer>[]) {
-        if (!peer.address.isLoopback) {
-          candidateAddresses.add(peer.address);
-          candidatePorts.putIfAbsent(peer.address, () => {}).addAll([
-            if (peer.port > 0) peer.port,
-            AppConstants.serverPortMin, // 8000
-            AppConstants.serverPortMin + 1, // 8001
-          ]);
-        }
-      }
-
-      // Also gather the local subnet candidate IPs (e.g. 192.168.3.1)
-      try {
-        final localIp = await NetworkInfoService().getLocalIpAddress();
-        if (localIp != null && localIp.isNotEmpty) {
-          final lastDot = localIp.lastIndexOf('.');
-          if (lastDot != -1) {
-            final prefix = localIp.substring(0, lastDot);
-            final gw = InternetAddress.tryParse('$prefix.1');
-            if (gw != null && !candidateAddresses.contains(gw)) {
-              candidateAddresses.add(gw);
-              candidatePorts.putIfAbsent(gw, () => {}).add(AppConstants.serverPortMin);
-            }
-          }
-        }
-      } catch (_) {}
-
-      QRPayload? directPayload;
-
-      Future<QRPayload?> probeCandidates() async {
-        for (final addr in candidateAddresses) {
-          final ports = candidatePorts[addr] ?? {AppConstants.serverPortMin};
-          for (final port in ports) {
-            final payload = await _probeCandidate(addr, port, code);
-            if (payload != null) return payload;
-          }
-        }
-        return null;
-      }
-
-      try {
-        final results = await Future.wait([
-          if (presence != null)
-            presence.peers
-                .map((peers) => peers
-                    .where((peer) => peer.sessionPublicId == code.publicId)
-                    .firstOrNull)
-                .where((peer) => peer != null)
-                .first
-                .timeout(const Duration(seconds: 4))
-                .catchError((_) => null)
-          else
-            Future.value(null),
-          probeCandidates(),
-        ]);
-
-        match = results[0] as DiscoveredPeer?;
-        directPayload = results[1] as QRPayload?;
-      } catch (_) {}
-
-      if (directPayload != null) {
-        if (!mounted) return;
+    switch (outcome) {
+      case CodeSessionFound(:final payload):
         AppLogger.info(
-          'Direct LAN probe matched session code with ${directPayload.ip}:${directPayload.port}',
+          'Session code matched ${payload.senderName ?? 'a sender'} at '
+          '${payload.ip}:${payload.port}',
           tag: 'CODE',
         );
         context
             .read<ReceiverBloc>()
-            .add(QRCodeScanned(directPayload.encode(), fromPaste: true));
-        return;
-      }
-
-      match ??= presence?.current
-          .where((peer) => peer.sessionPublicId == code.publicId)
-          .firstOrNull;
-    }
-
-    if (!mounted) return;
-
-    if (match == null) {
-      AppLogger.warning(
-        'Sender with code ${code.publicId} not found via mDNS or direct probe',
-        tag: 'CODE',
-      );
-      setState(() {
-        _isSubmitting = false;
-        _inputError = l10n.codeReceiveNotFoundLan;
-      });
-      return;
-    }
-
-    AppLogger.info(
-      'Session code ${code.publicId} matched peer: ${match.name} at ${match.address.address}:${match.port}',
-      tag: 'CODE',
-    );
-
-    final targetPeer = match;
-    final client =
-        HttpClient(context: SecurityContext(withTrustedRoots: false));
-    client.connectionTimeout = const Duration(seconds: 4);
-    client.badCertificateCallback = (X509Certificate cert, String host, int p) {
-      if (targetPeer.tlsFingerprint.isEmpty) return true;
-      return SessionTlsIdentity.fingerprintOf(cert.der) == targetPeer.tlsFingerprint;
-    };
-
-    try {
-      final invitePort = AppPresence.instance.presence?.invitePort ?? 0;
-      final uri = Uri.parse(
-          'https://${targetPeer.address.address}:${targetPeer.port}/v2/invite/request');
-      final request =
-          await client.postUrl(uri).timeout(const Duration(seconds: 4));
-      request.headers.contentType = ContentType.json;
-      request.write(jsonEncode({
-        'code': code.code,
-        'invitePort': invitePort,
-        'deviceName': DevicePresence.describeThisDevice(),
-      }));
-      final response =
-          await request.close().timeout(const Duration(seconds: 95));
-      if (response.statusCode == HttpStatus.ok) {
-        final bodyText = await response.transform(utf8.decoder).join();
-        final data = jsonDecode(bodyText) as Map<String, dynamic>;
-        if (data['outcome'] == 'accepted') {
-          final token = data['token'] as String?;
-          if (token != null && token.isNotEmpty && mounted) {
-            final payload = QRPayload(
-              version: AppConstants.qhtpPayloadVersion,
-              ip: match.address.address,
-              port: match.port,
-              token: token,
-              sessionId: data['sessionId'] as String? ?? token,
-              mode: 'http-lan',
-              tlsFingerprint: match.tlsFingerprint,
-              itemCount: data['itemCount'] as int? ?? 1,
-              fileSize: data['totalBytes'] as int? ?? 0,
-              senderName: data['senderName'] as String?,
-            );
-            context
-                .read<ReceiverBloc>()
-                .add(QRCodeScanned(payload.encode(), fromPaste: true));
-            return;
-          }
-        } else {
-          if (!mounted) return;
-          setState(() {
-            _isSubmitting = false;
-            _inputError = l10n.inviteDeclined;
-          });
-          return;
-        }
-      } else {
-        if (!mounted) return;
-        setState(() {
-          _isSubmitting = false;
-          _inputError = l10n.codeReceiveNotFoundLan;
-        });
-        return;
-      }
-    } catch (e) {
-      AppLogger.warning(
-          'Could not request invite from ${match.address.address}:${match.port}: $e',
-          tag: 'CODE');
-      if (!mounted) return;
-      setState(() {
-        _isSubmitting = false;
-        _inputError = l10n.inviteUnreachable;
-      });
-      return;
-    } finally {
-      client.close(force: true);
+            .add(QRCodeScanned(payload.encode(), fromPaste: true));
+      case CodeSessionDeclined():
+        _fail(l10n.inviteDeclined);
+      case CodeSessionNotFound():
+        AppLogger.warning(
+          'No device proved it holds the session code',
+          tag: 'CODE',
+        );
+        _fail(l10n.codeReceiveNotFoundLan);
+      case CodeSessionUpdateRequired():
+        _fail(l10n.codeReceiveUpdateRequired);
+      case CodeSessionUnreachable():
+        _fail(l10n.inviteUnreachable);
     }
   }
 
-  Future<QRPayload?> _probeCandidate(
-    InternetAddress address,
-    int port,
-    SessionCode code,
-  ) async {
-    // Security note: probe-path is a fallback of last resort when mDNS multicast
-    // is blocked by the network. Sending code to unverified IPs is sensitive,
-    // so we pre-filter hosts using GET /v2/health to verify QHTP protocol presence
-    // before presenting the code. The sender must approve the request on their side
-    // before the token is returned. Any proof of knowing the 33-bit code to an untrusted
-    // host could be subject to brute force, so presence-path (cid matching) is the
-    // primary and trusted route.
-    final client = HttpClient(context: SecurityContext(withTrustedRoots: false));
-    client.connectionTimeout = const Duration(milliseconds: 1500);
-    String? tlsFingerprint;
-    client.badCertificateCallback = (X509Certificate cert, String host, int p) {
-      tlsFingerprint = SessionTlsIdentity.fingerprintOf(cert.der);
-      return true;
-    };
-
-    try {
-      // 1. Pre-filter: verify host is a legitimate QHTP server before sending the code
-      final healthUri = Uri.parse('https://${address.address}:$port/v2/health');
-      final healthRequest =
-          await client.getUrl(healthUri).timeout(const Duration(milliseconds: 1500));
-      final healthResponse =
-          await healthRequest.close().timeout(const Duration(milliseconds: 1500));
-      if (healthResponse.statusCode != HttpStatus.ok) return null;
-      final healthBody = await healthResponse.transform(utf8.decoder).join();
-      try {
-        final healthData = jsonDecode(healthBody) as Map<String, dynamic>;
-        if (healthData['protocol'] != 'QHTP') return null;
-      } catch (_) {
-        return null;
-      }
-
-      // 2. Request invite with code and device name
-      final uri = Uri.parse('https://${address.address}:$port/v2/invite/request');
-      final request =
-          await client.postUrl(uri).timeout(const Duration(milliseconds: 1500));
-      request.headers.contentType = ContentType.json;
-      request.write(jsonEncode({
-        'code': code.code,
-        'invitePort': 0,
-        'deviceName': DevicePresence.describeThisDevice(),
-      }));
-      final response =
-          await request.close().timeout(const Duration(seconds: 95));
-      if (response.statusCode == HttpStatus.ok && tlsFingerprint != null) {
-        final bodyText = await response.transform(utf8.decoder).join();
-        final data = jsonDecode(bodyText) as Map<String, dynamic>;
-        if (data['outcome'] != 'accepted') {
-          return null;
-        }
-        final token = data['token'] as String?;
-        if (token != null && token.isNotEmpty) {
-          return QRPayload(
-            version: AppConstants.qhtpPayloadVersion,
-            ip: address.address,
-            port: port,
-            token: token,
-            sessionId: data['sessionId'] as String? ?? token,
-            mode: 'http-lan',
-            tlsFingerprint: tlsFingerprint!,
-            itemCount: data['itemCount'] as int? ?? 1,
-            fileSize: data['totalBytes'] as int? ?? 0,
-            senderName: data['senderName'] as String?,
-          );
-        }
-      }
-    } catch (_) {
-      // Not a matching QHTP server or port unreachable / declined / timed out
-    } finally {
-      client.close(force: true);
-    }
-    return null;
+  void _fail(String message) {
+    setState(() {
+      _isSubmitting = false;
+      _inputError = message;
+    });
   }
 
   @override
@@ -441,27 +176,8 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Being on this screen is what makes this device receivable: the panel
-        // announces it and answers invitations. Nothing here is tappable — a
-        // listed device is one that can see *us*, and the transfer starts when
-        // one of them asks.
-        NearbyDevicesPanel(
-          presence: AppPresence.instance.presence,
-          onSelected: (peer) => _onPeerSelected(peer, l10n),
-        ),
-        const SizedBox(height: 24),
         Text(
-          l10n.nearbyOrPaste,
-          style: GoogleFonts.inter(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: AppColors.textSecondary,
-            letterSpacing: 0.4,
-          ),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          l10n.codeReceivePastePrompt,
+          l10n.codeReceivePrompt,
           style: GoogleFonts.inter(
             fontSize: 18,
             fontWeight: FontWeight.w600,
@@ -487,14 +203,27 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
                 controller: _controller,
                 focusNode: _focusNode,
                 autofocus: true,
-                maxLines: 3,
-                minLines: 1,
-                style: GoogleFonts.firaCode(color: Colors.white, fontSize: 14),
+                keyboardType: TextInputType.number,
+                textInputAction: TextInputAction.done,
+                // Digits, with the space or dash people put in the middle of
+                // them. A pasted link has no digits to keep, so it leaves
+                // nothing behind.
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9 \-]')),
+                  LengthLimitingTextInputFormatter(14),
+                ],
+                onChanged: (_) {
+                  if (_inputError != null) setState(() => _inputError = null);
+                },
+                style: GoogleFonts.firaCode(
+                    color: Colors.white, fontSize: 22, letterSpacing: 2),
                 decoration: InputDecoration(
                   border: InputBorder.none,
                   hintText: l10n.codeReceiveHint,
-                  hintStyle: GoogleFonts.inter(
-                      color: Colors.white.withValues(alpha: 0.40)),
+                  hintStyle: GoogleFonts.firaCode(
+                      color: Colors.white.withValues(alpha: 0.40),
+                      fontSize: 22,
+                      letterSpacing: 2),
                 ),
                 onSubmitted: (_) => _submit(),
               ),
@@ -502,61 +231,32 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
           ),
         ),
         const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () async {
-                  final data = await Clipboard.getData(Clipboard.kTextPlain);
-                  if (data?.text != null) {
-                    setState(() => _controller.text = data!.text!);
-                  }
-                },
-                icon: const Icon(Icons.paste_rounded,
-                    size: 18, color: Colors.white),
-                label: Text(l10n.codeReceivePasteButton,
-                    style: GoogleFonts.inter(
-                        color: Colors.white, fontWeight: FontWeight.w600)),
-                style: OutlinedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  side: const BorderSide(
-                      color: Color.fromRGBO(255, 255, 255, 0.3)),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16)),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: ElevatedButton.icon(
-                onPressed: _isSubmitting ? null : _submit,
-                icon: _isSubmitting
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Icon(Icons.download_rounded,
-                        size: 18, color: Colors.white),
-                label: Text(
-                    _isSubmitting
-                        ? l10n.codeReceiveSearchingLan
-                        : l10n.codeReceiveReceiveButton,
-                    style: GoogleFonts.inter(
-                        color: Colors.white, fontWeight: FontWeight.w600)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16)),
-                  elevation: 6,
-                ),
-              ),
-            ),
-          ],
+        ElevatedButton.icon(
+          onPressed: _isSubmitting ? null : _submit,
+          icon: _isSubmitting
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                )
+              : const Icon(Icons.download_rounded,
+                  size: 18, color: Colors.white),
+          label: Text(
+              _isSubmitting
+                  ? l10n.codeReceiveSearchingLan
+                  : l10n.codeReceiveReceiveButton,
+              style: GoogleFonts.inter(
+                  color: Colors.white, fontWeight: FontWeight.w600)),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: AppColors.primary,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            elevation: 6,
+          ),
         ),
         if (_inputError != null) ...[
           const SizedBox(height: 16),
@@ -697,34 +397,5 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
         ),
       ],
     );
-  }
-
-  void _onPeerSelected(DiscoveredPeer peer, AppLocalizations l10n) {
-    if (peer.isServing) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text(
-              '${peer.name}: ${l10n.codeReceivePastePrompt.toLowerCase()}',
-              style: const TextStyle(color: Colors.white),
-            ),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      _focusNode.requestFocus();
-    } else {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          SnackBar(
-            content: Text(
-              '${peer.name} ${l10n.nearbyIdle.toLowerCase()}',
-              style: const TextStyle(color: Colors.white),
-            ),
-            duration: const Duration(seconds: 3),
-          ),
-        );
-    }
   }
 }

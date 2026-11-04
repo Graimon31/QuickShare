@@ -91,9 +91,83 @@ class FailureCode {
   /// why the transfer has no bytes, and the journal has to say so.
   static const cancelledHere = 'cancelledHere';
 
+  /// The offer on the sender's screen had been left to run until its server
+  /// gave up, or the system closed it. Shown instead of a code that leads
+  /// nowhere.
+  static const offerEnded = 'offerEnded';
+
   /// The QHTP session came up without a TLS certificate to pin, so the
   /// receiver has nothing to trust and the pull would be refused.
   static const sessionWithoutCertificate = 'sessionWithoutCertificate';
+
+  /// The two devices could not connect directly, and the relay service that
+  /// would have carried them is throttling this client: `429 rate_limited`, or
+  /// the Worker's limiter being down. Trying again in about a minute is the
+  /// advice, and it is the right one.
+  static const noPathRelayLimited = 'noPathRelayLimited';
+
+  /// No direct connection, and the relay service could not be reached, did not
+  /// answer in time, or answered with something unusable.
+  static const noPathRelayUnreachable = 'noPathRelayUnreachable';
+
+  /// No direct connection, and this build has no relay to fall back on: it is
+  /// switched off or not configured at the Worker, or the build names no Worker.
+  static const noPathRelayOff = 'noPathRelayOff';
+
+  /// A relay *was* available and the connection still failed. Something
+  /// between the devices blocks even relayed traffic — not the relay's fault,
+  /// and the one cause that must not be blamed on it.
+  static const noPathRelayWasAvailable = 'noPathRelayWasAvailable';
+
+  /// The disk filled up while a file was being written. Distinct from
+  /// [notEnoughSpace], which is the refusal *before* anything was written.
+  static const diskFull = 'diskFull';
+
+  /// There is not enough free room for what is left to receive. Carried
+  /// bare, it is a sentence without numbers; [notEnoughSpaceFor] adds how much
+  /// was needed and how much there is, and [parseNotEnoughSpace] reads them
+  /// back — the code is the one thing that travels unchanged from the
+  /// transport to the screen and into the journal, so the sizes ride on it.
+  static const notEnoughSpace = 'notEnoughSpace';
+
+  /// [notEnoughSpace] with the two sizes, in bytes.
+  static String notEnoughSpaceFor(int needed, int available) =>
+      '$notEnoughSpace:$needed:$available';
+
+  /// The sizes inside a code made by [notEnoughSpaceFor]; null for any other.
+  static ({int needed, int available})? parseNotEnoughSpace(String? code) {
+    if (code == null) return null;
+    final parts = code.split(':');
+    if (parts.length != 3 || parts[0] != notEnoughSpace) return null;
+    final needed = int.tryParse(parts[1]);
+    final available = int.tryParse(parts[2]);
+    if (needed == null || available == null) return null;
+    return (needed: needed, available: available);
+  }
+
+  /// The destination holds a link (or a file where a folder must be) on the
+  /// way to where a received file belongs. Nothing was written through it.
+  static const unsafeDestination = 'unsafeDestination';
+
+  /// The destination folder is nested so deeply that Windows could not open
+  /// the file that would be written there.
+  static const pathTooLong = 'pathTooLong';
+
+  /// A received file was missing, the wrong size or changed by the time the
+  /// session was checked at its end, so it is not reported as delivered.
+  static const receivedFilesNotIntact = 'receivedFilesNotIntact';
+
+  /// Whether [code] names a problem with the receiving disk or destination —
+  /// the ones every receive path reports the same way, whichever transport
+  /// carried the bytes.
+  static bool isStorage(String? code) =>
+      code != null &&
+      (code == diskFull ||
+          code == unsafeDestination ||
+          code == pathTooLong ||
+          code == receivedFilesNotIntact ||
+          code == notEnoughSpace ||
+          code.startsWith('$notEnoughSpace:'));
 }
 
 abstract class Failure extends Equatable {

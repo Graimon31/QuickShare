@@ -1,6 +1,7 @@
 import 'dart:io' show InternetAddress;
 
 import 'package:quickshare/core/errors/failures.dart';
+import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
@@ -43,7 +44,7 @@ abstract class SenderRepository {
   Future<Either<Failure, TransferSession>> startQhtpTransfer(
     List<String> paths, {
     String? authToken,
-    String? sessionPublicId,
+    SessionCode? sessionCode,
     void Function(int items, int bytes)? onIndexProgress,
     void Function(int itemCount, int totalBytes)? onIndexed,
     void Function(Object error)? onIndexFailed,
@@ -57,6 +58,24 @@ abstract class SenderRepository {
   /// this transfer.
   Future<Either<Failure, String>> generateQRPayload(TransferSession session,
       {String? hostOverride});
+
+  /// Replaces the secrets of the running session — the token a new QR carries
+  /// and, where there is one, the code a receiver must prove — without
+  /// touching the server, its port, its certificate or its index.
+  ///
+  /// Anything that was never used dies; anything that was used, or released to
+  /// a person who was approved, keeps working until the session ends. Left
+  /// with the session that has the new token on success, and with a failure
+  /// when there is no session running any more.
+  Future<Either<Failure, TransferSession>> rotateSession(
+    TransferSession session, {
+    required String authToken,
+    SessionCode? sessionCode,
+  });
+
+  /// Whether the session's server still answers on its own port, as a receiver
+  /// would see it.
+  Future<bool> verifyServing();
 
   /// Generates a serverless SDP-in-QR payload string for WebRTC transfers.
   /// [sdpOffer] is raw SDP text — the whole QR payload is compressed once by

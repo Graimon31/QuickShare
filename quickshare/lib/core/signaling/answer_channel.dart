@@ -7,9 +7,9 @@ import 'package:quickshare/core/utils/app_logger.dart';
 ///
 /// Both peers are behind NAT that will not accept an unsolicited packet, so
 /// the answer cannot travel straight from the phone to the desktop. It goes
-/// through somebody else's already-running public infrastructure instead —
-/// nothing here is hosted by us, and the payload is sealed before it leaves
-/// the device, so the operator of the drop point carries opaque bytes.
+/// through an already-running public drop point instead — a Nostr relay or
+/// the DirectDrop Worker's mailbox — and the payload is sealed before it
+/// leaves the device, so the operator of the drop point carries opaque bytes.
 abstract class AnswerChannel {
   /// Short label for logs and diagnostics.
   String get name;
@@ -82,25 +82,42 @@ class RacingAnswerChannel implements AnswerChannel {
     await first.future;
   }
 
+  /// Returns as soon as ONE channel has carried the answer, and fails only
+  /// when every channel has failed.
+  ///
+  /// Waiting for all of them would hold the caller to the slowest: the Worker
+  /// channel retries a rate-limited publish for up to a couple of minutes, and
+  /// a receiver sitting behind that retry would not start its connection until
+  /// it ended, even though Nostr delivered the answer in a second. The
+  /// channels that are still trying carry on in the background — they are
+  /// stopped by [close] — and say how it went in the log.
   @override
   Future<void> publish(String topic, Uint8List payload) async {
-    final results = await Future.wait(
-      channels.map((c) async {
+    final delivered = Completer<void>();
+    final failures = <String>[];
+    var pending = channels.length;
+
+    for (final c in channels) {
+      unawaited(() async {
         try {
           await c.publish(topic, payload);
           AppLogger.info('Answer published via ${c.name}', tag: 'SIGNALING');
-          return true;
+          if (!delivered.isCompleted) delivered.complete();
         } catch (e) {
           AppLogger.warning('Answer publish via ${c.name} failed: $e',
               tag: 'SIGNALING');
-          return false;
+          failures.add('${c.name}: $e');
         }
-      }),
-    );
-
-    if (!results.contains(true)) {
-      throw StateError('could not publish the answer through any channel');
+        pending--;
+        if (pending == 0 && !delivered.isCompleted) {
+          delivered.completeError(StateError(
+              'could not publish the answer through any channel '
+              '(${failures.join('; ')})'));
+        }
+      }());
     }
+
+    await delivered.future;
   }
 
   /// The same answer arrives once per healthy channel. Deduplicate so the

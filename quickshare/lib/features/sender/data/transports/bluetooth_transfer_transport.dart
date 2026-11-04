@@ -13,22 +13,6 @@ import 'package:quickshare/features/sender/domain/entities/transfer_session.dart
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'linux_bluetooth_sender.dart';
 
-/// A nearby receiver this sender can pick, found by scanning.
-class BleWaitingPeer {
-  final String id;
-  final String name;
-
-  /// True when the receiver already opened a GATT connection to us (HELLO).
-  /// Tapping that row is `beginTransfer`, not a new connect.
-  final bool alreadyConnected;
-
-  const BleWaitingPeer({
-    required this.id,
-    required this.name,
-    this.alreadyConnected = false,
-  });
-}
-
 /// BLE sender shared by the desktop and mobile builds.
 ///
 /// Apple builds keep using the tested CoreBluetooth bridge in the Runner
@@ -40,8 +24,8 @@ class BleWaitingPeer {
 /// ## Generation 4: the rendezvous, not the road
 ///
 /// Since protocol generation 4 no bytes cross this channel. Once a receiver
-/// says what it is (CAPS) and asks (START) or is picked (HELLO), the session
-/// negotiates a direct Wi-Fi link over the control and metadata
+/// that scanned this session's QR says what it is (CAPS) and asks (START), the
+/// session negotiates a direct Wi-Fi link over the control and metadata
 /// characteristics — see `DirectLinkCoordinator` — and the file crosses
 /// that link at Wi-Fi speed. What remains here is the radio's part of that
 /// negotiation: the advertisement, the writes, and [sendLinkFrame].
@@ -49,15 +33,18 @@ class BluetoothTransferTransport implements TransferTransport {
   static const _method = MethodChannel('quickshare/bluetooth');
   static const _events = EventChannel('quickshare/bluetooth/events');
 
-  static const _serviceUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10';
   static const _controlUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
   static const _metadataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
   static const _dataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
 
   /// The peripheral local name to advertise over BLE.
   ///
-  /// Safe to broadcast: carries only the non-secret public identifier, never the
-  /// authorization token or its prefix.
+  /// Carries [SessionCode.publicId] and never the authorization token or its
+  /// prefix. That is not the same as safe: the identifier is forty bits of a
+  /// hash over a 33-bit space, so anyone in radio range can search it for the
+  /// code, which derives the token. The LAN announcement stopped carrying it
+  /// for that reason; this one still does, and needs the same treatment as the
+  /// transfer it belongs to (see `SessionCode.discoveryHint`).
   static String bleAdvertisedName({String publicId = ''}) =>
       'QuickShare-${publicId.isNotEmpty ? publicId : 'directdrop'}';
 
@@ -145,17 +132,6 @@ class BluetoothTransferTransport implements TransferTransport {
     }
     if (_usesLinuxBridge) {
       await _linuxSender?.notifyLinkFrame(frame);
-      return;
-    }
-    final clientId = _universalClientId;
-    if (clientId != null) {
-      await UniversalBle.write(
-        clientId,
-        _serviceUuid,
-        _metadataUuid,
-        Uint8List.fromList(utf8.encode(jsonEncode(frame))),
-        withoutResponse: false,
-      );
       return;
     }
     await UniversalBlePeripheral.updateCharacteristicValue(
@@ -269,53 +245,15 @@ class BluetoothTransferTransport implements TransferTransport {
     );
   }
 
-  final _waitingController = StreamController<BleWaitingPeer>.broadcast();
-
-  /// Receivers this sender has seen advertising, waiting to be picked.
-  Stream<BleWaitingPeer> get waitingReceivers => _waitingController.stream;
-
-  String? _scanSessionToken;
-
-  /// Hard cap on the Bluetooth handshake. The transfer itself (Wi-Fi) can
-  /// take as long as the files need; finding the other device must not.
-  static const handshakeTimeout = Duration(seconds: 3);
-
-
-
-  /// Starts sending to the device the person picked off that list.
+  /// What the receiver on the radio calls itself, when it said.
   ///
-  /// Nothing new is negotiated: the receiver connected and subscribed when it
-  /// announced itself, so this is the go-ahead that used to arrive as its own
-  /// START.
-  Future<void> beginTransfer() async {
-    if (!_usesNativeAppleBridge) return;
-    try {
-      await _method.invokeMethod('beginTransfer');
-    } on MissingPluginException {
-      // An older platform build. The receiver-led path still works.
-    }
-  }
-
-  /// Connect to a waiting receiver and start the rendezvous as GATT central.
-  ///
-  /// Completes when the handshake is up, or throws after [handshakeTimeout].
-  Future<void> connectToReceiver(String deviceId) async {
-    final token = _scanSessionToken;
-    if (token == null || token.isEmpty) {
-      throw StateError('Bluetooth session has no token');
-    }
-    final ready = _receiverReadyController.stream.first;
-    if (_usesNativeAppleBridge) {
-      await _method.invokeMethod('connect', {
-        'deviceId': deviceId,
-        'asSender': true,
-        'sessionToken': token,
-      });
-    } else {
-      await _connectUniversalReceiver(deviceId, token);
-    }
-    await ready.timeout(handshakeTimeout);
-  }
+  /// The Apple bridge reports the name a connected receiver writes ahead of its
+  /// START. It is display text from the far side, read by the sender only to
+  /// tell whether that device is an Apple one (see `_beginBluetoothDirectLink`),
+  /// and is never shown as a choice: nothing is listed and nothing is picked.
+  /// Null until a receiver has said, and on platforms whose receivers do not.
+  String? get receiverName => _receiverName;
+  String? _receiverName;
 
   void _handleNativeEvent(dynamic event) {
     final map = Map<String, dynamic>.from(event as Map);
@@ -328,23 +266,7 @@ class BluetoothTransferTransport implements TransferTransport {
         break;
       case 'receiverAnnounced':
         final name = map['name'] as String?;
-        if (name != null && name.isNotEmpty) {
-          _waitingController.add(BleWaitingPeer(
-            id: name,
-            name: name,
-            alreadyConnected: true,
-          ));
-        }
-        break;
-      case 'deviceDiscovered':
-        final id = map['id'] as String?;
-        final name = map['name'] as String?;
-        if (id != null && id.isNotEmpty) {
-          _waitingController.add(BleWaitingPeer(
-            id: id,
-            name: (name != null && name.isNotEmpty) ? name : id,
-          ));
-        }
+        if (name != null && name.isNotEmpty) _receiverName = name;
         break;
       case 'receiverReady':
         // A generation-4 receiver is connected and the session may start —
@@ -391,9 +313,10 @@ class BluetoothTransferTransport implements TransferTransport {
   /// transport's UX is device discovery, not a shareable code.
   /// [publicId] is what goes out over the air, when there is one.
   ///
-  /// Derived from the session's digits and not reversible, so a receiver who
-  /// was read the code can pick this device out of several without the code
-  /// itself being broadcast. Advertising a slice of [token] instead — which is
+  /// Derived from the session's digits, so a receiver who was read the code
+  /// can pick this device out of several without the code itself being
+  /// broadcast. It can be reversed by searching the ten billion codes, so this
+  /// is a locator and not a secret. Advertising a slice of [token] instead — which is
   /// what happens when this is absent, and what every earlier build did — puts
   /// the first eight characters of the session's secret in a packet anyone in
   /// radio range can read.
@@ -403,13 +326,13 @@ class BluetoothTransferTransport implements TransferTransport {
     _totalBytes = session.fold<int>(0, (sum, f) => sum + f.size);
     lastFailureReason = null;
     lastFailureCode = null;
-    _scanSessionToken = token;
+    _receiverName = null;
     if (_usesNativeAppleBridge) {
       try {
-        // Both roles at once: we advertise so an iPhone can find us (it is
-        // a strong scanner, a weak advertiser), and we scan so we can list
-        // waiting receivers. Mac-as-central to iPhone-as-peripheral is the
-        // path that hangs; iPhone-as-central to Mac-as-peripheral is not.
+        // Advertise, and let the receiver that scanned the QR come to us: an
+        // iPhone is a strong scanner and a weak advertiser, and
+        // iPhone-as-central to Mac-as-peripheral is the pairing that works.
+        // This device does not scan: it has nothing to look for.
         await _method.invokeMethod('startAdvertising', {
           'files': [
             for (final f in session)
@@ -427,11 +350,6 @@ class BluetoothTransferTransport implements TransferTransport {
           'mimeType': file.mimeType,
           'sessionToken': token,
           if (publicId.isNotEmpty) 'publicId': publicId,
-        });
-        await _method.invokeMethod('startScanning', {
-          'sessionToken': token,
-          if (publicId.isNotEmpty) 'publicId': publicId,
-          'forReceivers': true,
         });
         _statusController.add(TransferStatus.serving);
       } on PlatformException catch (e) {
@@ -482,59 +400,20 @@ class BluetoothTransferTransport implements TransferTransport {
       return file.name;
     }
 
-    await _startUniversalScan(token, publicId);
+    await _startUniversalSession(token);
     return file.name;
   }
 
-  Future<void> _connectUniversalReceiver(String deviceId, String token) async {
-    _universalClientId = deviceId;
-    await UniversalBle.connect(deviceId);
-    await UniversalBle.discoverServices(deviceId);
-    await UniversalBle.subscribeNotifications(
-        deviceId, _serviceUuid, _metadataUuid);
-    UniversalBle.characteristicValueStream(deviceId, _metadataUuid).listen((value) {
-      final text = utf8.decode(value, allowMalformed: true);
-      if (BleControlProtocol.parseApOffer(text) case final sealed?) {
-        _apOfferController.add(sealed);
-        return;
-      }
-      if (BleControlProtocol.parseKeyExchange(text) case final key?) {
-        _rememberPeerKey(key);
-      }
-    });
-    await UniversalBle.write(
-      deviceId,
-      _serviceUuid,
-      _controlUuid,
-      Uint8List.fromList(utf8.encode(BleControlProtocol.capabilities())),
-      withoutResponse: false,
-    );
-    await UniversalBle.write(
-      deviceId,
-      _serviceUuid,
-      _controlUuid,
-      Uint8List.fromList(utf8.encode(BleControlProtocol.start(token))),
-      withoutResponse: false,
-    );
-    _receiverReadyController.add(null);
-  }
-
-  Future<void> _startUniversalScan(String token, String publicId) async {
+  /// Readies the session for a receiver that comes to this device.
+  ///
+  /// Records the token START must carry and resets what the last session left
+  /// behind. This device does not scan: a receiver finds it from the QR.
+  Future<void> _startUniversalSession(String token) async {
     await UniversalBle.requestPermissions(withAndroidFineLocation: false);
     _universalSessionToken = token;
     _lastPeerKey = null;
     _universalPeerGeneration = 4;
     _universalClientId = null;
-    UniversalBle.scanStream.listen((device) {
-      final name = device.name ?? '';
-      _waitingController.add(BleWaitingPeer(
-        id: device.deviceId,
-        name: name.isNotEmpty ? name : device.deviceId,
-      ));
-    });
-    await UniversalBle.startScan(
-      scanFilter: ScanFilter(withServices: [_serviceUuid]),
-    );
     _statusController.add(TransferStatus.serving);
   }
 
@@ -567,9 +446,6 @@ class BluetoothTransferTransport implements TransferTransport {
   Future<void> stopSharing() async {
     if (_usesNativeAppleBridge) {
       try {
-        await _method.invokeMethod('stopScanning');
-      } catch (_) {}
-      try {
         await _method.invokeMethod('stopAdvertising');
       } catch (_) {
         // best effort
@@ -580,9 +456,6 @@ class BluetoothTransferTransport implements TransferTransport {
       await _linuxSender?.stop();
       _linuxSender = null;
     } else {
-      try {
-        await UniversalBle.stopScan();
-      } catch (_) {}
       try {
         await UniversalBlePeripheral.stopAdvertising();
         await UniversalBlePeripheral.clearServices();

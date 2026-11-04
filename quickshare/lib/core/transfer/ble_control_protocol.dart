@@ -53,14 +53,11 @@ class BleControlProtocol {
 
   static String start(String token) => 'START:$token';
 
-  /// Written by a receiver that is present but not asking for anything yet.
+  /// Written by an Apple receiver ahead of [start], to say what it calls itself.
   ///
-  /// Bluetooth put the two roles the wrong way round for a device list: only
-  /// the sender advertises, and the receiver that finds it used to write
-  /// [start] straight away — so the transfer began before the person sending
-  /// had seen who was there. A receiver with no code to act on says this
-  /// instead and waits to be picked, which is the shape the local network
-  /// already had and the one people expect from AirDrop.
+  /// The sender reads the name only to tell an Apple receiver from the rest —
+  /// it cannot raise a network, so it is not asked to. Nothing is listed and
+  /// nothing starts because of it.
   ///
   /// Deliberately not a new generation. Senders through this build answer an
   /// unrecognised control write with success and carry on waiting, so this
@@ -74,8 +71,8 @@ class BleControlProtocol {
   static String? parseHello(String command) {
     if (!command.startsWith(helloPrefix)) return null;
     final name = command.substring(helloPrefix.length).trim();
-    // A row in a list needs something to draw, and a name is chosen by the
-    // far side — so it is length-capped here and treated as display text.
+    // A name is chosen by the far side — so it is length-capped here and
+    // treated as text, never as anything to act on.
     if (name.isEmpty || name.length > 64) return null;
     return name;
   }
@@ -115,9 +112,9 @@ class BleControlProtocol {
   /// exchange: what is derived from the pair never crosses the wire.
   ///
   /// Sent even when a session code exists. The code would make a serviceable
-  /// key on the paths that have one, but a receiver picked off the sender's
-  /// list has none — the token reaches it only after the link is up — and one
-  /// mechanism that covers both is one fewer thing to get wrong than two.
+  /// key on the paths that have one, but a receiver may hold none — the token
+  /// can reach it only after the link is up — and one mechanism that covers
+  /// both is one fewer thing to get wrong than two.
   static const String kexPrefix = 'KEX:';
 
   static String keyExchange(String publicKey) => '$kexPrefix$publicKey';

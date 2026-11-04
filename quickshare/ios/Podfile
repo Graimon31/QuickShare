@@ -41,6 +41,12 @@ post_install do |installer|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.1'
       config.build_settings['ONLY_ACTIVE_ARCH'] = 'YES'
 
+      # Google ML Kit 6.0 excludes arm64 for the iOS simulator, so Flutter
+      # builds the simulator Runner for x86_64. The Swift pods must match;
+      # otherwise their generated -Swift.h headers are arm64-only and Runner
+      # fails with 'Unsupported Swift architecture'. Device builds are intact.
+      config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64 i386'
+
       # permission_handler compiles every permission group out by default —
       # without this, Permission.camera.request() never reaches
       # AVCaptureDevice.requestAccess at all: no system dialog, no Settings

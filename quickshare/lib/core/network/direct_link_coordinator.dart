@@ -86,8 +86,9 @@ class DirectLinkDirective {
   final String? peerLinkService;
 
   /// The session code's ten digits, carried so a receiver that connected
-  /// without them — picked off the sender's list, no QR involved — can still
-  /// name a network it is asked to raise after the session it belongs to.
+  /// without them — a Bluetooth QR carries the token and the public
+  /// identifier, not the digits — can still name a network it is asked to
+  /// raise after the session it belongs to.
   final String? codeDigits;
 
   /// The sender raised the network itself. The credentials ride along sealed
@@ -501,8 +502,8 @@ class DirectLinkCoordinator {
   /// pass leaves this device listening for the rung that does reach it, which
   /// between two Apple devices is the peer-to-peer link.
   ///
-  /// [code] is nullable because a receiver can arrive without one — picked
-  /// off the sender's list with no QR involved. Hosting needs it only to
+  /// [code] is nullable because a receiver can arrive without one — a scanned
+  /// Bluetooth QR carries the token, not the digits. Hosting needs it only to
   /// name the network; when neither the caller nor the directive carries
   /// one, a throwaway code names it instead, since the actual credentials
   /// travel in the offer either way.

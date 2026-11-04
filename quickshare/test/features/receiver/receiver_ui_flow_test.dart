@@ -7,7 +7,6 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
 import 'package:quickshare/core/storage/received_item.dart';
-import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_announcer.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
 import 'package:quickshare/features/receiver/domain/usecases/download_file_usecase.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
@@ -29,23 +28,12 @@ class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
 
 class _MockDownloadFileUseCase extends Mock implements DownloadFileUseCase {}
 class _MockReceiverRepository extends Mock implements ReceiverRepository {}
-class _MockBluetoothReceiverAnnouncer extends Mock
-    implements BluetoothReceiverAnnouncer {}
 
 class _TestReceiverBloc extends ReceiverBloc {
   _TestReceiverBloc({
     required super.downloadFileUseCase,
     required super.repository,
-  }) : super(
-          bluetoothAnnouncerFactory: ({onServeReceived}) {
-            final mock = _MockBluetoothReceiverAnnouncer();
-            when(() => mock.start()).thenAnswer((_) async {});
-            when(() => mock.stop()).thenAnswer((_) async {});
-            when(() => mock.detachForTransfer()).thenAnswer((_) async {});
-            when(() => mock.isActive).thenReturn(false);
-            return mock;
-          },
-        );
+  });
 
   final List<ReceiverEvent> recordedEvents = [];
 

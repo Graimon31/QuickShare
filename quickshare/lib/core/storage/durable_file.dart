@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:path/path.dart' as p;
 
+import 'package:quickshare/core/storage/safe_path.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// The suffix every in-flight received file carries until it is whole.
@@ -18,6 +19,14 @@ const String kPartialSuffix = '.qs.partial';
 /// Whether [path] is one of our in-flight partials.
 bool isPartialPath(String path) => path.endsWith(kPartialSuffix);
 
+/// The file that marks a `.qs.partial` folder as worth keeping.
+///
+/// A staged folder is normally debris if it outlives its transfer. The one
+/// that is not is a folder received in full whose rename onto its real name
+/// failed: it is the only copy, and the person was told where it is. The
+/// startup sweep leaves a folder with this file in it alone.
+const String kKeptMarker = '.qs.kept';
+
 /// A crash-safe write of a single file.
 ///
 /// In the default (staged) mode bytes stream into `<finalPath>.qs.partial`;
@@ -31,25 +40,34 @@ bool isPartialPath(String path) => path.endsWith(kPartialSuffix);
 /// (`Trip.qs.partial/`), where the enclosing directory's rename is the atomic
 /// gate and a per-file one would be redundant. [commit] there is just an
 /// fsync-and-close.
+///
+/// Neither mode ever writes through a symbolic link or replaces a file: see
+/// [SafePath]. [base] is the destination folder the user chose; every folder
+/// between it and the file is checked, at open and again at commit. Without
+/// one, the file's own folder stands in for it, which still protects the file
+/// itself but not the folders above it.
 class DurableFile {
-  DurableFile(this.finalPath, {this.staged = true});
+  DurableFile(this.finalPath, {this.staged = true, this.base});
 
+  /// Where the caller wants the file. If that name is taken by commit time,
+  /// [commit] uses the next free `name (n).ext` and returns it.
   final String finalPath;
   final bool staged;
+  final String? base;
 
   /// Where bytes actually land before [commit].
   String get partialPath => staged ? '$finalPath$kPartialSuffix' : finalPath;
 
   RandomAccessFile? _raf;
-  bool _committed = false;
+  String? _committedPath;
+
+  String get _root => base ?? p.dirname(finalPath);
 
   /// Creates the parent directory if missing and opens the write target,
   /// truncating anything an earlier failed attempt left there — WebRTC and BLE
   /// have no resume, so a stale partial is dead weight.
   Future<void> open() async {
-    final parent = Directory(p.dirname(finalPath));
-    if (!parent.existsSync()) parent.createSync(recursive: true);
-    _raf = await File(partialPath).open(mode: FileMode.writeOnly);
+    _raf = SafePath.openPartial(_root, partialPath, truncate: true);
   }
 
   /// Bytes written to the target so far.
@@ -65,9 +83,11 @@ class DurableFile {
   }
 
   /// fsync payload → close → (staged) atomic rename → fsync directory.
-  /// Idempotent once it has succeeded. Returns [finalPath].
+  /// Idempotent once it has succeeded. Returns the path the file now has,
+  /// which is [finalPath] unless that name was taken meanwhile.
   Future<String> commit() async {
-    if (_committed) return finalPath;
+    final done = _committedPath;
+    if (done != null) return done;
     final raf = _raf;
     if (raf == null) {
       throw StateError('DurableFile.commit on $finalPath without open()');
@@ -76,12 +96,13 @@ class DurableFile {
     await raf.close();
     _raf = null;
     await syncFile(partialPath); // fsync payload bytes onto the physical device
+    var path = finalPath;
     if (staged) {
-      await File(partialPath).rename(finalPath);
-      await syncDirectory(p.dirname(finalPath));
+      path = SafePath.commitFile(_root, partialPath, finalPath);
+      await syncDirectory(p.dirname(path));
     }
-    _committed = true;
-    return finalPath;
+    _committedPath = path;
+    return path;
   }
 
   /// Closes the handle and removes what was written. Safe to call repeatedly,
@@ -91,10 +112,15 @@ class DurableFile {
       await _raf?.close();
     } catch (_) {}
     _raf = null;
-    if (_committed) return;
+    if (_committedPath != null) return;
     try {
-      final f = File(partialPath);
-      if (await f.exists()) await f.delete();
+      // Whatever is at this path now — a file, or a link someone put there —
+      // goes: `delete` unlinks a link, it never reaches the target.
+      final type = FileSystemEntity.typeSync(partialPath, followLinks: false);
+      if (type == FileSystemEntityType.file ||
+          type == FileSystemEntityType.link) {
+        await File(partialPath).delete();
+      }
     } catch (_) {}
   }
 }
@@ -106,12 +132,15 @@ class DurableFile {
 /// one that appears complete or not at all. So the whole tree is written to
 /// `Trip.qs.partial/` and renamed in one step when the last byte lands.
 ///
-/// The rename is atomic only when the destination does not yet exist; if it
-/// does, the caller has already fallen back to writing files into it
-/// individually and should not be here.
-Future<void> commitDirectory(String stagedPath, String finalPath) async {
-  await Directory(stagedPath).rename(finalPath);
-  await syncDirectory(p.dirname(finalPath));
+/// A name that is already taken — by a folder, even an empty one, a file or a
+/// link — is never replaced: the folder lands as `Trip (1)` instead, and the
+/// path it actually has is returned. [base], when given, is the destination
+/// folder the chain is re-checked against just before the rename.
+Future<String> commitDirectory(String stagedPath, String finalPath,
+    {String? base}) async {
+  final path = SafePath.commitDirectory(base, stagedPath, finalPath);
+  await syncDirectory(p.dirname(path));
+  return path;
 }
 
 // --- directory fsync (POSIX only) ------------------------------------------
@@ -210,10 +239,21 @@ Future<void> syncFile(String filePath) async {
 /// "now" — on desktop with a small margin, since another copy of the app may
 /// be mid-transfer into the same folder. Returns the bytes reclaimed.
 ///
+/// Two kinds of partial are not debris and are left alone however old:
+///
+///  * those in [pinned] — absolute paths a transfer may still resume. QHTP
+///    keeps a partial across runs on purpose, and tells the user so;
+///  * a folder holding a [kKeptMarker] file: a folder received in full whose
+///    rename onto its real name failed, which is the only copy there is.
+///
 /// Top level only: a fast scan that catches the ordinary cases (a loose
 /// `video.mp4.qs.partial`, a staged `Trip.qs.partial/`) without walking a
 /// Downloads folder that may hold tens of thousands of files.
-Future<int> sweepPartials(String root, {required DateTime before}) async {
+Future<int> sweepPartials(
+  String root, {
+  required DateTime before,
+  Set<String> pinned = const {},
+}) async {
   final dir = Directory(root);
   if (!await dir.exists()) return 0;
 
@@ -224,13 +264,23 @@ Future<int> sweepPartials(String root, {required DateTime before}) async {
     return 0;
   }
 
+  final keep = {for (final path in pinned) _sweepKey(path)};
   var freed = 0;
   for (final entry in entries) {
     if (!isPartialPath(entry.path)) continue;
+    // A link that happens to be named like one of ours is somebody else's
+    // business; it is never followed and never counted.
+    if (entry is Link) continue;
+    if (keep.contains(_sweepKey(entry.path))) continue;
     try {
       final stat = await entry.stat();
       if (stat.modified.isAfter(before)) continue;
       if (stat.type == FileSystemEntityType.directory) {
+        if (FileSystemEntity.typeSync(p.join(entry.path, kKeptMarker),
+                followLinks: false) ==
+            FileSystemEntityType.file) {
+          continue;
+        }
         freed += await _treeSize(Directory(entry.path));
         await Directory(entry.path).delete(recursive: true);
       } else {
@@ -248,6 +298,13 @@ Future<int> sweepPartials(String root, {required DateTime before}) async {
         tag: 'DISK');
   }
   return freed;
+}
+
+/// A path as the sweep compares it: absolute and normalised, and without case
+/// on Windows, where `Video.bin` and `video.bin` are one file.
+String _sweepKey(String path) {
+  final absolute = p.normalize(p.absolute(path));
+  return Platform.isWindows ? absolute.toLowerCase() : absolute;
 }
 
 Future<int> _treeSize(Directory dir) async {

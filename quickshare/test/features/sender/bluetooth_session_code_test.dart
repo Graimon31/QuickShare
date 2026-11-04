@@ -105,7 +105,7 @@ void main() {
     });
   });
 
-  group('announcing a receiver that is only waiting', () {
+  group('a receiver giving its name', () {
     test('a name survives the round trip', () {
       final written = BleControlProtocol.hello("Farman's iPhone");
       expect(BleControlProtocol.parseHello(written), equals("Farman's iPhone"));
@@ -121,7 +121,7 @@ void main() {
     });
 
     test('a nameless or oversized announcement is refused', () {
-      // The name is chosen by the far side and drawn in a list.
+      // The name is chosen by the far side and is only ever text.
       expect(BleControlProtocol.parseHello('HELLO:'), isNull);
       expect(BleControlProtocol.parseHello('HELLO:   '), isNull);
       expect(BleControlProtocol.parseHello('HELLO:${'x' * 65}'), isNull);

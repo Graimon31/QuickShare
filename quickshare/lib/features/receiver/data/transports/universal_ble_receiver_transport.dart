@@ -9,8 +9,10 @@ import 'package:path_provider/path_provider.dart';
 import 'package:universal_ble/universal_ble.dart';
 
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
-import 'package:quickshare/core/security/path_sanitizer.dart';
+import 'package:quickshare/core/storage/disk_space.dart';
 import 'package:quickshare/core/storage/durable_file.dart';
+import 'package:quickshare/core/storage/safe_path.dart';
+import 'package:quickshare/core/storage/storage_failure.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
@@ -63,6 +65,12 @@ class UniversalBleReceiveProgress {
 /// On iOS and macOS the native CoreBluetooth bridge is used instead — see
 /// [BluetoothReceiverTransport].
 class UniversalBleReceiverTransport {
+  UniversalBleReceiverTransport({DiskSpaceProbe? diskSpace})
+      : _diskSpace = diskSpace ?? DiskSpaceProbe.forCurrentPlatform();
+
+  /// Says how much room the destination has; see [DiskSpaceProbe].
+  final DiskSpaceProbe _diskSpace;
+
   static const _serviceUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10';
   static const _controlUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
   static const _metadataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
@@ -93,36 +101,12 @@ class UniversalBleReceiverTransport {
   /// Tells the sender about a network this receiver raised: an `AP:` write
   /// on its control characteristic, carrying the sealed credentials.
   Future<void> sendApOffer(String sealed) async {
-    if (_targetDeviceId != null) {
-      await _writeControl(BleControlProtocol.apOffer(sealed));
-      return;
-    }
-    if (_waitingAdvertisement) {
-      await _notifyMetadata(utf8.encode(BleControlProtocol.apOffer(sealed)));
-      return;
-    }
     await _writeControl(BleControlProtocol.apOffer(sealed));
   }
 
   /// Hands the sender this side's public half for the negotiation.
   Future<void> sendKeyExchange(String publicKey) async {
-    if (_targetDeviceId != null) {
-      await _writeControl(BleControlProtocol.keyExchange(publicKey));
-      return;
-    }
-    if (_waitingAdvertisement) {
-      await _notifyMetadata(utf8.encode(BleControlProtocol.keyExchange(publicKey)));
-      return;
-    }
     await _writeControl(BleControlProtocol.keyExchange(publicKey));
-  }
-
-  Future<void> _notifyMetadata(List<int> value) async {
-    await UniversalBlePeripheral.updateCharacteristicValue(
-      characteristicId: _metadataUuid,
-      value: Uint8List.fromList(value),
-      deviceId: _peripheralClientId,
-    );
   }
 
   Future<void> _writeControl(String command) async {
@@ -214,8 +198,25 @@ class UniversalBleReceiverTransport {
       _raf?.closeSync();
     } catch (_) {}
     _raf = null;
+    // There is no resume on this channel, so the half-written file is dead
+    // weight — and on a full disk, the very thing taking the room.
+    final partial = _partialPath;
+    _partialPath = null;
+    _targetPath = null;
+    if (partial != null) {
+      try {
+        if (FileSystemEntity.typeSync(partial, followLinks: false) !=
+            FileSystemEntityType.notFound) {
+          // `delete` unlinks a link; it never reaches a link's target.
+          File(partial).deleteSync();
+        }
+      } catch (_) {}
+    }
     if (!_completion.isCompleted) {
-      _completion.completeError(e);
+      // A full disk, a link in the destination, a transfer that cannot fit:
+      // the screen needs to say which, so they travel as a coded exception.
+      final problem = classifyStorageError(e);
+      _completion.completeError(problem?.toException() ?? e);
     }
   }
 
@@ -249,117 +250,6 @@ class UniversalBleReceiverTransport {
     );
 
     AppLogger.info('UniversalBleReceiver: scan started', tag: 'BLE_RECEIVER');
-  }
-
-  bool _waitingAdvertisement = false;
-  String? _peripheralClientId;
-
-  /// Advertise as a waiting receiver so a sender can scan and pick this device.
-  Future<void> startWaitingAdvertisement({required String deviceName}) async {
-    await UniversalBle.requestPermissions(withAndroidFineLocation: false);
-    final capabilities = await UniversalBlePeripheral.getCapabilities();
-    if (!capabilities.supportsPeripheralMode) {
-      throw Exception('Bluetooth receiving is not supported on this platform.');
-    }
-    final readiness = await UniversalBlePeripheral.getAvailabilityState();
-    if (readiness != PeripheralReadinessState.ready) {
-      throw Exception('Bluetooth is not ready: ${readiness.name}.');
-    }
-
-    _waitingAdvertisement = true;
-    _peripheralClientId = null;
-
-    const cccdUuid = '00002902-0000-1000-8000-00805F9B34FB';
-    final notifyDescriptor = BlePeripheralDescriptor(uuid: cccdUuid);
-    await UniversalBlePeripheral.clearServices();
-    await UniversalBlePeripheral.addService(
-      BlePeripheralService(
-        uuid: _serviceUuid,
-        primary: true,
-        characteristics: [
-          BlePeripheralCharacteristic(
-            uuid: _controlUuid,
-            properties: [
-              CharacteristicProperty.write,
-              CharacteristicProperty.writeWithoutResponse,
-            ],
-            permissions: [PeripheralAttributePermission.writeable],
-          ),
-          BlePeripheralCharacteristic(
-            uuid: _metadataUuid,
-            properties: [
-              CharacteristicProperty.notify,
-              CharacteristicProperty.write,
-              CharacteristicProperty.writeWithoutResponse,
-            ],
-            descriptors: [notifyDescriptor],
-            permissions: [
-              PeripheralAttributePermission.readable,
-              PeripheralAttributePermission.writeable,
-            ],
-          ),
-          BlePeripheralCharacteristic(
-            uuid: _dataUuid,
-            properties: [CharacteristicProperty.notify],
-            descriptors: [BlePeripheralDescriptor(uuid: cccdUuid)],
-            permissions: [PeripheralAttributePermission.readable],
-          ),
-        ],
-      ),
-    );
-
-    UniversalBlePeripheral.setWriteRequestHandlers(
-      (deviceId, characteristicId, offset, value) {
-        if (value == null) return PeripheralWriteRequestResult();
-        _peripheralClientId = deviceId;
-        final id = characteristicId.toLowerCase();
-        if (id == _controlUuid.toLowerCase()) {
-          final command = utf8.decode(value, allowMalformed: true);
-          if (BleControlProtocol.parseCapabilities(command) != null) {
-            return PeripheralWriteRequestResult();
-          }
-          if (BleControlProtocol.parseKeyExchange(command) case final key?) {
-            // Sender's key arrives inside the link directive; ignore extras.
-            AppLogger.info('Waiting receiver got KEX (${key.length} chars)',
-                tag: 'BLE_RECEIVER');
-            return PeripheralWriteRequestResult();
-          }
-          if (command.startsWith('START:')) {
-            _progressController.add(const UniversalBleReceiveProgress(
-              phase: 'waiting',
-              fileName: '',
-              received: 0,
-              total: 0,
-            ));
-            return PeripheralWriteRequestResult();
-          }
-        }
-        if (id == _metadataUuid.toLowerCase()) {
-          _handleMetadata(value);
-        }
-        return PeripheralWriteRequestResult();
-      },
-    );
-
-    UniversalBlePeripheral.characteristicSubscriptionStream.listen((event) {
-      if (!event.isSubscribed) return;
-      _peripheralClientId = event.deviceId;
-      _progressController.add(const UniversalBleReceiveProgress(
-        phase: 'waiting',
-        fileName: '',
-        received: 0,
-        total: 0,
-      ));
-    });
-
-    final isWindows = defaultTargetPlatform == TargetPlatform.windows;
-    await UniversalBlePeripheral.startAdvertising(
-      services: [_serviceUuid],
-      localName: isWindows ? null : deviceName,
-    );
-    AppLogger.info(
-        'UniversalBleReceiver: waiting advertisement started as "$deviceName"',
-        tag: 'BLE_RECEIVER');
   }
 
   /// The session's public identifier, which is what the sender advertises.
@@ -547,16 +437,21 @@ class UniversalBleReceiverTransport {
         _receivedBytes = 0;
         _writtenPaths.clear();
         _totalBytes = json['sessionBytes'] as int? ?? _fileTotalBytes;
+        // The first frame is the first moment the size of the whole session is
+        // known. The answer comes back asynchronously, from handlers that
+        // cannot wait; at Bluetooth speeds the probe is quicker than the first
+        // few kilobytes, and a refusal removes whatever has landed.
+        unawaited(_checkRoom(_totalBytes));
       }
 
       final relative = json['path'] as String? ?? _fileName;
-      _targetPath = _uniquePath(_resolveTargetPath(relative));
+      _targetPath = SafePath.uniquePath(_resolveTargetPath(relative));
       _partialPath = '${_targetPath!}$kPartialSuffix';
       // The folder this file came from has to exist before it can be written
       // into. Created as the files arrive rather than up front: a session may
       // announce thousands, and one that fails leaves no empty shells behind.
-      Directory(p.dirname(_targetPath!)).createSync(recursive: true);
-      _raf = File(_partialPath!).openSync(mode: FileMode.writeOnly);
+      // Created, and the partial opened, without ever following a link.
+      _raf = SafePath.openPartial(_baseDir, _partialPath!, truncate: true);
 
       AppLogger.info(
           'UniversalBleReceiver: metadata — $relative, '
@@ -628,9 +523,12 @@ class UniversalBleReceiverTransport {
         throw StateError(
             'Incomplete file: received $received of $total bytes for $finalPath');
       }
-      File(partial).renameSync(finalPath);
-      await syncDirectory(p.dirname(finalPath));
-      if (!_writtenPaths.contains(finalPath)) _writtenPaths.add(finalPath);
+      // Checked again and moved without replacing: a file that took the name
+      // while this one arrived stays what it was, and this one is numbered.
+      final landed = SafePath.commitFile(
+          _baseDir.isEmpty ? null : _baseDir, partial, finalPath);
+      await syncDirectory(p.dirname(landed));
+      if (!_writtenPaths.contains(landed)) _writtenPaths.add(landed);
     } catch (e) {
       AppLogger.warning('UniversalBleReceiver: could not seal $finalPath: $e',
           tag: 'BLE_RECEIVER');
@@ -684,20 +582,22 @@ class UniversalBleReceiverTransport {
   /// sender cannot climb out of the destination by naming its way out. The
   /// containment check afterwards is deliberate belt and braces.
   String _resolveTargetPath(String relative) {
-    return PathSanitizer.resolveSafePath(relative, _baseDir,
-        defaultName: 'received_file');
+    return SafePath.resolve(relative, _baseDir, defaultName: 'received_file');
   }
 
-  String _uniquePath(String path) {
-    var candidate = path;
-    var counter = 1;
-    while (File(candidate).existsSync()) {
-      final ext = p.extension(path);
-      final stem = p.basenameWithoutExtension(path);
-      candidate = p.join(p.dirname(path), '$stem ($counter)$ext');
-      counter++;
+  /// Fails the session when the destination is known not to have room for the
+  /// [bytes] it announced.
+  Future<void> _checkRoom(int bytes) async {
+    if (_baseDir.isEmpty || bytes <= 0) return;
+    try {
+      await requireFreeSpace(_diskSpace, _baseDir,
+          remainingBytes: bytes, tag: 'BLE_RECEIVER');
+    } on NotEnoughSpaceException catch (e) {
+      if (!_failed && !_completion.isCompleted) {
+        _emit('failed');
+        _failSession(e);
+      }
     }
-    return candidate;
   }
 
   void _emit(String phase) {
@@ -728,13 +628,6 @@ class UniversalBleReceiverTransport {
   }
 
   Future<void> cancel() async {
-    if (_waitingAdvertisement) {
-      _waitingAdvertisement = false;
-      try {
-        await UniversalBlePeripheral.stopAdvertising();
-        await UniversalBlePeripheral.clearServices();
-      } catch (_) {}
-    }
     _failed = true;
     _idleTimer?.cancel();
     _idleTimer = null;

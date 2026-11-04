@@ -5,7 +5,11 @@
 //   flutter test integration_test/peer_link_pair_test.dart -d macos \
 //       --dart-define=PEERLINK_ROLE=host
 //   flutter test integration_test/peer_link_pair_test.dart -d <iphone> \
-//       --dart-define=PEERLINK_ROLE=join
+//       --dart-define=PEERLINK_ROLE=join \
+//       --dart-define=PEERLINK_TLS_FINGERPRINT=<fingerprint printed by host>
+//
+// A new TLS fingerprint is created for each QHTP session. Copy the value from
+// the host's trusted output so the receiver can pin the certificate.
 //
 // Wi-Fi must be on for both, but neither has to be joined to anything: that
 // is the whole point of the link. Whatever number comes out is the honest
@@ -29,6 +33,7 @@ import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 
 const _role = String.fromEnvironment('PEERLINK_ROLE', defaultValue: 'host');
+const _peerFingerprint = String.fromEnvironment('PEERLINK_TLS_FINGERPRINT');
 const _service = 'directdrop-pair-test';
 const _token = 'pair-test-token';
 const _sessionId = 'pair-test-session';
@@ -76,6 +81,10 @@ void main() {
         authToken: _token,
       );
 
+      final fingerprint = server.tlsFingerprint;
+      expect(fingerprint, isNotNull, reason: 'the QHTP host must use TLS');
+      expect(fingerprint, isNotEmpty);
+      print('PEERLINK_TLS_FINGERPRINT=$fingerprint');
       await link.host(serviceName: _service, localPort: port);
       print('hosting as "$_service", QHTP on :$port — start the other device');
 
@@ -98,6 +107,9 @@ void main() {
     }
 
     // ---- receiver ----
+    expect(_peerFingerprint, isNotEmpty,
+        reason: 'Run the host first and copy the printed '
+            'PEERLINK_TLS_FINGERPRINT using --dart-define.');
     final localPort = await link.join(
       serviceName: _service,
       timeout: const Duration(seconds: 60),
@@ -116,6 +128,7 @@ void main() {
         token: _token,
         sessionId: _sessionId,
         mode: 'http-lan',
+        tlsFingerprint: _peerFingerprint,
       ),
       targetBaseDir: session.path,
     );

@@ -18,17 +18,18 @@ import 'package:cryptography/cryptography.dart';
 /// ## Why a key exchange and not the session token
 ///
 /// The obvious key is the session token: both sides hold it whenever a code
-/// was read out or a QR was scanned. But a receiver can arrive with neither —
-/// it announces itself, the person sending picks it off a list, and the token
-/// only reaches it *after* the link is up, in the frame that says where the
-/// file is. Sealing with the token would have left exactly that case in the
-/// clear, and it is the case the device list exists to serve.
+/// was read out or a QR was scanned. But a receiver can arrive without it —
+/// one that connected before anything was exchanged would only get the token
+/// *after* the link is up, in the frame that says where the file is. Sealing
+/// with the token would leave exactly that case in the clear. No screen in the
+/// app produces it now, since devices are joined by a code or a QR and by
+/// nothing else, but nothing about the exchange needs it to.
 ///
 /// So each side makes an ephemeral key pair and sends the public half. A
 /// passive listener sees both public keys and can do nothing with them; the
-/// shared secret is never transmitted. That covers the coded path and the
-/// uncoded one with the same mechanism, which is one fewer thing to get wrong
-/// than two.
+/// shared secret is never transmitted. That covers a receiver that holds the
+/// token and one that does not with the same mechanism, which is one fewer
+/// thing to get wrong than two.
 ///
 /// An active attacker who substitutes their own key on the wire is not
 /// addressed here and is not meant to be: what they would reach is the

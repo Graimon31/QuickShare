@@ -4,22 +4,24 @@ import 'package:flutter/material.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/localization/locale_controller.dart';
-import 'package:quickshare/core/network/app_presence.dart';
 import 'package:quickshare/core/network/hotspot_lifecycle_guard.dart';
 import 'package:quickshare/core/router/app_router.dart';
 import 'package:quickshare/core/theme/app_theme.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 class DirectDropApp extends StatefulWidget {
-  const DirectDropApp({super.key});
+  /// Where share links come from. The system's, unless a test supplies its own.
+  final DeepLinkService? deepLinks;
+
+  const DirectDropApp({super.key, this.deepLinks});
 
   @override
   State<DirectDropApp> createState() => _DirectDropAppState();
 }
 
-class _DirectDropAppState extends State<DirectDropApp>
-    with WidgetsBindingObserver {
-  final _deepLinks = DeepLinkService();
+class _DirectDropAppState extends State<DirectDropApp> {
+  late final DeepLinkService _deepLinks =
+      widget.deepLinks ?? DeepLinkService();
   // App-level rather than page-level: the hotspot outlives the screen that
   // raised it — the transfer moves on to the progress route while the network
   // stays up.
@@ -29,45 +31,26 @@ class _DirectDropAppState extends State<DirectDropApp>
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this);
     // A share link opened from Finder/Mail/Messages routes straight into the
     // receive flow, whether the app was already running or launched by it.
-    // The link carries the QR payload itself (`?p=`); receive/code submits it
-    // the same way a paste would.
+    // The link carries the QR payload itself (`?p=`) and lands on its own
+    // screen, not on the one that takes digits.
     _payloadSub = _deepLinks.sharePayloads.listen((share) {
       final q = <String, String>{'p': share.qrPayload};
       if (share.name != null) q['n'] = share.name!;
       if (share.bytes != null) q['s'] = '${share.bytes}';
       if (share.itemCount != null) q['c'] = '${share.itemCount}';
-      AppRouter.router.go(Uri(path: '/receive/code', queryParameters: q).toString());
+      AppRouter.router
+          .go(Uri(path: '/receive/link', queryParameters: q).toString());
     });
     _deepLinks.init();
     _hotspotGuard.attach();
-    // Discoverable for as long as the app is open, rather than only on the
-    // screens that happen to draw a list — see [AppPresence].
-    unawaited(AppPresence.instance.start());
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      if (!AppPresence.instance.isRunning) {
-        unawaited(AppPresence.instance.start());
-      } else {
-        unawaited(AppPresence.instance.refresh());
-      }
-    } else if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.detached) {
-      unawaited(AppPresence.instance.stop());
-    }
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
     _payloadSub?.cancel();
     _hotspotGuard.detach();
-    unawaited(AppPresence.instance.dispose());
     _deepLinks.dispose();
     super.dispose();
   }

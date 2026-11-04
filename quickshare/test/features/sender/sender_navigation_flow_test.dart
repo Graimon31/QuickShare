@@ -24,6 +24,8 @@ import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/progress_indicator_widget.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
+import '../../support/silent_rendezvous.dart';
+
 class MockSenderRepository extends Mock implements SenderRepository {}
 class _MockLocalHotspotService extends Mock implements LocalHotspotService {}
 
@@ -96,7 +98,7 @@ void main() {
     when(() => mockRepository.startQhtpTransfer(
           any(),
           authToken: any(named: 'authToken'),
-          sessionPublicId: any(named: 'sessionPublicId'),
+          sessionCode: any(named: 'sessionCode'),
           onIndexProgress: any(named: 'onIndexProgress'),
           onIndexed: any(named: 'onIndexed'),
           onIndexFailed: any(named: 'onIndexFailed'),
@@ -117,6 +119,7 @@ void main() {
       repository: mockRepository,
       peerLinkService: _RecordingPeerLink(),
       hotspotService: mockHotspot,
+      advertiser: SilentRendezvousAdvertiser(),
     );
   }
 
@@ -174,6 +177,12 @@ void main() {
       expect(bloc.state, isA<QRReady>());
       expect(find.byType(QrImageView), findsOneWidget);
       expect(find.byType(OutlinedButton), findsOneWidget);
+
+      // The bloc owns the offer's five-minute clock, and the binding checks
+      // for stray timers when the test body ends — before any tear-down runs.
+      // So the offer is ended here, the way the Cancel button ends it.
+      bloc.add(CancelSending());
+      await tester.pump();
     });
 
     testWidgets(
@@ -190,7 +199,7 @@ void main() {
       when(() => mockRepository.startQhtpTransfer(
             any(),
             authToken: any(named: 'authToken'),
-            sessionPublicId: any(named: 'sessionPublicId'),
+            sessionCode: any(named: 'sessionCode'),
             onIndexProgress: any(named: 'onIndexProgress'),
             onIndexed: any(named: 'onIndexed'),
             onIndexFailed: any(named: 'onIndexFailed'),

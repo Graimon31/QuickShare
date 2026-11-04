@@ -52,7 +52,7 @@ class AppLocalizationsRu extends AppLocalizations {
   String get homeReceiveTitle => 'Получить файл';
 
   @override
-  String get homeReceiveSubtitleDesktop => 'Вставьте код или ссылку';
+  String get homeReceiveSubtitleDesktop => 'Введите код отправителя';
 
   @override
   String get homeReceiveSubtitleMobile => 'Отсканируйте QR-код';
@@ -91,7 +91,8 @@ class AppLocalizationsRu extends AppLocalizations {
   String get pickerMethodBluetoothTitle => 'Bluetooth';
 
   @override
-  String get pickerMethodBluetoothSubtitle => 'Прямая передача по Bluetooth';
+  String get pickerMethodBluetoothSubtitle =>
+      'На телефон, который сканирует ваш QR-код';
 
   @override
   String get pickerMethodInternetTitle => 'Ссылка через интернет';
@@ -380,6 +381,14 @@ class AppLocalizationsRu extends AppLocalizations {
   String get qrDisplayScanOrShare => 'Отсканируйте QR или отправьте ссылку';
 
   @override
+  String get qrDisplayScanOrEnterCode => 'Отсканируйте QR или введите код';
+
+  @override
+  String offerCodeChangesIn(String time) {
+    return 'Код и QR сменятся через $time';
+  }
+
+  @override
   String get qrDisplayShareLinkToReceive =>
       'Отправьте эту ссылку, чтобы получить файл';
 
@@ -389,7 +398,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get qrDisplayPhoneHint =>
-      'На телефоне: откройте DirectDrop → Получить и отсканируйте этот QR.';
+      'На другом устройстве: откройте DirectDrop → Получить. Телефон сканирует этот QR, компьютер вводит код.';
 
   @override
   String qrDisplayRenderError(String error) {
@@ -405,11 +414,6 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String qrDisplayTotalSize(String size) {
     return 'Общий размер: $size';
-  }
-
-  @override
-  String qrDisplaySessionExpires(String time) {
-    return 'Сессия истекает через $time';
   }
 
   @override
@@ -468,13 +472,6 @@ class AppLocalizationsRu extends AppLocalizations {
       'Нет активного сетевого подключения. Передача через интернет недоступна.';
 
   @override
-  String get sessionExpiredTitle => 'Сессия истекла';
-
-  @override
-  String get sessionExpiredBody =>
-      'За отведённое время никто не подключился. Обновите, чтобы создать новую сессию.';
-
-  @override
   String get sessionRefresh => 'Обновить';
 
   @override
@@ -518,7 +515,23 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get fallbackNoRouteBody =>
-      'VPN или NAT этой сети блокирует прямое соединение, а реле оказалось недоступно. Пока ничего не отправлено.';
+      'VPN или NAT этой сети блокирует прямое соединение. Пока ничего не отправлено.';
+
+  @override
+  String get fallbackNoRouteBodyRelayLimited =>
+      'Прямое соединение невозможно, а сервис реле сейчас ограничивает запросы, поэтому реле поднять не удалось. Попробуйте ещё раз примерно через минуту. Пока ничего не отправлено.';
+
+  @override
+  String get fallbackNoRouteBodyRelayUnreachable =>
+      'Прямое соединение невозможно, а сервис реле недоступен, поэтому реле поднять не удалось. Проверьте подключение этого устройства к интернету. Пока ничего не отправлено.';
+
+  @override
+  String get fallbackNoRouteBodyRelayOff =>
+      'Прямое соединение невозможно, а реле в этой сборке выключено или не настроено. Пока ничего не отправлено.';
+
+  @override
+  String get fallbackNoRouteBodyRelayWasAvailable =>
+      'Реле было доступно, но соединение всё равно не удалось установить. Возможно, VPN или фаервол блокирует даже трафик через реле. Пока ничего не отправлено.';
 
   @override
   String get fallbackWifiTitle => 'Подключите оба устройства к одной сети';
@@ -593,70 +606,34 @@ class AppLocalizationsRu extends AppLocalizations {
   String get btSendPreparing => 'Готовим Bluetooth…';
 
   @override
-  String get btSendPreparingDetail => 'Делаем устройство видимым';
+  String get btSendPreparingDetail =>
+      'Готовим код, который отсканирует второй телефон';
 
   @override
   String get btSendScanPrompt =>
-      'Отсканируйте этот QR-код на принимающем устройстве';
+      'Отсканируйте этот QR-код на телефоне-получателе';
 
   @override
   String get btSendAutoConnectNote =>
-      'Выберите устройство в списке. Соединение должно установиться за 3 секунды.';
-
-  @override
-  String get btReceiveLookingForLink => 'Ищем прямую связь…';
-
-  @override
-  String get btReceiveDirectLinkPlaceholder => 'Получаем напрямую по Wi-Fi';
-
-  @override
-  String get btReceiveTitle => 'Устройства рядом';
-
-  @override
-  String get btReceiveLookingNearby => 'Ищем Mac поблизости…';
-
-  @override
-  String get btReceiveLookingQr => 'Ищем Mac из QR-кода…';
-
-  @override
-  String get btReceiveScanning => 'Ищем устройства поблизости…';
-
-  @override
-  String get btReceiveScanningDetail =>
-      'Держите Bluetooth включённым на обоих устройствах';
-
-  @override
-  String get btReceiveConnecting => 'Подключаемся по Bluetooth…';
-
-  @override
-  String btReceivePairingWith(String name) {
-    return 'Соединяемся с $name';
-  }
-
-  @override
-  String get btReceiveConnectionFailed => 'Не удалось подключиться';
-
-  @override
-  String get btReceiveScanAgain => 'Искать снова';
-
-  @override
-  String get codeReceivePasteError => 'Вставьте ссылку от отправителя.';
-
-  @override
-  String get codeReceiveParseError =>
-      'Не удалось прочитать эту ссылку. Скопируйте ссылку под QR-кодом у отправителя.';
+      'По Bluetooth принимает телефон: откройте на нём DirectDrop, нажмите «Получить файл» и отсканируйте этот код. Компьютер по Bluetooth не принимает — для него используйте Wi-Fi.';
 
   @override
   String get codeReceiveTitle => 'Получить файл';
 
   @override
-  String get codeReceivePastePrompt => 'Вставьте код или ссылку';
+  String get codeReceivePrompt => 'Введите код с устройства отправителя';
 
   @override
-  String get codeReceiveHint => 'directdrop://join?p=…';
+  String get codeReceiveCodeInvalid => 'Введите все десять цифр кода.';
 
   @override
-  String get codeReceivePasteButton => 'Вставить';
+  String get linkReceiveOpening => 'Открываем ссылку…';
+
+  @override
+  String get linkReceiveOpeningDetail => 'Проверяем, что вам отправляют';
+
+  @override
+  String get codeReceiveHint => '12345 67890';
 
   @override
   String get codeReceiveReceiveButton => 'Получить';
@@ -694,15 +671,11 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get codeReceiveNotFoundLan =>
-      'Отправитель с этим кодом не найден в локальной сети. Убедитесь, что оба устройства подключены к одной сети Wi-Fi.';
+      'Отправитель с этим кодом не найден. Код может быть неверным или уже истёк — коды меняются каждые 5 минут. Проверьте код и убедитесь, что оба устройства подключены к одной сети Wi-Fi.';
 
   @override
-  String get codeReceiveNotAShareLink =>
-      'Это не ссылка DirectDrop. Скопируйте ссылку под QR у отправителя — не адрес Wi-Fi.';
-
-  @override
-  String get codeReceiveInvalidQr =>
-      'Неверный QR-код. Наведите камеру на QR на экране отправителя — не на текст Wi-Fi под ним.';
+  String get codeReceiveUpdateRequired =>
+      'На другом устройстве установлена другая версия DirectDrop, и оно не может принять этот код. Обновите DirectDrop на обоих устройствах и повторите попытку.';
 
   @override
   String get codeReceiveSearchingLan => 'Поиск отправителя в локальной сети…';
@@ -802,32 +775,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get logsEmpty => 'Записей пока нет';
 
   @override
-  String get nearbyTitle => 'Устройства рядом';
-
-  @override
-  String get nearbySearching => 'Ищем…';
-
-  @override
-  String get nearbyEmpty => 'Пока никого';
-
-  @override
-  String get nearbyEmptyHint =>
-      'Откройте DirectDrop на другом устройстве. Оба должны быть в одной сети.';
-
-  @override
-  String get nearbyBlocked => 'Эта сеть скрывает устройства друг от друга';
-
-  @override
-  String get nearbyBlockedHint =>
-      'Так обычно устроены гостевые и публичные сети. Используйте код ниже.';
-
-  @override
-  String get nearbyReady => 'Готов отправить';
-
-  @override
-  String get nearbyIdle => 'Ожидает';
-
-  @override
   String get inviteTitle => 'Принять файлы?';
 
   @override
@@ -863,58 +810,19 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
-  String get nearbyOrPaste => 'Или вставьте код';
-
-  @override
-  String get inviteAsking => 'Спрашиваем…';
-
-  @override
-  String get inviteAccepted => 'Принято — отправляем';
-
-  @override
   String get inviteDeclined => 'Отклонено';
 
   @override
   String get inviteUnreachable => 'Не удалось связаться с устройством';
 
   @override
-  String get inviteBusy => 'Устройство сейчас решает по другой передаче';
-
-  @override
-  String get nearbySendTo => 'Отправить сразу на устройство';
-
-  @override
   String get codeLabel => 'Код для принимающего устройства';
-
-  @override
-  String get codeHint =>
-      'Введите его на другом устройстве, если его нет в списке выше';
 
   @override
   String get codeEnterPrompt => 'Введите код с устройства-отправителя';
 
   @override
   String get codeEnterHint => '10 цифр';
-
-  @override
-  String get codeNotFound => 'Рядом нет устройства с таким кодом';
-
-  @override
-  String get btReceiveCodePrompt => 'Введите код с устройства-отправителя';
-
-  @override
-  String get qrScanBluetoothReceive => 'Получить по Bluetooth';
-
-  @override
-  String get btReceiveWaitingToBeChosen =>
-      'Ждём выбора на устройстве-отправителе';
-
-  @override
-  String get btReceiveWaitingDetail =>
-      'Это устройство видно отправителю. Выберите его там, чтобы начать передачу.';
-
-  @override
-  String get btReceiveCodeInvalid => 'Код состоит из 10 цифр';
 
   @override
   String get codeMalformed => 'Код состоит из 10 цифр';
@@ -997,6 +905,10 @@ class AppLocalizationsRu extends AppLocalizations {
   String get errorCancelledHere => 'Вы отменили передачу.';
 
   @override
+  String get errorOfferEnded =>
+      'Предложение слишком долго оставалось без ответа и было закрыто. Начните отправку заново.';
+
+  @override
   String get errorLinkWifiOff =>
       'Wi-Fi выключен. Передача строит прямую связь Wi-Fi между устройствами и без него не начнётся.';
 
@@ -1019,6 +931,47 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get errorSessionWithoutCertificate =>
       'Передача началась без сертификата, и второму устройству нечему доверять. Попробуйте ещё раз.';
+
+  @override
+  String get errorNoPathRelayLimited =>
+      'Не удалось соединиться: устройства не видят друг друга напрямую, а сервис реле сейчас ограничивает запросы. Попробуйте ещё раз примерно через минуту.';
+
+  @override
+  String get errorNoPathRelayUnreachable =>
+      'Не удалось соединиться: устройства не видят друг друга напрямую, а сервис реле недоступен. Проверьте подключение к интернету.';
+
+  @override
+  String get errorNoPathRelayOff =>
+      'Не удалось соединиться: устройства не видят друг друга напрямую, а реле в этой сборке выключено или не настроено.';
+
+  @override
+  String get errorNoPathRelayWasAvailable =>
+      'Соединиться не удалось, хотя реле было доступно. Что-то между устройствами блокирует связь — например, VPN или фаервол.';
+
+  @override
+  String get errorNotEnoughSpace =>
+      'Для этой передачи не хватает свободного места. Освободите место там, куда сохраняются файлы, и попробуйте ещё раз.';
+
+  @override
+  String errorNotEnoughSpaceDetail(String needed, String available) {
+    return 'Не хватает свободного места: нужно $needed, доступно $available. Освободите место там, куда сохраняются файлы, и попробуйте ещё раз.';
+  }
+
+  @override
+  String get errorDiskFull =>
+      'Диск заполнился во время сохранения. Освободите место и попробуйте ещё раз.';
+
+  @override
+  String get errorUnsafeDestination =>
+      'В папке сохранения на месте файла или папки стоит ярлык (символическая ссылка), поэтому ничего не было записано. Удалите его или выберите другую папку.';
+
+  @override
+  String get errorPathTooLong =>
+      'Место сохранения вложено слишком глубоко — Windows не сможет открыть файлы по такому длинному пути. Выберите папку ближе к корню диска.';
+
+  @override
+  String get errorReceivedFilesNotIntact =>
+      'Часть полученных файлов пропала или изменилась до конца передачи, поэтому передача не считается завершённой. Попробуйте ещё раз — заново будет получено только недостающее.';
 
   @override
   String get qrDisplayStillCounting => 'Считаем файлы…';

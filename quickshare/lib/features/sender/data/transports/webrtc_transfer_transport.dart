@@ -8,8 +8,10 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/utils/mime_compression.dart';
 import 'package:quickshare/core/utils/wakelock_guard.dart';
+import 'package:quickshare/core/webrtc/ice_connect_deadline.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
+import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/core/webrtc/send_buffer.dart';
 import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
@@ -88,7 +90,7 @@ class WebRtcTransferTransport implements TransferTransport {
   Stream<RelayLimitExceeded> get relayBlockedStream =>
       _degradationController.stream;
 
-  final _noPathController = StreamController<void>.broadcast();
+  final _noPathController = StreamController<NoPathDiagnosis>.broadcast();
 
   /// ICE gave up before a single byte moved.
   ///
@@ -97,7 +99,38 @@ class WebRtcTransferTransport implements TransferTransport {
   /// a NAT that will not open, and there is a way out — put both devices on
   /// one network. Reported as a failure it reached the person as "Transfer
   /// failed unexpectedly", which names neither.
-  Stream<void> get noUsablePath => _noPathController.stream;
+  ///
+  /// Carries what is known about why: whether the relay was in play, what was
+  /// gathered, which pair (if any) was chosen. Without a relay this is the
+  /// expected ending on the target setup, so it says which kind of "without".
+  Stream<NoPathDiagnosis> get noUsablePath => _noPathController.stream;
+
+  /// Why this session has no relay, from the Worker fetch that opened the
+  /// peer connection. Null when it has one. Kept for the length of the session
+  /// so that a connection that fails can say whether the relay was missing
+  /// from the start.
+  RelayUnavailable? _relayUnavailable;
+  RelayUnavailable? get relayUnavailable => _relayUnavailable;
+
+  /// Bounds the wait for a connection after the answer is applied; expiry is
+  /// handled exactly like ICE reporting `failed`.
+  late final IceConnectDeadline _connectDeadline = IceConnectDeadline(
+    budget: iceConnectBudget,
+    tag: 'WEBRTC_SENDER',
+    onExpired: () => unawaited(_reportIceGaveUp()),
+  );
+
+  /// Whether the connect deadline is running right now. For a test that has to
+  /// see it stop once the connection is up.
+  @visibleForTesting
+  bool get iceDeadlineArmed => _connectDeadline.isArmed;
+
+  bool _noPathReported = false;
+
+  /// Set when the session is being torn down on purpose. Closing the peer
+  /// connection makes ICE report `closed`, and that is our own doing, not a
+  /// route that failed to exist.
+  bool _stopping = false;
 
   /// True once the session has begun putting bytes on the channel. After
   /// that an ICE collapse is an interruption, not an absent route.
@@ -115,7 +148,12 @@ class WebRtcTransferTransport implements TransferTransport {
 
   bool _expectingRelay = false;
 
-  WebRtcTransferTransport();
+  /// How long a negotiation may take once the answer is applied. Overridable
+  /// only so a test need not spend a minute to see the deadline act.
+  final Duration iceConnectBudget;
+
+  WebRtcTransferTransport(
+      {this.iceConnectBudget = IceConnectDeadline.defaultBudget});
 
   @override
   Stream<double> get progressStream => _progressController.stream;
@@ -128,16 +166,19 @@ class WebRtcTransferTransport implements TransferTransport {
     _statusController.add(TransferStatus.initial);
   }
 
-  Future<Map<String, dynamic>> _iceConfiguration() =>
-      IceServers.configurationDynamic();
+  Future<IceSetup> _iceConfiguration() => IceServers.configurationDynamic();
 
   Future<RTCPeerConnection> _openPeerConnection() async {
-    final ice = await _iceConfiguration();
+    final setup = await _iceConfiguration();
+    final ice = setup.configuration;
     final iceCount = (ice['iceServers'] as List?)?.length ?? 0;
     _expectingRelay = IceServers.containsTurn(ice);
+    _relayUnavailable = setup.relayUnavailable;
     AppLogger.info(
       'Creating peer connection ($iceCount ICE servers, cap ${IceServers.maxIceServers}, '
-      'expectingRelay=$_expectingRelay)',
+      'expectingRelay=$_expectingRelay, '
+      'relay=${_relayUnavailable?.reason.name ?? 'available'}, '
+      'policy=${ice['iceTransportPolicy']})',
       tag: 'WEBRTC_SENDER',
     );
     return createPeerConnection(ice);
@@ -152,6 +193,8 @@ class WebRtcTransferTransport implements TransferTransport {
     _turnRefresher?.cancel();
     final workerUrl = AppConstants.workerBaseUrl.trim();
     if (workerUrl.isEmpty || _peerConnection == null) return;
+    // Switched off or never configured will still be so in 25 minutes.
+    if (_relayUnavailable?.reason.isTerminal ?? false) return;
 
     _turnRefresher = TurnCredentialRefresher(
       peerConnection: _peerConnection!,
@@ -238,7 +281,9 @@ class WebRtcTransferTransport implements TransferTransport {
 
     final path = await selectedPathKind(connection);
     AppLogger.info(
-        'Serverless sender selected path: ${path.name}, '
+        'Serverless sender selected path: ${path.name} '
+        '(${await selectedPairDescription(connection)}), '
+        'relay=${_relayUnavailable?.reason.name ?? 'available'}, '
         'session ${file.size} bytes',
         tag: 'WEBRTC_SENDER');
     // Which of the two it turned out to be is the single fact that explains a
@@ -290,6 +335,9 @@ class WebRtcTransferTransport implements TransferTransport {
     await _peerConnection!
         .setRemoteDescription(RTCSessionDescription(sdp, type));
     AppLogger.info('Remote description set on the sender', tag: 'WEBRTC_SENDER');
+    // Both descriptions are in: from here a connection either comes up or the
+    // session is written off, whether or not libwebrtc ever says `failed`.
+    _connectDeadline.arm();
   }
 
   /// Constraints that keep the offer to the one media section this app has
@@ -521,12 +569,24 @@ class WebRtcTransferTransport implements TransferTransport {
   /// nobody was draining, with the UI frozen on its last percentage.
   /// Says which of the two things just happened: a route that never existed,
   /// or a transfer that was under way and broke.
-  void _reportIceGaveUp() {
-    if (!_sendingStarted && !_noPathController.isClosed) {
-      _noPathController.add(null);
+  Future<void> _reportIceGaveUp() async {
+    _connectDeadline.cancel();
+    if (_sendingStarted) {
+      _statusController.add(TransferStatus.failed);
       return;
     }
-    _statusController.add(TransferStatus.failed);
+    if (_stopping || _noPathReported || _noPathController.isClosed) return;
+    _noPathReported = true;
+
+    final diagnosis = await diagnoseNoPath(
+      relayUnavailable: _relayUnavailable,
+      gathering: _gathering,
+      connection: _peerConnection,
+    );
+    AppLogger.error(diagnosis.summary, tag: 'WEBRTC_SENDER');
+    if (!_stopping && !_noPathController.isClosed) {
+      _noPathController.add(diagnosis);
+    }
   }
 
   void _onIceStateChanged(RTCIceConnectionState state) {
@@ -535,6 +595,7 @@ class WebRtcTransferTransport implements TransferTransport {
     switch (state) {
       case RTCIceConnectionState.RTCIceConnectionStateConnected:
       case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+        _connectDeadline.connected();
         _iceRecoveryTimer?.cancel();
         _iceRecoveryTimer = null;
       case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
@@ -544,13 +605,13 @@ class WebRtcTransferTransport implements TransferTransport {
               'ICE stayed disconnected for ${_iceRecoveryGrace.inSeconds}s — '
               'giving up on this session',
               tag: 'WEBRTC_SENDER');
-          _reportIceGaveUp();
+          unawaited(_reportIceGaveUp());
         });
       case RTCIceConnectionState.RTCIceConnectionStateFailed:
       case RTCIceConnectionState.RTCIceConnectionStateClosed:
         _iceRecoveryTimer?.cancel();
         _iceRecoveryTimer = null;
-        _reportIceGaveUp();
+        unawaited(_reportIceGaveUp());
       default:
         break;
     }
@@ -568,6 +629,7 @@ class WebRtcTransferTransport implements TransferTransport {
 
   @override
   Future<void> stopSharing() async {
+    _stopping = true;
     _statusController.add(TransferStatus.cancelled);
 
     // Tell the far side before tearing anything down. Without this the
@@ -593,6 +655,7 @@ class WebRtcTransferTransport implements TransferTransport {
 
     _iceRecoveryTimer?.cancel();
     _iceRecoveryTimer = null;
+    _connectDeadline.cancel();
     _turnRefresher?.cancel(); // §9
     _turnRefresher = null;
     await _wakelockGuard.release(); // §6

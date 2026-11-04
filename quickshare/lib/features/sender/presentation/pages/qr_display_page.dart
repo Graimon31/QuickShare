@@ -1,31 +1,22 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:qr_flutter/qr_flutter.dart';
-import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
-import 'package:quickshare/core/network/app_presence.dart';
-import 'package:quickshare/core/network/device_presence.dart';
-import 'package:quickshare/core/network/lan_discovery.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
-import 'package:quickshare/core/transfer/invitation_sender.dart';
-import 'package:quickshare/core/transfer/transfer_invitation.dart';
-import 'package:quickshare/shared/models/qr_payload.dart';
-import 'package:quickshare/shared/widgets/nearby_devices_panel.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
+import 'package:quickshare/features/sender/presentation/widgets/offer_lifecycle_guard.dart';
 import 'package:quickshare/shared/widgets/copy_value_row.dart';
-import 'package:quickshare/shared/widgets/session_expired_panel.dart';
+import 'package:quickshare/shared/widgets/offer_countdown.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 import 'package:quickshare/core/utils/byte_format.dart';
 
@@ -37,140 +28,6 @@ class QRDisplayPage extends StatefulWidget {
 }
 
 class _QRDisplayPageState extends State<QRDisplayPage> {
-  /// True while one invitation is out, so a second tap does not send another
-  /// before the first is answered.
-  bool _inviting = false;
-
-  /// The certificate a receiver has to pin, read back out of the QR payload.
-  ///
-  /// It lives there rather than on the session, and decoding what is already
-  /// on screen beats threading one more field through the bloc.
-  static String _fingerprintOf(QRReady state) {
-    try {
-      return QRPayload.decode(state.qrData).tlsFingerprint;
-    } catch (_) {
-      return '';
-    }
-  }
-
-  /// Offers this session to one device and reports what came back.
-  ///
-  /// The receiver fetches the files itself once it agrees — the sender's
-  /// server is already listening, and this only hands over the address and the
-  /// token to reach it with. Which is why the token is here rather than in the
-  /// announcement everyone on the network can read.
-  Future<void> _invite(
-    BuildContext context,
-    DiscoveredPeer peer,
-    QRReady state,
-  ) async {
-    if (_inviting) return;
-    final l10n = AppLocalizations.of(context);
-    final messenger = ScaffoldMessenger.of(context);
-
-    // An invitation is a question with two numbers in it — how many files,
-    // how big — and they are the whole basis on which the other person
-    // says yes. Asking before the walk has counted them would ask them to
-    // accept "0 items, 0 bytes". The wait is the walk's, not this button's,
-    // and it is over in the time it takes to read the screen.
-    if (state.indexing) {
-      messenger.showSnackBar(SnackBar(content: Text(l10n.qrDisplayStillCounting, style: const TextStyle(color: Colors.white))));
-      return;
-    }
-
-    if (!peer.acceptsInvitations) {
-      // An older build, or a device that is only browsing. Its own screen
-      // never showed a prompt, so waiting for one would time out.
-      messenger.showSnackBar(SnackBar(content: Text(l10n.inviteUnreachable, style: const TextStyle(color: Colors.white))));
-      return;
-    }
-
-    // The fingerprint lives in the QR payload rather than on the session:
-    // decoding what we are already showing beats threading it through the
-    // bloc for one field.
-    final fingerprint = _fingerprintOf(state);
-
-    setState(() => _inviting = true);
-    messenger.showSnackBar(SnackBar(content: Text(l10n.inviteAsking, style: const TextStyle(color: Colors.white))));
-
-    final result = await InvitationSender().invite(
-      address: peer.address,
-      port: peer.invitePort,
-      invitation: TransferInvitation(
-        senderName: DevicePresence.describeThisDevice(),
-        senderPlatform: Platform.operatingSystem,
-        itemCount: state.itemCount,
-        totalBytes: state.totalBytes,
-        port: state.session.serverPort,
-        sessionId: state.session.id,
-        token: state.session.authToken,
-        tlsFingerprint: fingerprint,
-      ),
-    );
-
-    if (!mounted) return;
-    setState(() => _inviting = false);
-
-    // Each outcome gets its own words. Telling somebody their friend declined
-    // when the machine was asleep is worse than saying nothing.
-    final message = switch (result.outcome) {
-      InvitationOutcome.accepted => l10n.inviteAccepted,
-      InvitationOutcome.declined => l10n.inviteDeclined,
-      InvitationOutcome.busy => l10n.inviteBusy,
-      InvitationOutcome.unreachable => l10n.inviteUnreachable,
-      InvitationOutcome.unusable => l10n.inviteUnreachable,
-    };
-    messenger
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(message, style: const TextStyle(color: Colors.white))));
-  }
-
-  Timer? _timer;
-  int _secondsLeft = AppConstants.sessionTimeoutSeconds;
-  bool _expired = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _startTimer();
-  }
-
-  void _startTimer() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_secondsLeft > 0) {
-        setState(() => _secondsLeft--);
-      } else {
-        _timer?.cancel();
-        setState(() => _expired = true);
-        // The QR is dead from this moment on; tear the session down so
-        // nobody connects to something the countdown already killed.
-        context.read<SenderBloc>().add(CancelSending());
-      }
-    });
-  }
-
-  void _refreshSession() {
-    setState(() {
-      _expired = false;
-      _secondsLeft = AppConstants.sessionTimeoutSeconds;
-    });
-    _startTimer();
-    context.read<SenderBloc>().add(RestartSession());
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  String _formatTime(int seconds) {
-    final m = seconds ~/ 60;
-    final s = seconds % 60;
-    return '$m:${s.toString().padLeft(2, '0')}';
-  }
-
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
@@ -181,7 +38,8 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
           context.read<SenderBloc>().add(CancelSending());
         }
       },
-      child: Scaffold(
+      child: OfferLifecycleGuard(
+          child: Scaffold(
         backgroundColor: AppColors.voidBg,
         appBar: AppBar(
           backgroundColor: Colors.transparent,
@@ -206,9 +64,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
             if (state is Transferring) {
               context.go('/send/progress');
             } else if (state is SenderInitial) {
-              // Expiry lands here too (the session is cancelled underneath),
-              // but then the expired panel owns the screen.
-              if (!_expired) context.go('/send');
+              context.go('/send');
             } else if (state is InviteApprovalRequested) {
               _showApprovalDialog(context, state);
             } else if (state is SenderError) {
@@ -229,15 +85,10 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                 ),
                 behavior: SnackBarBehavior.floating,
               ));
-              // Unless the session simply ran out, where the expired panel
-              // already owns the screen and offers its own way on.
-              if (!_expired) context.go('/send');
+              context.go('/send');
             }
           },
           builder: (context, state) {
-            if (_expired) {
-              return SessionExpiredPanel(onRefresh: _refreshSession);
-            }
             final qrState = state is InviteApprovalRequested
                 ? state.previousState
                 : (state is QRReady ? state : null);
@@ -277,30 +128,11 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        // Straight to a device, for the pair with no camera
-                        // between them: the QR below still covers a phone,
-                        // but two desktops have nothing to point at each
-                        // other.
-                        NearbyDevicesPanel(
-                          presence: AppPresence.instance.presence,
-                          onSelected: (peer) => _invite(context, peer, qrState),
-                          // What a receiver who was told the code matches
-                          // against. Derived from the code and not reversible,
-                          // so it identifies this session without handing it
-                          // to everyone in range.
-                          serving: qrState.code == null
-                              ? null
-                              : ServingSession(
-                                  port: qrState.session.serverPort,
-                                  tlsFingerprint: _fingerprintOf(qrState),
-                                  publicId: qrState.code!.publicId,
-                                ),
-                        ),
-                        const SizedBox(height: 28),
-
                         // Subtitle instruction
                         Text(
-                          l10n.qrDisplayScanOrShare,
+                          isInternet
+                              ? l10n.qrDisplayScanOrShare
+                              : l10n.qrDisplayScanOrEnterCode,
                           textAlign: TextAlign.center,
                           style: GoogleFonts.inter(
                             fontSize: 18,
@@ -464,15 +296,8 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         ),
                         const SizedBox(height: 12),
 
-                        Text(
-                          l10n.qrDisplaySessionExpires(
-                              _formatTime(_secondsLeft)),
-                          style: GoogleFonts.inter(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.error,
-                          ),
-                        ),
+                        if (qrState.expiresAt != null)
+                          OfferCountdown(expiresAt: qrState.expiresAt!),
 
                         const SizedBox(height: 24),
 
@@ -508,6 +333,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
               ),
             );
           },
+        ),
         ),
       ),
     );

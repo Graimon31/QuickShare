@@ -12,6 +12,9 @@ import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/security/path_sanitizer.dart';
+import 'package:quickshare/core/storage/durable_file.dart';
+import 'package:quickshare/core/storage/safe_path.dart';
+import 'package:quickshare/core/storage/storage_failure.dart';
 import 'package:flutter/foundation.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
 import 'package:quickshare/features/receiver/domain/entities/qhtp_receive_result.dart';
@@ -52,15 +55,14 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
   }
 
   String sanitizePath(String fileName, String baseDir) {
-    return PathSanitizer.resolveSafePath(fileName, baseDir,
-        defaultName: 'received_file');
+    return SafePath.resolve(fileName, baseDir, defaultName: 'received_file');
   }
 
   /// Whether [ip] names one machine this device could dial.
   ///
   /// Deliberately permissive: the address is only ever one this device was
   /// handed by a sender it already agreed to collect from — a scanned code, a
-  /// typed code, or the return address of an invitation someone accepted — and
+  /// typed code, or the address a sender's approval handed back — and
   /// the relay the internet mode uses is a public address by design. What is
   /// left to catch here is an address that names no single machine, so a
   /// multicast group and an unparseable string are the refusals.
@@ -220,6 +222,11 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       return Right(resultPath);
     } catch (e) {
       debugPrint('Error details: $e');
+      // A full disk or a link in the way is not "please try again".
+      final problem = classifyStorageError(e);
+      if (problem != null) {
+        return Left(FileFailure(problem.message, code: problem.code));
+      }
       return const Left(NetworkFailure('Download failed. Please try again.'));
     }
   }
@@ -288,18 +295,17 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
       final finalDir = (await const TransferCache().sessionDirectory()).path;
 
       final safeName = sanitizeFileName(fileName);
-      String destPath = p.join(finalDir, safeName);
-      int counter = 1;
-      while (await File(destPath).exists()) {
-        final ext = p.extension(safeName);
-        final base = p.basenameWithoutExtension(safeName);
-        destPath = p.join(finalDir, '$base ($counter)$ext');
-        counter++;
-      }
-      final finalPath = destPath;
+      // Looked at without following links, so a dangling link counts as a
+      // taken name; copied into a guarded partial and named without replacing
+      // anything, so the copy cannot be steered through a link either.
+      final wanted = SafePath.uniquePath(p.join(finalDir, safeName));
+      final partial = '$wanted$kPartialSuffix';
+      SafePath.openPartial(finalDir, partial, truncate: true).closeSync();
 
       final tempFile = File(tempPath);
-      await tempFile.copy(finalPath);
+      await tempFile.copy(partial);
+      SafePath.raceWindow('commit', wanted);
+      final finalPath = SafePath.commitFile(finalDir, partial, wanted);
       await tempFile.delete();
 
       return Right(finalPath);

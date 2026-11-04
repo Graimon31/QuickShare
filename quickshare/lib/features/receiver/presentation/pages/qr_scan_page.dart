@@ -34,6 +34,7 @@ class _QRScanPageState extends State<QRScanPage>
   bool _reduceMotion = false;
   bool _cameraReleaseStarted = false;
   String? _statusHint;
+  Timer? _cameraPermissionWatchdog;
 
   @override
   void initState() {
@@ -63,18 +64,44 @@ class _QRScanPageState extends State<QRScanPage>
   }
 
   Future<void> _initScanner() async {
-    final granted = await sl<PermissionService>().requestCamera();
+    final permissions = sl<PermissionService>();
+    // An Android first-time permission dialog can grant camera access while
+    // the plugin's request Future is still pending. Poll the *OS state* as a
+    // fallback, so a successful grant does not strand the QR screen on its
+    // preparing spinner until the user backs out and opens it again.
+    _cameraPermissionWatchdog?.cancel();
+    _cameraPermissionWatchdog =
+        Timer.periodic(const Duration(seconds: 2), (_) async {
+      if (!mounted || _isClosing || cameraController != null) {
+        _cameraPermissionWatchdog?.cancel();
+        return;
+      }
+      try {
+        if (await permissions.hasCameraPermission()) {
+          _cameraPermissionWatchdog?.cancel();
+          _activateScanner();
+        }
+      } catch (_) {
+        // The original permission request still handles normal errors.
+      }
+    });
+    final granted = await permissions.requestCamera();
+    _cameraPermissionWatchdog?.cancel();
+    if (cameraController != null) return;
     if (!granted) {
       if (mounted && !_isClosing) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content:
-                Text(AppLocalizations.of(context).qrScanCameraPermission,
-                    style: const TextStyle(color: Colors.white))));
+            content: Text(AppLocalizations.of(context).qrScanCameraPermission,
+                style: const TextStyle(color: Colors.white))));
         _closeScanner();
       }
       return;
     }
-    if (!mounted || _isClosing) return;
+    _activateScanner();
+  }
+
+  void _activateScanner() {
+    if (!mounted || _isClosing || cameraController != null) return;
     _reduceMotion = MediaQuery.maybeOf(context)?.disableAnimations ?? false;
     setState(() {
       cameraController = MobileScannerController(
@@ -97,6 +124,7 @@ class _QRScanPageState extends State<QRScanPage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _cameraPermissionWatchdog?.cancel();
     _isClosing = true;
     unawaited(_releaseCamera());
     _scanAnimation?.dispose();
@@ -108,7 +136,6 @@ class _QRScanPageState extends State<QRScanPage>
   void _closeScanner() => _navigateAfterCameraRelease('/');
 
   void _openCodeEntry() => _navigateAfterCameraRelease('/receive/code');
-
 
   void _navigateAfterCameraRelease(String location, {Object? extra}) {
     if (_isClosing) return;
@@ -251,7 +278,8 @@ class _QRScanPageState extends State<QRScanPage>
             } else if (state is ReceiverError) {
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: Text(state.message, style: const TextStyle(color: Colors.white)),
+                  content: Text(state.message,
+                      style: const TextStyle(color: Colors.white)),
                   backgroundColor: AppColors.error,
                   behavior: SnackBarBehavior.floating,
                   duration: const Duration(seconds: 4),

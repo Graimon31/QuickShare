@@ -4,7 +4,9 @@ import 'package:gal/gal.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/storage/received_item.dart';
+import 'package:quickshare/core/storage/safe_path.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// Raised when an item could not be written to its destination.
@@ -82,8 +84,8 @@ class MediaSaver {
     final target = await resolve() ?? await getApplicationDocumentsDirectory();
     if (!await target.exists()) await target.create(recursive: true);
 
-    final destination = _uniquePath(p.join(target.path, item.name));
-    await _place(item, destination);
+    final destination =
+        await _place(item, _uniquePath(p.join(target.path, item.name)));
     AppLogger.info('Saved ${item.name} to $destination', tag: 'SAVE');
     return item.copyWith(savedPath: destination);
   }
@@ -92,8 +94,8 @@ class MediaSaver {
   Future<ReceivedItem> saveTo(ReceivedItem item, String directory) async {
     final dir = Directory(directory);
     if (!await dir.exists()) await dir.create(recursive: true);
-    final destination = _uniquePath(p.join(directory, item.name));
-    await _place(item, destination);
+    final destination =
+        await _place(item, _uniquePath(p.join(directory, item.name)));
     return item.copyWith(savedPath: destination);
   }
 
@@ -112,25 +114,41 @@ class MediaSaver {
   /// user-picked folder, or a desktop pointed at an external disk, crosses
   /// one every time. Any failure falls through to it — if the reason was not
   /// the boundary but something real, the copy raises it just the same.
-  Future<void> _place(ReceivedItem item, String destination) async {
+  ///
+  /// Nothing already at [destination] is ever replaced: `rename` and `copy`
+  /// both do that silently, and the name was only free when it was picked. A
+  /// name that was taken in the meantime — by a file, a folder or a link —
+  /// moves the item to the next free one. Returns where the item really is.
+  Future<String> _place(ReceivedItem item, String destination) async {
     try {
       try {
+        SafePath.raceWindow('place', destination);
         if (item.isDirectory) {
-          await Directory(item.cachePath).rename(destination);
+          SafePath.renameDirectoryNoClobber(item.cachePath, destination);
         } else {
-          await File(item.cachePath).rename(destination);
+          SafePath.renameNoClobber(item.cachePath, destination);
         }
-        return;
+        return destination;
+      } on PathTakenException {
+        return _place(item, _uniquePath(destination));
       } on FileSystemException {
         // Not the same filesystem, most likely. Copy instead.
       }
 
+      // Copied beside the name and given it at the end, so the destination
+      // never holds a half-written file under its real name.
+      final partial = '$destination$kPartialSuffix';
       if (item.isDirectory) {
-        await _copyTree(Directory(item.cachePath), Directory(destination));
-      } else {
-        await File(item.cachePath).copy(destination);
+        await _copyTree(Directory(item.cachePath), Directory(partial));
+        return SafePath.commitDirectory(null, partial, destination);
       }
+      SafePath.openPartial(p.dirname(destination), partial, truncate: true)
+          .closeSync();
+      await File(item.cachePath).copy(partial);
+      return SafePath.commitFile(p.dirname(destination), partial, destination);
     } on FileSystemException catch (e) {
+      throw SaveFailed(item, e.message);
+    } on UnsafePathException catch (e) {
       throw SaveFailed(item, e.message);
     }
   }
@@ -151,18 +169,9 @@ class MediaSaver {
     }
   }
 
-  /// Never silently overwrites something already there.
-  static String _uniquePath(String path) {
-    var candidate = path;
-    var counter = 1;
-    while (File(candidate).existsSync() || Directory(candidate).existsSync()) {
-      final ext = p.extension(path);
-      final stem = p.basenameWithoutExtension(path);
-      candidate = p.join(p.dirname(path), '$stem ($counter)$ext');
-      counter++;
-    }
-    return candidate;
-  }
+  /// Never silently overwrites something already there. A link — even a
+  /// dangling one — is something there.
+  static String _uniquePath(String path) => SafePath.uniquePath(path);
 
   /// Turns a plugin error into something worth showing a person.
   static String _describe(GalException e) => switch (e.type) {

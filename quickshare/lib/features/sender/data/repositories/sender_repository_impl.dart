@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
+import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/features/sender/data/indexer/file_indexer.dart';
 import 'package:quickshare/features/sender/data/qr/qr_payload_encoder.dart';
@@ -151,7 +152,7 @@ class SenderRepositoryImpl implements SenderRepository {
   Future<Either<Failure, TransferSession>> startQhtpTransfer(
     List<String> paths, {
     String? authToken,
-    String? sessionPublicId,
+    SessionCode? sessionCode,
     void Function(int items, int bytes)? onIndexProgress,
     void Function(int itemCount, int totalBytes)? onIndexed,
     void Function(Object error)? onIndexFailed,
@@ -225,7 +226,7 @@ class SenderRepositoryImpl implements SenderRepository {
         sessionId: sessionId,
         index: index,
         authToken: token,
-        sessionPublicId: sessionPublicId,
+        sessionCode: sessionCode,
       );
       AppLogger.info(
           'Session start: serving on :$port, ${sw.elapsedMilliseconds}ms since '
@@ -270,6 +271,26 @@ class SenderRepositoryImpl implements SenderRepository {
           ServerFailure('Failed to start QHTP transfer: ${e.toString()}'));
     }
   }
+
+  @override
+  Future<Either<Failure, TransferSession>> rotateSession(
+    TransferSession session, {
+    required String authToken,
+    SessionCode? sessionCode,
+  }) async {
+    final rotated = localServer.rotateCredentials(
+      authToken: authToken,
+      sessionCode: sessionCode,
+    );
+    if (!rotated) {
+      return const Left(ServerFailure('The session is no longer running.',
+          code: FailureCode.offerEnded));
+    }
+    return Right(session.copyWith(authToken: authToken));
+  }
+
+  @override
+  Future<bool> verifyServing() => localServer.probeHealth();
 
   Future<String> _computeChecksumStream(File file) async {
     final digest = await sha256.bind(file.openRead()).first;

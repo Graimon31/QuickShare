@@ -6,7 +6,6 @@
 // second case; this drives a real loopback download and proves the
 // receiving side notices within a couple of seconds, not thirty.
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -134,7 +133,7 @@ void main() {
         reason: 'the transfer must not have been allowed to complete');
   });
 
-  test('health is not a first client; invite/request is', () async {
+  test('health is not a first client', () async {
     final srv = LocalHttpServer();
     addTearDown(() => srv.stop());
     final emptyDir = await Directory.systemTemp.createTemp('qhtp_empty_');
@@ -149,7 +148,7 @@ void main() {
       sessionId: 'sess-123',
       index: index,
       authToken: 'token-abc',
-      sessionPublicId: sessionCode.publicId,
+      sessionCode: sessionCode,
     );
 
     // Timeout case
@@ -166,14 +165,16 @@ void main() {
     final stillWaiting = await srv.waitForFirstClient(timeout: const Duration(milliseconds: 50));
     expect(stillWaiting, isFalse);
 
-    // /v2/invite/request DOES complete waitForFirstClient
-    srv.onApprovalRequested = (req) async => false;
+    // A request that carries the session token does. What else is, and is
+    // not, a client is in link_probe_test.dart.
     final waitFuture = srv.waitForFirstClient(timeout: const Duration(seconds: 3));
-    final inviteReq = await client.postUrl(Uri.parse('https://127.0.0.1:$port/v2/invite/request'));
-    inviteReq.headers.contentType = ContentType.json;
-    inviteReq.write(jsonEncode({'code': sessionCode.code}));
-    final inviteRes = await inviteReq.close();
-    expect(inviteRes.statusCode, equals(200));
+    final sessionReq = await client.getUrl(Uri.parse('https://127.0.0.1:$port/v2/session'));
+    sessionReq.headers.set('Authorization', 'Bearer token-abc');
+    final sessionRes = await sessionReq.close();
+    await sessionRes.drain<void>();
+    // Whatever it answers: this selection holds no files, so there is no
+    // session to describe. The token was accepted, and that is what counts.
+    expect(sessionRes.statusCode, isNot(equals(401)));
 
     expect(await waitFuture, isTrue);
   });

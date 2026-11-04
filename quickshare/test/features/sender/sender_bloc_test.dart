@@ -18,6 +18,7 @@ import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 
 class MockSenderRepository extends Mock implements SenderRepository {}
+
 class _MockLocalHotspotService extends Mock implements LocalHotspotService {}
 
 /// Stands in for the native side and remembers whether it was asked to host.
@@ -84,7 +85,8 @@ void main() {
         .thenAnswer((_) async => const Right(null));
     when(() => mockRepository.stopServer(force: true))
         .thenAnswer((_) async => const Right(null));
-    when(() => mockRepository.waitForFirstClient(timeout: any(named: 'timeout')))
+    when(() =>
+            mockRepository.waitForFirstClient(timeout: any(named: 'timeout')))
         .thenAnswer((_) async => true);
     when(() => mockRepository.approvalRequests)
         .thenAnswer((_) => const Stream.empty());
@@ -107,11 +109,11 @@ void main() {
     blocTest<SenderBloc, SenderState>(
       'a send with nothing chosen names the reason as a code',
       build: () => SenderBloc(repository: mockRepository),
-      act: (bloc) => bloc.add(const StartQhtpSend([],
-          mode: TransportType.bluetooth)),
+      act: (bloc) =>
+          bloc.add(const StartQhtpSend([], mode: TransportType.bluetooth)),
       expect: () => [
-        isA<SenderError>().having(
-            (s) => s.code, 'code', FailureCode.nothingSelected),
+        isA<SenderError>()
+            .having((s) => s.code, 'code', FailureCode.nothingSelected),
       ],
     );
 
@@ -120,8 +122,8 @@ void main() {
       build: () => SenderBloc(repository: mockRepository),
       act: (bloc) => bloc.add(RestartSession()),
       expect: () => [
-        isA<SenderError>().having(
-            (s) => s.code, 'code', FailureCode.nothingToRestart),
+        isA<SenderError>()
+            .having((s) => s.code, 'code', FailureCode.nothingToRestart),
       ],
     );
 
@@ -187,7 +189,8 @@ void main() {
       verify: (_) => verify(() => mockRepository.pickMedia()).called(1),
     );
 
-    final testDir = Directory.systemTemp.createTempSync('quickshare_test_folder');
+    final testDir =
+        Directory.systemTemp.createTempSync('quickshare_test_folder');
     File('${testDir.path}/test_file.txt').writeAsStringSync('hello world');
 
     blocTest<SenderBloc, SenderState>(
@@ -208,16 +211,17 @@ void main() {
         );
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                sessionPublicId: any(named: 'sessionPublicId'),
+                sessionCode: any(named: 'sessionCode'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
             .thenAnswer((_) async => Right(dummySession));
-        when(() => mockRepository.generateQRPayload(any()))
-            .thenAnswer((_) async => const Right('quickshare://join?room=123456'));
+        when(() => mockRepository.generateQRPayload(any())).thenAnswer(
+            (_) async => const Right('quickshare://join?room=123456'));
         return SenderBloc(repository: mockRepository);
       },
-      act: (bloc) => bloc.add(StartQhtpSend([testDir.path], mode: TransportType.wifi)),
+      act: (bloc) =>
+          bloc.add(StartQhtpSend([testDir.path], mode: TransportType.wifi)),
       expect: () => [
         isA<ServerStarting>(),
         isA<QRReady>(),
@@ -247,13 +251,13 @@ void main() {
         );
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                sessionPublicId: any(named: 'sessionPublicId'),
+                sessionCode: any(named: 'sessionCode'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
             .thenAnswer((_) async => Right(session));
-        when(() => mockRepository.generateQRPayload(any()))
-            .thenAnswer((_) async => const Right('quickshare://join?room=123456'));
+        when(() => mockRepository.generateQRPayload(any())).thenAnswer(
+            (_) async => const Right('quickshare://join?room=123456'));
         return SenderBloc(repository: mockRepository);
       },
       act: (bloc) =>
@@ -325,7 +329,7 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                sessionPublicId: any(named: 'sessionPublicId'),
+                sessionCode: any(named: 'sessionCode'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
@@ -337,7 +341,8 @@ void main() {
         return SenderBloc(repository: mockRepository, diagnostics: diagnostics);
       },
       act: (bloc) async {
-        bloc.add(const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
+        bloc.add(
+            const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
         await Future<void>.delayed(const Duration(milliseconds: 20));
         progress.add(0.4);
         await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -358,6 +363,44 @@ void main() {
       },
     );
 
+    // Failure reports must show observed progress, not the total advertised
+    // in a manifest. In particular, an ICE failure can occur before even
+    // one byte is put on the wire.
+    for (final progressFraction in <double>[0.0, 0.25]) {
+      blocTest<SenderBloc, SenderState>(
+        'a failed Wi-Fi transfer reports only its observed progress '
+        '($progressFraction)',
+        build: () {
+          when(() => mockRepository.startQhtpTransfer(any(),
+                  authToken: any(named: 'authToken'),
+                  sessionCode: any(named: 'sessionCode'),
+                  onIndexProgress: any(named: 'onIndexProgress'),
+                  onIndexed: any(named: 'onIndexed'),
+                  onIndexFailed: any(named: 'onIndexFailed')))
+              .thenAnswer((_) async => Right(wifiSession(size: 100000)));
+          when(() => mockRepository.generateQRPayload(any()))
+              .thenAnswer((_) async => const Right('qr-payload'));
+          return SenderBloc(
+              repository: mockRepository, diagnostics: diagnostics);
+        },
+        act: (bloc) async {
+          bloc.add(
+              const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+          progress.add(progressFraction);
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+          bloc.add(const TransferFailed('connection lost'));
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+        },
+        verify: (_) async {
+          final recorded = await diagnostics.recent();
+          expect(recorded, isNotEmpty);
+          expect(recorded.first.succeeded, isFalse);
+          expect(recorded.first.bytes, (progressFraction * 100000).round());
+        },
+      );
+    }
+
     blocTest<SenderBloc, SenderState>(
       // A Wi-Fi send goes over the router or it does not go. The direct link
       // used to be offered here too, silently, so a session on a network that
@@ -368,7 +411,7 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                sessionPublicId: any(named: 'sessionPublicId'),
+                sessionCode: any(named: 'sessionCode'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
@@ -403,7 +446,7 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                sessionPublicId: any(named: 'sessionPublicId'),
+                sessionCode: any(named: 'sessionCode'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
@@ -420,7 +463,8 @@ void main() {
         return SenderBloc(repository: mockRepository, diagnostics: diagnostics);
       },
       act: (bloc) async {
-        bloc.add(const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
+        bloc.add(
+            const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
         await Future<void>.delayed(const Duration(milliseconds: 20));
         progress.add(1.0);
         await Future<void>.delayed(const Duration(milliseconds: 20));
@@ -440,7 +484,7 @@ void main() {
       build: () {
         when(() => mockRepository.startQhtpTransfer(any(),
                 authToken: any(named: 'authToken'),
-                sessionPublicId: any(named: 'sessionPublicId'),
+                sessionCode: any(named: 'sessionCode'),
                 onIndexProgress: any(named: 'onIndexProgress'),
                 onIndexed: any(named: 'onIndexed'),
                 onIndexFailed: any(named: 'onIndexFailed')))
@@ -452,7 +496,8 @@ void main() {
         return SenderBloc(repository: mockRepository, diagnostics: diagnostics);
       },
       act: (bloc) async {
-        bloc.add(const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
+        bloc.add(
+            const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
         await Future<void>.delayed(const Duration(milliseconds: 20));
         // A receiver has to have actually started pulling bytes for this to
         // count as a transfer worth recording — an untouched QR the user
@@ -490,7 +535,8 @@ void main() {
       await bloc.close();
     });
 
-    test('guest teardown invokes leaveNetwork on completion and failure', () async {
+    test('guest teardown invokes leaveNetwork on completion and failure',
+        () async {
       final mockHotspot = _MockLocalHotspotService();
       when(() => mockHotspot.stopHosting()).thenAnswer((_) async {});
       when(() => mockHotspot.leaveNetwork()).thenAnswer((_) async {});
@@ -517,7 +563,8 @@ void main() {
     });
 
     test('auto-declines invite approval when state is not QRReady', () async {
-      when(() => mockRepository.respondToApproval(any(), any())).thenReturn(null);
+      when(() => mockRepository.respondToApproval(any(), any()))
+          .thenReturn(null);
 
       final bloc = SenderBloc(
         repository: mockRepository,
@@ -527,7 +574,6 @@ void main() {
         id: 'test-req-id',
         remoteAddress: InternetAddress.loopbackIPv4,
         deviceName: 'Pixel',
-        code: '1234567890',
         itemCount: 1,
         totalBytes: 100,
       );
@@ -535,7 +581,8 @@ void main() {
       bloc.add(InviteApprovalReceived(req));
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
-      verify(() => mockRepository.respondToApproval('test-req-id', false)).called(1);
+      verify(() => mockRepository.respondToApproval('test-req-id', false))
+          .called(1);
       await bloc.close();
     });
 
@@ -569,7 +616,6 @@ void main() {
         id: 'req-a',
         remoteAddress: InternetAddress.loopbackIPv4,
         deviceName: 'Pixel',
-        code: '1234567890',
         itemCount: 2,
         totalBytes: 4096,
       ))),
@@ -601,7 +647,6 @@ void main() {
         id: 'req-b',
         remoteAddress: InternetAddress.loopbackIPv4,
         deviceName: 'Pixel',
-        code: '1234567890',
         itemCount: 1,
         totalBytes: 100,
       ))),

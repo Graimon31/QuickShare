@@ -53,6 +53,7 @@ public class FolderPickerPlugin: NSObject {
       instance.handle(call, result: result)
     }
     objc_setAssociatedObject(channel, "folder_picker.instance", instance, .OBJC_ASSOCIATION_RETAIN)
+    DiskSpacePlugin.register(with: registrar)
   }
 
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -216,5 +217,91 @@ extension FolderPickerPlugin: UIAdaptivePresentationControllerDelegate {
     // cleared `pending`, so this is a no-op in that case.
     guard pending != nil else { return }
     finish([String]())
+  }
+}
+
+/// How much room a volume has, for the receiver to check before it starts.
+///
+/// `volumeAvailableCapacityForImportantUsageKey` rather than the plain
+/// "available" figure: it is the number Finder, Settings and the system's own
+/// "is there room for this download?" checks use, and it counts space the
+/// system will give back on demand (purgeable caches) that the plain figure
+/// reports as used. It is sometimes 0 or absent for volumes that do not track
+/// purgeable space — network shares, some external disks — and then the plain
+/// figure is the honest answer. If neither is there, or both are 0, the call
+/// fails, and Dart treats a failed call as "unknown", never as "plenty" and
+/// never as "none".
+///
+/// The `disk_space_2` plugin this replaces crashed while registering on iOS
+/// 18.4.1; this is a plain method channel with no registration of its own to
+/// get wrong. Registered by [FolderPickerPlugin] so it needs no project-file
+/// change of its own.
+public class DiskSpacePlugin: NSObject {
+  public static func register(with registrar: FlutterPluginRegistrar) {
+    let channel = FlutterMethodChannel(
+      name: "quickshare/disk_space",
+      binaryMessenger: registrar.messenger()
+    )
+    let instance = DiskSpacePlugin()
+    channel.setMethodCallHandler { call, result in
+      instance.handle(call, result: result)
+    }
+    objc_setAssociatedObject(channel, "disk_space.instance", instance, .OBJC_ASSOCIATION_RETAIN)
+  }
+
+  private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "availableBytes":
+      guard let args = call.arguments as? [String: Any],
+            let path = args["path"] as? String else {
+        result(FlutterError(code: "BAD_ARGS", message: "path required", details: nil))
+        return
+      }
+      // Off the platform thread. Asking about a volume that has gone away — a
+      // stale network mount, a disk pulled while the app was running — can
+      // hold a file-system call for a long time, and this is the thread the
+      // whole UI waits on. The answer is worked out on a background queue and
+      // handed back on the main one, which is where Flutter wants a result.
+      DispatchQueue.global(qos: .userInitiated).async {
+        let answer = self.availableBytes(at: path)
+        DispatchQueue.main.async { result(answer) }
+      }
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  /// The destination may not exist yet — the receiver creates it as files
+  /// arrive — so the question is asked about the nearest folder that does.
+  private func availableBytes(at path: String) -> Any {
+    var url = URL(fileURLWithPath: path)
+    while !FileManager.default.fileExists(atPath: url.path) && url.path != "/" {
+      url = url.deletingLastPathComponent()
+    }
+    do {
+      let values = try url.resourceValues(forKeys: [
+        .volumeAvailableCapacityForImportantUsageKey,
+        .volumeAvailableCapacityKey,
+      ])
+      let important = values.volumeAvailableCapacityForImportantUsage ?? 0
+      if important > 0 {
+        return NSNumber(value: important)
+      }
+      let plain = Int64(values.volumeAvailableCapacity ?? 0)
+      if plain > 0 {
+        return NSNumber(value: plain)
+      }
+      // Neither figure says there is any room. On a volume that does not track
+      // free space that is "I do not know", not "none": answering a known 0
+      // would make Dart refuse every transfer to it. An error is read as
+      // unknown, the transfer runs, and a disk that really is full says so
+      // when the write fails.
+      return FlutterError(
+        code: "UNAVAILABLE",
+        message: "the volume reports no free space (important usage \(important), plain \(plain))",
+        details: nil)
+    } catch {
+      return FlutterError(code: "UNAVAILABLE", message: "\(error)", details: nil)
+    }
   }
 }

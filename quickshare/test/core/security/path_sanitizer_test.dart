@@ -1,4 +1,7 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/security/path_sanitizer.dart';
@@ -34,6 +37,110 @@ void main() {
         expect(PathSanitizer.sanitizeSegment('NUL'), equals('_NUL'));
         expect(PathSanitizer.sanitizeSegment('COM1.png'), equals('_COM1.png'));
         expect(PathSanitizer.sanitizeSegment('aux.dat'), equals('_aux.dat'));
+      });
+    });
+
+    group('Windows quirks that a plain blocklist misses', () {
+      test('the console devices are reserved', () {
+        expect(PathSanitizer.isWindowsReserved(r'CONIN$'), isTrue);
+        expect(PathSanitizer.isWindowsReserved(r'conout$'), isTrue);
+        expect(PathSanitizer.isWindowsReserved(r'CONIN$.txt'), isTrue);
+        expect(PathSanitizer.sanitizeSegment(r'CONOUT$'), r'_CONOUT$');
+      });
+
+      test('a device name is still a device with spaces or a dot after it', () {
+        expect(PathSanitizer.isWindowsReserved('con .txt'), isTrue);
+        expect(PathSanitizer.isWindowsReserved('nul.'), isTrue);
+        expect(PathSanitizer.isWindowsReserved('COM\u00B9'), isTrue);
+        expect(PathSanitizer.isWindowsReserved('LPT\u00B2.log'), isTrue);
+        expect(PathSanitizer.isWindowsReserved('CONIN'), isFalse);
+      });
+
+      test('trailing dots and spaces are dropped, as Windows would anyway', () {
+        // Windows silently removes them, so "report.pdf." and "report.pdf"
+        // are one name there and two here — two files fighting over one.
+        expect(PathSanitizer.sanitizeSegment('report.pdf.'), 'report.pdf');
+        expect(PathSanitizer.sanitizeSegment('report.pdf. . '), 'report.pdf');
+        expect(PathSanitizer.sanitizeSegment('notes   '), 'notes');
+        expect(PathSanitizer.sanitizeSegment('con.'), '_con');
+        expect(PathSanitizer.sanitizeSegment('. . .'), 'item');
+      });
+
+      test('a leading dot is a hidden file, not something to strip', () {
+        expect(PathSanitizer.sanitizeSegment('.gitignore'), '.gitignore');
+      });
+
+      group('cutting a long name down', () {
+        // The cut can land anywhere, and "anywhere" includes right after a
+        // space or a dot. Tidying only before the cut left a name that
+        // Windows would then shorten behind the program's back.
+        const limit = PathSanitizer.maxSegmentBytes;
+
+        test('does not leave a trailing space', () {
+          final name = PathSanitizer.sanitizeSegment(
+              '${'a' * (limit - 1)} ${'b' * 50}');
+
+          expect(name, 'a' * (limit - 1));
+        });
+
+        test('does not leave a trailing dot', () {
+          // The cut falls right after the dot inside the name. What follows the
+          // last dot is far too long to be an extension, so it is cut too.
+          final name = PathSanitizer.sanitizeSegment(
+              '${'a' * (limit - 1)}.${'b' * 10}.${'c' * 80}');
+
+          expect(name, 'a' * (limit - 1));
+        });
+
+        test('does not leave a run of dots and spaces', () {
+          final name = PathSanitizer.sanitizeSegment(
+              '${'a' * (limit - 3)}. . ${'b' * 10}.${'c' * 80}');
+
+          expect(name, 'a' * (limit - 3));
+        });
+
+        test('a name cut down to a device name is still not one', () {
+          // `com1` followed by more spaces than fit: once cut, nothing but
+          // spaces follows the device name, and Windows opens the device.
+          final name = PathSanitizer.sanitizeSegment(
+              'com1${' ' * (limit + 20)}x');
+
+          expect(PathSanitizer.isWindowsReserved(name), isFalse,
+              reason: '"$name"');
+          expect(name, startsWith('_'));
+        });
+
+        test('keeps the extension and is exactly as long as allowed', () {
+          final name = PathSanitizer.sanitizeSegment('${'ü' * 300}.jpg');
+
+          expect(name, endsWith('.jpg'));
+          expect(utf8.encode(name).length, lessThanOrEqualTo(limit));
+          expect(utf8.encode(name).length, greaterThan(limit - 2),
+              reason: 'no more than one two-byte letter is given up');
+        });
+
+        test('whatever it is given, a cleaned name is a name', () {
+          final random = Random(20261103);
+          const alphabet = ['a', 'b', ' ', '.', '.', ' ', 'ü', '漢', 'c', 'o', 'n', '1', '_'];
+          for (var i = 0; i < 4000; i++) {
+            final raw = StringBuffer();
+            for (var n = random.nextInt(400); n > 0; n--) {
+              raw.write(alphabet[random.nextInt(alphabet.length)]);
+            }
+            final maxBytes = [255, 237, 40, 12, 6][random.nextInt(5)];
+
+            final name =
+                PathSanitizer.sanitizeSegment('$raw', maxBytes: maxBytes);
+
+            final why = 'from "$raw" at $maxBytes bytes: "$name"';
+            expect(name, isNotEmpty, reason: why);
+            expect(utf8.encode(name).length, lessThanOrEqualTo(maxBytes),
+                reason: why);
+            expect(name, isNot(matches(r'[. ]$')), reason: why);
+            expect(name, isNot(matches(r'^\s')), reason: why);
+            expect(PathSanitizer.isWindowsReserved(name), isFalse, reason: why);
+          }
+        });
       });
     });
 

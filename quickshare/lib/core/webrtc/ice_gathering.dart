@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/core/webrtc/relay_availability.dart';
 
 /// Tracks how far ICE gathering has got, so the serverless flows can decide
 /// when the description is worth freezing into a QR code.
@@ -98,6 +99,39 @@ Future<IcePathKind> selectedPathKind(RTCPeerConnection connection) async {
   }
 }
 
+/// The candidate ids of the pair WebRTC chose, or null if none succeeded.
+///
+/// Nominated/succeeded first; some implementations do not mark a pair
+/// nominated on a data-only connection, so any succeeded pair is the fallback.
+({String local, String? remote})? _chosenPairIds(List<StatsReport> reports) {
+  for (final report in reports) {
+    if (report.type != 'candidate-pair') continue;
+    final values = report.values;
+    final nominated = values['nominated'];
+    final selected = values['selected'];
+    if (values['state'] == 'succeeded' &&
+        (nominated == true || selected == true)) {
+      final local = values['localCandidateId'] as String?;
+      if (local != null) {
+        return (local: local, remote: values['remoteCandidateId'] as String?);
+      }
+    }
+  }
+  for (final report in reports) {
+    if (report.type == 'candidate-pair' &&
+        report.values['state'] == 'succeeded') {
+      final local = report.values['localCandidateId'] as String?;
+      if (local != null) {
+        return (
+          local: local,
+          remote: report.values['remoteCandidateId'] as String?,
+        );
+      }
+    }
+  }
+  return null;
+}
+
 /// Evaluates nominated/succeeded candidate pair stats to classify the ICE path.
 ///
 /// Both local and remote candidate types are checked: if either side uses a
@@ -105,34 +139,10 @@ Future<IcePathKind> selectedPathKind(RTCPeerConnection connection) async {
 /// must be held to relay budget limits.
 @visibleForTesting
 IcePathKind pathKindFromStats(List<StatsReport> reports) {
-  String? localCandidateId;
-  String? remoteCandidateId;
-  for (final report in reports) {
-    if (report.type != 'candidate-pair') continue;
-    final values = report.values;
-    final state = values['state'];
-    final nominated = values['nominated'];
-    final selected = values['selected'];
-    if (state == 'succeeded' && (nominated == true || selected == true)) {
-      localCandidateId = values['localCandidateId'] as String?;
-      remoteCandidateId = values['remoteCandidateId'] as String?;
-      break;
-    }
-  }
-
-  // Some implementations do not mark a pair nominated on a data-only
-  // connection; fall back to any succeeded pair.
-  if (localCandidateId == null) {
-    for (final report in reports) {
-      if (report.type == 'candidate-pair' &&
-          report.values['state'] == 'succeeded') {
-        localCandidateId = report.values['localCandidateId'] as String?;
-        remoteCandidateId = report.values['remoteCandidateId'] as String?;
-        break;
-      }
-    }
-  }
-  if (localCandidateId == null) return IcePathKind.unknown;
+  final chosen = _chosenPairIds(reports);
+  if (chosen == null) return IcePathKind.unknown;
+  final localCandidateId = chosen.local;
+  final remoteCandidateId = chosen.remote;
 
   String? localType;
   String? remoteType;
@@ -158,6 +168,62 @@ IcePathKind pathKindFromStats(List<StatsReport> reports) {
   }
   return IcePathKind.unknown;
 }
+
+/// The candidate types on each end of the chosen pair — `local=relay
+/// remote=srflx` — or `none` when no pair ever succeeded.
+///
+/// For the log and the journal. [IcePathKind] says how the bytes travelled; on
+/// a connection that never came up the more useful fact is that there was no
+/// pair at all, and on one that did, which kinds of candidate met.
+@visibleForTesting
+String describeSelectedPair(List<StatsReport> reports) {
+  final chosen = _chosenPairIds(reports);
+  if (chosen == null) return 'none';
+  String typeOf(String? id) {
+    for (final report in reports) {
+      if (report.id == id) {
+        return report.values['candidateType'] as String? ?? 'unknown';
+      }
+    }
+    return 'unknown';
+  }
+
+  return 'local=${typeOf(chosen.local)} remote=${typeOf(chosen.remote)}';
+}
+
+/// [describeSelectedPair] for a live connection. Never throws and never waits
+/// long: it is asked on the way out of a failed session, when the connection
+/// may already be half torn down.
+Future<String> selectedPairDescription(RTCPeerConnection connection) async {
+  try {
+    final reports =
+        await connection.getStats().timeout(const Duration(seconds: 2));
+    return describeSelectedPair(reports);
+  } catch (e) {
+    AppLogger.warning('Could not read the selected ICE pair: $e',
+        tag: 'WEBRTC');
+    return 'unknown';
+  }
+}
+
+/// What is known when ICE gives up, read in one place for the sender and the
+/// receiver alike: whether the relay was in play ([relayUnavailable]), what
+/// was gathered ([gathering]), and which pair — if any — [connection] chose.
+///
+/// Read before anything is torn down. A [connection] that is already gone, or
+/// null, leaves the pair `unknown`.
+Future<NoPathDiagnosis> diagnoseNoPath({
+  required RelayUnavailable? relayUnavailable,
+  required IceGatheringTracker gathering,
+  RTCPeerConnection? connection,
+}) async =>
+    NoPathDiagnosis(
+      relayUnavailable: relayUnavailable,
+      candidates: gathering.describe(),
+      selectedPair: connection == null
+          ? 'unknown'
+          : await selectedPairDescription(connection),
+    );
 
 /// Whether a session of [sessionBytes] may proceed over [path].
 ///

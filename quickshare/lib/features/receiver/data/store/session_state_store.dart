@@ -14,6 +14,11 @@ class QhtpItemState {
   final String? sha256;
   final String? finalPath;
 
+  /// The file's modification time (milliseconds since the epoch) as it was
+  /// when the item was recorded complete. A resume that has no digest to
+  /// compare against can still tell that the file was touched since.
+  final int? modifiedMs;
+
   const QhtpItemState({
     required this.id,
     required this.path,
@@ -22,6 +27,7 @@ class QhtpItemState {
     this.partialBytes = 0,
     this.sha256,
     this.finalPath,
+    this.modifiedMs,
   });
 
   factory QhtpItemState.fromJson(Map<String, dynamic> json) {
@@ -33,6 +39,7 @@ class QhtpItemState {
       partialBytes: json['partialBytes'] as int? ?? 0,
       sha256: json['sha256'] as String?,
       finalPath: json['finalPath'] as String?,
+      modifiedMs: json['modifiedMs'] as int?,
     );
   }
 
@@ -45,6 +52,7 @@ class QhtpItemState {
       'partialBytes': partialBytes,
       if (sha256 != null) 'sha256': sha256,
       if (finalPath != null) 'finalPath': finalPath,
+      if (modifiedMs != null) 'modifiedMs': modifiedMs,
     };
   }
 
@@ -53,6 +61,7 @@ class QhtpItemState {
     int? partialBytes,
     String? sha256,
     String? finalPath,
+    int? modifiedMs,
   }) {
     return QhtpItemState(
       id: id,
@@ -62,8 +71,20 @@ class QhtpItemState {
       partialBytes: partialBytes ?? this.partialBytes,
       sha256: sha256 ?? this.sha256,
       finalPath: finalPath ?? this.finalPath,
+      modifiedMs: modifiedMs ?? this.modifiedMs,
     );
   }
+}
+
+/// A saved session as a whole: its items, and the session and destination it
+/// was recorded for. [sessionId] and [baseDir] are null when the store that
+/// answered did not keep them (a test double).
+class SavedSession {
+  const SavedSession({required this.items, this.sessionId, this.baseDir});
+
+  final Map<String, QhtpItemState> items;
+  final String? sessionId;
+  final String? baseDir;
 }
 
 class SessionStateStore {
@@ -144,6 +165,33 @@ class SessionStateStore {
     }
   }
 
+  /// The record for [sessionId] with the session and destination it carries.
+  ///
+  /// A resume must not believe a record that was made for something else: the
+  /// store is keyed by a *sanitised* id (two ids can share a file), and the
+  /// folder the user picks this time need not be the one the files were
+  /// received into last time. Built on [loadState] so a store that overrides
+  /// only that still resumes.
+  Future<SavedSession?> loadSession(String sessionId) async {
+    final items = await loadState(sessionId);
+    if (items == null) return null;
+    String? savedId;
+    String? savedBase;
+    try {
+      final file = await _getStateFile(sessionId);
+      if (await file.exists()) {
+        final map = jsonDecode(await file.readAsString());
+        if (map is Map<String, dynamic>) {
+          savedId = map['sessionId'] as String?;
+          savedBase = map['baseDir'] as String?;
+        }
+      }
+    } catch (_) {
+      // No header is no header; the items stand on their own.
+    }
+    return SavedSession(items: items, sessionId: savedId, baseDir: savedBase);
+  }
+
   Future<void> saveState({
     required String sessionId,
     required String host,
@@ -164,7 +212,12 @@ class SessionStateStore {
         'updatedAt': DateTime.now().millisecondsSinceEpoch,
         'items': items.map((id, item) => MapEntry(id, item.toJson())),
       };
-      await file.writeAsString(jsonEncode(jsonMap));
+      // Written beside the record and renamed over it: a crash in the middle
+      // of a plain write leaves a truncated file that cannot be parsed, and a
+      // record that cannot be read is a resume that forgets every pinned name.
+      final scratch = File('${file.path}.tmp');
+      await scratch.writeAsString(jsonEncode(jsonMap), flush: true);
+      await scratch.rename(file.path);
     } catch (e) {
       // Best effort state save
     }
@@ -222,6 +275,71 @@ class SessionStateStore {
     return reclaimed;
   }
 
+  /// The `.qs.partial` files that a session still on record may resume, as
+  /// absolute paths.
+  ///
+  /// "Still on record" is the same test [cleanExpiredStates] applies: a state
+  /// file touched within [ttl]. The QHTP client tells the user that a cut
+  /// transfer can be picked up again — after freeing disk space, say — and
+  /// this is the list of what that promise covers. Anything that sweeps
+  /// partials as debris has to leave these alone.
+  ///
+  /// A state file that cannot be read pins nothing: the client cannot resume
+  /// from it either. Failing to look at the store at all throws, because a
+  /// caller that is about to delete files must not take "I could not tell" for
+  /// "nothing is pinned".
+  Future<Set<String>> pinnedPartials({
+    Duration ttl = const Duration(hours: 24),
+  }) async {
+    final pinned = <String>{};
+    final dir = Directory(await _getStoreDir());
+    final cutoff = DateTime.now().subtract(ttl);
+    await for (final entity in dir.list()) {
+      if (entity is! File || !entity.path.endsWith('.json')) continue;
+      final stat = await entity.stat();
+      if (!stat.modified.isAfter(cutoff)) continue;
+      try {
+        pinned.addAll(await _partialPathsOf(entity));
+      } catch (e) {
+        debugPrint('Could not read ${entity.path} for its partials: $e');
+      }
+    }
+    return pinned;
+  }
+
+  /// The `.qs.partial` path of every unfinished item in one state file.
+  ///
+  /// Completed items are left out — those are files the user asked for and
+  /// already has. A path outside the directory the record claims is left out
+  /// too: this feeds deletions and exemptions alike, and a malformed record
+  /// must not be able to aim either somewhere else.
+  Future<List<String>> _partialPathsOf(File stateFile) async {
+    final jsonMap =
+        jsonDecode(await stateFile.readAsString()) as Map<String, dynamic>;
+    final baseDir = jsonMap['baseDir'] as String?;
+    final items = jsonMap['items'] as Map<String, dynamic>? ?? {};
+    if (baseDir == null || baseDir.isEmpty) return const [];
+
+    final paths = <String>[];
+    for (final raw in items.values) {
+      final item = QhtpItemState.fromJson(raw as Map<String, dynamic>);
+      if (item.status == 'completed') continue;
+
+      final finalPath = item.finalPath ??
+          p.joinAll([
+            baseDir,
+            ...item.path.split('/').where((segment) => segment.isNotEmpty),
+          ]);
+      final partial = '$finalPath.qs.partial';
+      if (!p.isWithin(baseDir, partial)) {
+        debugPrint('Ignoring $partial: outside $baseDir');
+        continue;
+      }
+      paths.add(partial);
+    }
+    return paths;
+  }
+
   /// Removes the `.qs.partial` files belonging to one expired state file.
   ///
   /// Completed items are deliberately left alone — those are files the user
@@ -229,31 +347,9 @@ class SessionStateStore {
   Future<int> _deletePartialsOf(File stateFile) async {
     var reclaimed = 0;
     try {
-      final jsonMap =
-          jsonDecode(await stateFile.readAsString()) as Map<String, dynamic>;
-      final baseDir = jsonMap['baseDir'] as String?;
-      final items = jsonMap['items'] as Map<String, dynamic>? ?? {};
-      if (baseDir == null || baseDir.isEmpty) return 0;
-
-      for (final raw in items.values) {
-        final item = QhtpItemState.fromJson(raw as Map<String, dynamic>);
-        if (item.status == 'completed') continue;
-
-        final finalPath = item.finalPath ??
-            p.joinAll([
-              baseDir,
-              ...item.path.split('/').where((segment) => segment.isNotEmpty),
-            ]);
-        final partial = File('$finalPath.qs.partial');
+      for (final path in await _partialPathsOf(stateFile)) {
+        final partial = File(path);
         if (!await partial.exists()) continue;
-
-        // Guard against a state file that points outside the directory it
-        // claims: this deletes files, so a malformed record must not be able
-        // to aim it somewhere else.
-        if (!p.isWithin(baseDir, partial.path)) {
-          debugPrint('Refusing to delete ${partial.path}: outside $baseDir');
-          continue;
-        }
         reclaimed += await partial.length();
         await partial.delete();
       }

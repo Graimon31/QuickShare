@@ -47,9 +47,6 @@ class _FakeBleReceiver implements BleReceiver {
   Future<void> stopScanning() async {}
 
   @override
-  Future<void> startWaitingAdvertisement({required String deviceName}) async {}
-
-  @override
   Future<String> connect(String deviceId, {String? token, String? targetDir}) =>
       // The legacy in-band path never lands in these tests; the serve frame
       // is what carries the session.
@@ -61,8 +58,11 @@ class _FakeBleReceiver implements BleReceiver {
   @override
   Future<void> sendKeyExchange(String publicKey) async {}
 
+  /// How many times the radio itself was told to cancel.
+  int cancels = 0;
+
   @override
-  Future<void> cancel() async {}
+  Future<void> cancel() async => cancels++;
 
   @override
   Future<void> dispose() async {}
@@ -215,5 +215,35 @@ void main() {
     expect(result.items.single.isDirectory, isTrue);
     expect(result.items.single.size, 5, reason: 'the whole tree counts');
     expect(result.placed, isFalse);
+  });
+
+  test('cancelling a running session cancels the radio too', () async {
+    // The native bridge keeps a connection and a half-open transfer of its own;
+    // stopping the Dart side alone left both standing.
+    final transport = _FakeBleReceiver();
+    final session = BluetoothReceiverSession(
+      transport: transport,
+      driver: _FakeDriver(),
+      networkInfo: _FakeNetworkInfo(),
+      hotspotService: _FakeHotspot(),
+      qhtpReceiver: _FakeQhtpReceiver(
+          const Left(NetworkFailure('never reached'))),
+    );
+
+    // Never settles: nothing is cancelled to completion in the fake, and the
+    // search timer it started is cancelled with the session.
+    unawaited(session
+        .run(
+          token: 'token',
+          publicId: 'public',
+          destination: await cacheDestination(),
+          onProgress: (_, __, ___) {},
+          onVerifying: () {},
+        )
+        .then<void>((_) {}, onError: (Object _) {}));
+
+    await session.cancel();
+
+    expect(transport.cancels, 1);
   });
 }

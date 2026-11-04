@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:mime/mime.dart';
+import 'package:quickshare/core/errors/exceptions.dart';
+import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/direct_link_driver.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
@@ -66,11 +68,18 @@ class BluetoothReceiverSession {
   }) async {
     final completer = Completer<BluetoothReceiverSessionResult>();
 
-    void fail(String message) {
-      if (_completed || completer.isCompleted) return;
+    // [code] is a storage problem's [FailureCode], when that is what ended the
+    // session: it rides on the error so the screen can say "the disk is full"
+    // in the user's language instead of repeating a sentence.
+    void fail(String message, {String? code}) {
+      // A session the person cancelled has nobody left to tell: cancelling the
+      // radio below makes its pending connect fail, and that failure is the
+      // cancellation arriving, not a second problem to report.
+      if (_completed || completer.isCompleted || _cancelled) return;
       _completed = true;
       _cleanup();
-      completer.completeError(Exception(message));
+      completer.completeError(
+          code == null ? Exception(message) : FileException(message, code));
     }
 
     _searchTimeout = Timer(const Duration(seconds: 25), () {
@@ -125,7 +134,8 @@ class BluetoothReceiverSession {
           // would leave the receive screen spinning on a future nobody
           // finishes. The failure branch must reach fail() with it unset.
           await result.fold(
-            (failure) async => fail(failure.message),
+            (failure) async => fail(failure.message,
+                code: FailureCode.isStorage(failure.code) ? failure.code : null),
             (received) async {
               _completed = true;
               _cleanup();
@@ -219,7 +229,11 @@ class BluetoothReceiverSession {
         ));
       } catch (e) {
         if (!_completed) {
-          fail(e.toString());
+          if (e is FileException && FailureCode.isStorage(e.code)) {
+            fail(e.message, code: e.code);
+          } else {
+            fail(e.toString());
+          }
         }
       }
     });
@@ -244,9 +258,15 @@ class BluetoothReceiverSession {
     }
   }
 
+  /// Stops the session, and the radio under it.
+  ///
+  /// The radio is told separately because the native bridge keeps a connection
+  /// and a half-open transfer of its own: stopping this object alone left both
+  /// standing until something else happened to cancel them.
   Future<void> cancel() async {
     _cancelled = true;
     _cleanup();
     await _transport.stopScanning();
+    await _transport.cancel();
   }
 }

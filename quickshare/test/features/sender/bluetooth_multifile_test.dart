@@ -153,11 +153,12 @@ void main() {
   File write(String name) => File(p.join(workspace.path, name))
     ..writeAsStringSync('contents of $name');
 
-  /// Starts a Bluetooth send and returns the native scan call.
+  /// Starts a Bluetooth send and returns the native advertise call.
   ///
-  /// The sender now finds receivers (GATT central). Files no longer ride the
-  /// advertisement — they cross Wi-Fi after the rendezvous.
-  Future<Map> startedScan(List<String> paths) async {
+  /// The sender advertises and the receiver that scanned its QR comes to it;
+  /// this device scans for nothing. Files do not ride the advertisement —
+  /// they cross Wi-Fi after the rendezvous.
+  Future<Map> startedAdvertising(List<String> paths) async {
     final bloc = SenderBloc(
       repository: repository,
       peerLinkService: const _FakePeerLink(),
@@ -168,8 +169,9 @@ void main() {
     bloc.add(StartQhtpSend(paths, mode: TransportType.bluetooth));
     await advertising.timeout(const Duration(seconds: 20));
 
-    expect(nativeCalls.any((c) => c.method == 'startAdvertising'), isTrue);
-    final call = nativeCalls.firstWhere((c) => c.method == 'startScanning');
+    expect(nativeCalls.where((c) => c.method == 'startScanning'), isEmpty,
+        reason: 'nothing is listed, so there is nothing to look for');
+    final call = nativeCalls.firstWhere((c) => c.method == 'startAdvertising');
     return call.arguments as Map;
   }
 
@@ -283,26 +285,29 @@ void main() {
     await until(() => captured.isNotEmpty);
 
     final advertisedToken =
-        (nativeCalls.firstWhere((c) => c.method == 'startScanning').arguments
+        (nativeCalls.firstWhere((c) => c.method == 'startAdvertising').arguments
             as Map)['sessionToken'] as String;
     expect(captured.single, equals(advertisedToken),
         reason: 'both halves of one session have to agree on its token');
   });
 
-  test('the sender scans for waiting receivers instead of advertising files',
+  test('the sender advertises its session under the code and scans for nobody',
       () async {
     final files = [write('one.txt'), write('two.txt')];
-    final args = await startedScan([for (final f in files) f.path]);
-    expect(args['forReceivers'], isTrue);
+    final args = await startedAdvertising([for (final f in files) f.path]);
     expect(args['sessionToken'], isNotEmpty);
+    expect(args['publicId'], isNotEmpty,
+        reason: 'what a receiver that scanned the QR looks for on the air');
+    expect(args.containsKey('forReceivers'), isFalse);
   });
 
   test('a broken fast path does not take the Bluetooth transfer with it',
       () async {
     final files = [write('one.txt'), write('two.txt')];
-    final args = await startedScan([for (final f in files) f.path]);
-    expect(args['forReceivers'], isTrue,
-        reason: 'Bluetooth scan starts regardless of the extra route failing');
+    final args = await startedAdvertising([for (final f in files) f.path]);
+    expect(args['sessionToken'], isNotEmpty,
+        reason: 'the advertisement starts regardless of the extra route '
+            'failing');
   });
 
   test('a folder still starts a Bluetooth send session', () async {
@@ -311,7 +316,9 @@ void main() {
     File(p.join(trip.path, 'IMG_0001.jpg')).writeAsStringSync('a');
     File(p.join(trip.path, 'Day 2', 'IMG_0002.jpg')).writeAsStringSync('b');
 
-    final args = await startedScan([trip.path]);
-    expect(args['forReceivers'], isTrue);
+    final args = await startedAdvertising([trip.path]);
+    expect(args['sessionToken'], isNotEmpty);
+    expect(args['files'] as List, hasLength(2),
+        reason: 'the folder crosses as its files, structure kept');
   });
 }

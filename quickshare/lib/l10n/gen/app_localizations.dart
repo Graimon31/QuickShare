@@ -185,7 +185,7 @@ abstract class AppLocalizations {
   /// No description provided for @homeReceiveSubtitleDesktop.
   ///
   /// In en, this message translates to:
-  /// **'Paste a code or share link'**
+  /// **'Enter the code from the sender'**
   String get homeReceiveSubtitleDesktop;
 
   /// No description provided for @homeReceiveSubtitleMobile.
@@ -263,7 +263,7 @@ abstract class AppLocalizations {
   /// No description provided for @pickerMethodBluetoothSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Direct peer transfer via Bluetooth'**
+  /// **'To a phone that scans your QR code'**
   String get pickerMethodBluetoothSubtitle;
 
   /// No description provided for @pickerMethodInternetTitle.
@@ -728,6 +728,18 @@ abstract class AppLocalizations {
   /// **'Scan the QR or share the link'**
   String get qrDisplayScanOrShare;
 
+  /// No description provided for @qrDisplayScanOrEnterCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Scan the QR or enter the code'**
+  String get qrDisplayScanOrEnterCode;
+
+  /// No description provided for @offerCodeChangesIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Code and QR change in {time}'**
+  String offerCodeChangesIn(String time);
+
   /// No description provided for @qrDisplayShareLinkToReceive.
   ///
   /// In en, this message translates to:
@@ -743,7 +755,7 @@ abstract class AppLocalizations {
   /// No description provided for @qrDisplayPhoneHint.
   ///
   /// In en, this message translates to:
-  /// **'On the phone: open DirectDrop → Receive and scan this QR.'**
+  /// **'On the other device: open DirectDrop → Receive. A phone scans this QR; a computer types the code.'**
   String get qrDisplayPhoneHint;
 
   /// No description provided for @qrDisplayRenderError.
@@ -769,12 +781,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Total size: {size}'**
   String qrDisplayTotalSize(String size);
-
-  /// No description provided for @qrDisplaySessionExpires.
-  ///
-  /// In en, this message translates to:
-  /// **'Session expires in {time}'**
-  String qrDisplaySessionExpires(String time);
 
   /// No description provided for @qrDisplayCancelTransfer.
   ///
@@ -866,18 +872,6 @@ abstract class AppLocalizations {
   /// **'No active network connection. Internet transfer is unavailable.'**
   String get precondInternetBlocked;
 
-  /// No description provided for @sessionExpiredTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Session expired'**
-  String get sessionExpiredTitle;
-
-  /// No description provided for @sessionExpiredBody.
-  ///
-  /// In en, this message translates to:
-  /// **'Nobody connected in time. Refresh to create a new session.'**
-  String get sessionExpiredBody;
-
   /// No description provided for @sessionRefresh.
   ///
   /// In en, this message translates to:
@@ -959,8 +953,32 @@ abstract class AppLocalizations {
   /// No description provided for @fallbackNoRouteBody.
   ///
   /// In en, this message translates to:
-  /// **'A VPN or this network\'s NAT is blocking a direct connection, and no relay was reachable. Nothing has been sent yet.'**
+  /// **'A VPN or this network\'s NAT is blocking a direct connection. Nothing has been sent yet.'**
   String get fallbackNoRouteBody;
+
+  /// No description provided for @fallbackNoRouteBodyRelayLimited.
+  ///
+  /// In en, this message translates to:
+  /// **'No direct connection was possible, and the relay service is limiting requests right now, so no relay could be set up. Try again in about a minute. Nothing has been sent yet.'**
+  String get fallbackNoRouteBodyRelayLimited;
+
+  /// No description provided for @fallbackNoRouteBodyRelayUnreachable.
+  ///
+  /// In en, this message translates to:
+  /// **'No direct connection was possible, and the relay service could not be reached, so no relay could be set up. Check this device\'s internet connection. Nothing has been sent yet.'**
+  String get fallbackNoRouteBodyRelayUnreachable;
+
+  /// No description provided for @fallbackNoRouteBodyRelayOff.
+  ///
+  /// In en, this message translates to:
+  /// **'No direct connection was possible, and the relay is switched off or not configured in this build. Nothing has been sent yet.'**
+  String get fallbackNoRouteBodyRelayOff;
+
+  /// No description provided for @fallbackNoRouteBodyRelayWasAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'A relay was available, but the connection still could not be made. A VPN or firewall may be blocking even relayed traffic. Nothing has been sent yet.'**
+  String get fallbackNoRouteBodyRelayWasAvailable;
 
   /// No description provided for @fallbackWifiTitle.
   ///
@@ -1091,98 +1109,20 @@ abstract class AppLocalizations {
   /// No description provided for @btSendPreparingDetail.
   ///
   /// In en, this message translates to:
-  /// **'Making this device discoverable'**
+  /// **'Getting the code ready for the other phone to scan'**
   String get btSendPreparingDetail;
 
   /// No description provided for @btSendScanPrompt.
   ///
   /// In en, this message translates to:
-  /// **'Scan this QR code on the receiving device'**
+  /// **'Scan this QR code with the receiving phone'**
   String get btSendScanPrompt;
 
   /// No description provided for @btSendAutoConnectNote.
   ///
   /// In en, this message translates to:
-  /// **'Pick a device from the list. The handshake should finish within 3 seconds.'**
+  /// **'Bluetooth receiving works on a phone: open DirectDrop there, tap Receive File and scan this code. A computer cannot receive over Bluetooth — use Wi-Fi for that.'**
   String get btSendAutoConnectNote;
-
-  /// No description provided for @btReceiveLookingForLink.
-  ///
-  /// In en, this message translates to:
-  /// **'Looking for a direct link…'**
-  String get btReceiveLookingForLink;
-
-  /// No description provided for @btReceiveDirectLinkPlaceholder.
-  ///
-  /// In en, this message translates to:
-  /// **'Receiving over direct Wi-Fi'**
-  String get btReceiveDirectLinkPlaceholder;
-
-  /// No description provided for @btReceiveTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Nearby devices'**
-  String get btReceiveTitle;
-
-  /// No description provided for @btReceiveLookingNearby.
-  ///
-  /// In en, this message translates to:
-  /// **'Looking for nearby Macs…'**
-  String get btReceiveLookingNearby;
-
-  /// No description provided for @btReceiveLookingQr.
-  ///
-  /// In en, this message translates to:
-  /// **'Looking for the Mac from the QR code…'**
-  String get btReceiveLookingQr;
-
-  /// No description provided for @btReceiveScanning.
-  ///
-  /// In en, this message translates to:
-  /// **'Scanning for nearby devices…'**
-  String get btReceiveScanning;
-
-  /// No description provided for @btReceiveScanningDetail.
-  ///
-  /// In en, this message translates to:
-  /// **'Keep Bluetooth enabled on both devices'**
-  String get btReceiveScanningDetail;
-
-  /// No description provided for @btReceiveConnecting.
-  ///
-  /// In en, this message translates to:
-  /// **'Connecting over Bluetooth…'**
-  String get btReceiveConnecting;
-
-  /// No description provided for @btReceivePairingWith.
-  ///
-  /// In en, this message translates to:
-  /// **'Pairing with {name}'**
-  String btReceivePairingWith(String name);
-
-  /// No description provided for @btReceiveConnectionFailed.
-  ///
-  /// In en, this message translates to:
-  /// **'Connection failed'**
-  String get btReceiveConnectionFailed;
-
-  /// No description provided for @btReceiveScanAgain.
-  ///
-  /// In en, this message translates to:
-  /// **'Scan again'**
-  String get btReceiveScanAgain;
-
-  /// No description provided for @codeReceivePasteError.
-  ///
-  /// In en, this message translates to:
-  /// **'Paste the share link from the sender.'**
-  String get codeReceivePasteError;
-
-  /// No description provided for @codeReceiveParseError.
-  ///
-  /// In en, this message translates to:
-  /// **'Could not read that link. Copy the share link under the QR on the sender.'**
-  String get codeReceiveParseError;
 
   /// No description provided for @codeReceiveTitle.
   ///
@@ -1190,23 +1130,35 @@ abstract class AppLocalizations {
   /// **'Receive a file'**
   String get codeReceiveTitle;
 
-  /// No description provided for @codeReceivePastePrompt.
+  /// No description provided for @codeReceivePrompt.
   ///
   /// In en, this message translates to:
-  /// **'Paste a code or share link'**
-  String get codeReceivePastePrompt;
+  /// **'Enter the code from the sender'**
+  String get codeReceivePrompt;
+
+  /// No description provided for @codeReceiveCodeInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter all ten digits of the code.'**
+  String get codeReceiveCodeInvalid;
+
+  /// No description provided for @linkReceiveOpening.
+  ///
+  /// In en, this message translates to:
+  /// **'Opening the shared link…'**
+  String get linkReceiveOpening;
+
+  /// No description provided for @linkReceiveOpeningDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking what is being sent'**
+  String get linkReceiveOpeningDetail;
 
   /// No description provided for @codeReceiveHint.
   ///
   /// In en, this message translates to:
-  /// **'directdrop://join?p=…'**
+  /// **'12345 67890'**
   String get codeReceiveHint;
-
-  /// No description provided for @codeReceivePasteButton.
-  ///
-  /// In en, this message translates to:
-  /// **'Paste'**
-  String get codeReceivePasteButton;
 
   /// No description provided for @codeReceiveReceiveButton.
   ///
@@ -1271,20 +1223,14 @@ abstract class AppLocalizations {
   /// No description provided for @codeReceiveNotFoundLan.
   ///
   /// In en, this message translates to:
-  /// **'Sender with this code was not found on your local network. Make sure both devices are on the same Wi-Fi network.'**
+  /// **'No sender with this code was found. The code may be wrong or may have expired — codes change every 5 minutes. Check it and make sure both devices are on the same Wi-Fi network.'**
   String get codeReceiveNotFoundLan;
 
-  /// No description provided for @codeReceiveNotAShareLink.
+  /// No description provided for @codeReceiveUpdateRequired.
   ///
   /// In en, this message translates to:
-  /// **'That is not a DirectDrop share link. Copy the link under the QR on the sender — not the Wi-Fi address.'**
-  String get codeReceiveNotAShareLink;
-
-  /// No description provided for @codeReceiveInvalidQr.
-  ///
-  /// In en, this message translates to:
-  /// **'Invalid QR code. Point the camera at the QR on the sender screen — not at the Wi-Fi address text under it.'**
-  String get codeReceiveInvalidQr;
+  /// **'The other device is running a different version of DirectDrop and cannot take this code. Update DirectDrop on both devices, then try again.'**
+  String get codeReceiveUpdateRequired;
 
   /// No description provided for @codeReceiveSearchingLan.
   ///
@@ -1466,54 +1412,6 @@ abstract class AppLocalizations {
   /// **'No entries yet'**
   String get logsEmpty;
 
-  /// No description provided for @nearbyTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Devices nearby'**
-  String get nearbyTitle;
-
-  /// No description provided for @nearbySearching.
-  ///
-  /// In en, this message translates to:
-  /// **'Looking…'**
-  String get nearbySearching;
-
-  /// No description provided for @nearbyEmpty.
-  ///
-  /// In en, this message translates to:
-  /// **'No devices yet'**
-  String get nearbyEmpty;
-
-  /// No description provided for @nearbyEmptyHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Open DirectDrop on the other device. Both have to be on the same network.'**
-  String get nearbyEmptyHint;
-
-  /// No description provided for @nearbyBlocked.
-  ///
-  /// In en, this message translates to:
-  /// **'This network hides devices from each other'**
-  String get nearbyBlocked;
-
-  /// No description provided for @nearbyBlockedHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Guest and public Wi-Fi usually do. Use the code below instead.'**
-  String get nearbyBlockedHint;
-
-  /// No description provided for @nearbyReady.
-  ///
-  /// In en, this message translates to:
-  /// **'Ready to send'**
-  String get nearbyReady;
-
-  /// No description provided for @nearbyIdle.
-  ///
-  /// In en, this message translates to:
-  /// **'Waiting'**
-  String get nearbyIdle;
-
   /// No description provided for @inviteTitle.
   ///
   /// In en, this message translates to:
@@ -1557,24 +1455,6 @@ abstract class AppLocalizations {
   /// **'From {sender}'**
   String previewSenderLabel(String sender);
 
-  /// No description provided for @nearbyOrPaste.
-  ///
-  /// In en, this message translates to:
-  /// **'Or paste a code'**
-  String get nearbyOrPaste;
-
-  /// No description provided for @inviteAsking.
-  ///
-  /// In en, this message translates to:
-  /// **'Asking…'**
-  String get inviteAsking;
-
-  /// No description provided for @inviteAccepted.
-  ///
-  /// In en, this message translates to:
-  /// **'Accepted — sending now'**
-  String get inviteAccepted;
-
   /// No description provided for @inviteDeclined.
   ///
   /// In en, this message translates to:
@@ -1587,29 +1467,11 @@ abstract class AppLocalizations {
   /// **'Could not reach that device'**
   String get inviteUnreachable;
 
-  /// No description provided for @inviteBusy.
-  ///
-  /// In en, this message translates to:
-  /// **'That device is deciding on another transfer'**
-  String get inviteBusy;
-
-  /// No description provided for @nearbySendTo.
-  ///
-  /// In en, this message translates to:
-  /// **'Send straight to a device'**
-  String get nearbySendTo;
-
   /// No description provided for @codeLabel.
   ///
   /// In en, this message translates to:
   /// **'Code for the receiving device'**
   String get codeLabel;
-
-  /// No description provided for @codeHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Type this on the other device if it is not in the list above'**
-  String get codeHint;
 
   /// No description provided for @codeEnterPrompt.
   ///
@@ -1622,42 +1484,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'10 digits'**
   String get codeEnterHint;
-
-  /// No description provided for @codeNotFound.
-  ///
-  /// In en, this message translates to:
-  /// **'No device nearby is offering that code'**
-  String get codeNotFound;
-
-  /// No description provided for @btReceiveCodePrompt.
-  ///
-  /// In en, this message translates to:
-  /// **'Enter the code from the sending device'**
-  String get btReceiveCodePrompt;
-
-  /// No description provided for @qrScanBluetoothReceive.
-  ///
-  /// In en, this message translates to:
-  /// **'Receive over Bluetooth'**
-  String get qrScanBluetoothReceive;
-
-  /// No description provided for @btReceiveWaitingToBeChosen.
-  ///
-  /// In en, this message translates to:
-  /// **'Waiting to be picked on the sending device'**
-  String get btReceiveWaitingToBeChosen;
-
-  /// No description provided for @btReceiveWaitingDetail.
-  ///
-  /// In en, this message translates to:
-  /// **'This device is now listed on the sender. Choose it there to start the transfer.'**
-  String get btReceiveWaitingDetail;
-
-  /// No description provided for @btReceiveCodeInvalid.
-  ///
-  /// In en, this message translates to:
-  /// **'The code is ten digits'**
-  String get btReceiveCodeInvalid;
 
   /// No description provided for @codeMalformed.
   ///
@@ -1791,6 +1617,12 @@ abstract class AppLocalizations {
   /// **'You cancelled the transfer.'**
   String get errorCancelledHere;
 
+  /// No description provided for @errorOfferEnded.
+  ///
+  /// In en, this message translates to:
+  /// **'This offer sat unused for too long and was closed. Start sending again.'**
+  String get errorOfferEnded;
+
   /// No description provided for @errorLinkWifiOff.
   ///
   /// In en, this message translates to:
@@ -1826,6 +1658,66 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The transfer started without a certificate, so the other device has nothing to trust. Try again.'**
   String get errorSessionWithoutCertificate;
+
+  /// No description provided for @errorNoPathRelayLimited.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not connect: the two devices cannot reach each other directly, and the relay service is limiting requests right now. Try again in about a minute.'**
+  String get errorNoPathRelayLimited;
+
+  /// No description provided for @errorNoPathRelayUnreachable.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not connect: the two devices cannot reach each other directly, and the relay service could not be reached. Check the internet connection.'**
+  String get errorNoPathRelayUnreachable;
+
+  /// No description provided for @errorNoPathRelayOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not connect: the two devices cannot reach each other directly, and the relay is switched off or not configured in this build.'**
+  String get errorNoPathRelayOff;
+
+  /// No description provided for @errorNoPathRelayWasAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not connect even though a relay was available. Something between the devices is blocking the connection — a VPN or a firewall, for example.'**
+  String get errorNoPathRelayWasAvailable;
+
+  /// No description provided for @errorNotEnoughSpace.
+  ///
+  /// In en, this message translates to:
+  /// **'There is not enough free space for this transfer. Free up some space where the files are being saved and try again.'**
+  String get errorNotEnoughSpace;
+
+  /// No description provided for @errorNotEnoughSpaceDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'Not enough free space: {needed} needed, {available} available. Free up some space where the files are being saved and try again.'**
+  String errorNotEnoughSpaceDetail(String needed, String available);
+
+  /// No description provided for @errorDiskFull.
+  ///
+  /// In en, this message translates to:
+  /// **'The disk filled up while saving. Free up some space and try again.'**
+  String get errorDiskFull;
+
+  /// No description provided for @errorUnsafeDestination.
+  ///
+  /// In en, this message translates to:
+  /// **'The save folder has a shortcut (a symbolic link) where a file or folder should be, so nothing was written there. Remove it, or choose another save folder.'**
+  String get errorUnsafeDestination;
+
+  /// No description provided for @errorPathTooLong.
+  ///
+  /// In en, this message translates to:
+  /// **'The save location is nested too deeply — Windows cannot open files at a path this long. Choose a folder closer to the root of the drive.'**
+  String get errorPathTooLong;
+
+  /// No description provided for @errorReceivedFilesNotIntact.
+  ///
+  /// In en, this message translates to:
+  /// **'Some received files went missing or changed before the transfer finished, so it is not reported as complete. Try again — only what is missing will be received again.'**
+  String get errorReceivedFilesNotIntact;
 
   /// No description provided for @qrDisplayStillCounting.
   ///

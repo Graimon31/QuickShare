@@ -1,77 +1,27 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
+import 'package:quickshare/features/sender/presentation/widgets/offer_lifecycle_guard.dart';
 import 'package:quickshare/shared/widgets/copy_value_row.dart';
-import 'package:quickshare/shared/widgets/session_expired_panel.dart';
+import 'package:quickshare/shared/widgets/offer_countdown.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
-/// Shows the Bluetooth session QR while this device scans for waiting receivers.
-class BluetoothSendPage extends StatefulWidget {
+/// Shows the Bluetooth session's QR code while this device waits for the phone
+/// that scans it.
+///
+/// Nothing else is offered: no list of devices in range, nothing to pick. A
+/// receiver is the one that scanned the code, and it finds this device by what
+/// the code says.
+class BluetoothSendPage extends StatelessWidget {
   const BluetoothSendPage({super.key});
-
-  @override
-  State<BluetoothSendPage> createState() => _BluetoothSendPageState();
-}
-
-class _BluetoothSendPageState extends State<BluetoothSendPage> {
-  Timer? _timer;
-  int _secondsLeft = AppConstants.sessionTimeoutSeconds;
-  bool _expired = false;
-  String? _connectingDevice;
-
-  @override
-  void initState() {
-    super.initState();
-    _startTimer();
-  }
-
-  void _startTimer() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_secondsLeft > 0) {
-        setState(() => _secondsLeft--);
-      } else {
-        _timer?.cancel();
-        setState(() => _expired = true);
-        // The QR is dead from this moment on; tear the session down so
-        // nobody connects to something the countdown already killed.
-        context.read<SenderBloc>().add(CancelSending());
-      }
-    });
-  }
-
-  void _refreshSession() {
-    setState(() {
-      _expired = false;
-      _connectingDevice = null;
-      _secondsLeft = AppConstants.sessionTimeoutSeconds;
-    });
-    _startTimer();
-    context.read<SenderBloc>().add(RestartSession());
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  String _formatTime(int seconds) {
-    final m = seconds ~/ 60;
-    final s = seconds % 60;
-    return '$m:${s.toString().padLeft(2, '0')}';
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -81,7 +31,8 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) context.read<SenderBloc>().add(CancelSending());
       },
-      child: Scaffold(
+      child: OfferLifecycleGuard(
+          child: Scaffold(
         backgroundColor: AppColors.voidBg,
         appBar: AppBar(
           title: Text(l10n.btSendTitle),
@@ -98,9 +49,7 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
             if (state is Transferring) {
               context.go('/send/progress');
             } else if (state is SenderInitial) {
-              // Expiry lands here too (the session is cancelled underneath),
-              // but then the expired panel owns the screen.
-              if (!_expired) context.go('/send');
+              context.go('/send');
             } else if (state is SenderError) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                   content: Text(
@@ -112,9 +61,6 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
             }
           },
           builder: (context, state) {
-            if (_expired) {
-              return SessionExpiredPanel(onRefresh: _refreshSession);
-            }
             if (state is! BluetoothAdvertising) {
               return Center(
                 child: TransferPhaseLoader(
@@ -212,78 +158,6 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                             textAlign: TextAlign.center,
                           ).animate().fadeIn(delay: 400.ms),
                           const SizedBox(height: 16),
-                          // Receivers advertising themselves. This device
-                          // scans; they light up. Empty until someone opens
-                          // Receive nearby.
-                          if (state.waiting.isNotEmpty) ...[
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: Text(
-                                l10n.nearbyTitle,
-                                style: const TextStyle(
-                                  color: AppColors.textSecondary,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 0.4,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            ...state.waiting.map(
-                              (peer) {
-                                final isConnecting = _connectingDevice == peer.id;
-                                return Container(
-                                  margin: const EdgeInsets.only(bottom: 8),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.glassFillStrong,
-                                    borderRadius: BorderRadius.circular(14),
-                                    border:
-                                        Border.all(color: AppColors.glassBorder),
-                                  ),
-                                  child: ListTile(
-                                    leading: const Icon(Icons.devices_other_rounded,
-                                        color: AppColors.primary),
-                                    title: Text(peer.name,
-                                        style: const TextStyle(
-                                            color: AppColors.textPrimary)),
-                                    subtitle: Text(
-                                        isConnecting
-                                            ? l10n.btReceiveConnecting
-                                            : l10n.nearbyReady,
-                                        style: const TextStyle(
-                                            color: AppColors.primary,
-                                            fontSize: 12)),
-                                    trailing: isConnecting
-                                        ? const SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                              color: AppColors.primary,
-                                            ),
-                                          )
-                                        : const Icon(Icons.chevron_right,
-                                            color: AppColors.textSecondary),
-                                    onTap: isConnecting
-                                        ? null
-                                        : () {
-                                            setState(() => _connectingDevice = peer.id);
-                                            context
-                                                .read<SenderBloc>()
-                                                .add(SendToWaitingReceiver(
-                                                  peer.id,
-                                                  deviceName: peer.name,
-                                                  alreadyConnected:
-                                                      peer.alreadyConnected,
-                                                ));
-                                          },
-                                  ),
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 16),
-                          ],
-
                           // Digits rather than a link. The two devices are in
                           // the same room — that is what Bluetooth means here
                           // — so the thing to hand over is something a person
@@ -306,15 +180,8 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
                               copyTooltip: l10n.commonCopy,
                             ),
                           const SizedBox(height: 12),
-                          Text(
-                            l10n.qrDisplaySessionExpires(
-                                _formatTime(_secondsLeft)),
-                            style: const TextStyle(
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.error,
-                            ),
-                          ),
+                          if (state.expiresAt != null)
+                            OfferCountdown(expiresAt: state.expiresAt!),
                           const SizedBox(height: 24),
                           OutlinedButton.icon(
                             onPressed: () {
@@ -336,6 +203,7 @@ class _BluetoothSendPageState extends State<BluetoothSendPage> {
               ),
             );
           },
+        ),
         ),
       ),
     );

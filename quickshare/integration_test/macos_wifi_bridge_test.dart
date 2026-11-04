@@ -60,29 +60,31 @@ void main() {
     final authorization = await hotspot.locationAuthorization();
     print('location authorization: $authorization');
 
-    if (authorization != 'granted') {
-      // Then a scan must refuse, loudly, naming what the user can change.
-      await expectLater(
-        hotspot.scanForNetworks(),
-        throwsA(isA<HotspotException>().having(
-          (e) => e.message,
-          'message',
-          contains('Location Services'),
-        )),
-        reason: 'an unauthorised scan must not quietly return an empty list',
-      );
-      return;
+    // An initially undecided system prompt may be granted *during* the scan.
+    // Either a clear permission error or a real network list is valid; a
+    // silent empty list while unauthorised is never valid.
+    final clock = Stopwatch()..start();
+    try {
+      final networks = await hotspot.scanForNetworks();
+      final currentAuthorization = await hotspot.locationAuthorization();
+      expect(currentAuthorization, 'granted',
+          reason: 'an unapproved scan must not silently return a result');
+      print('scan returned ${networks.length} network(s)');
+      expect(networks, isNotEmpty,
+          reason: 'with authorization granted, a machine on Wi-Fi sees itself '
+              'and its neighbours');
+
+      final ours = await hotspot.scanForNetworks(prefix: 'DirectDrop-');
+      expect(ours.every((n) => n.startsWith('DirectDrop-')), isTrue,
+          reason: 'the prefix filter is what turns networks into devices');
+    } on HotspotException catch (error) {
+      expect(authorization, isNot('granted'),
+          reason: 'a previously granted scan should not be denied');
+      expect(error.message, contains('Location Services'),
+          reason: 'unauthorised scans must explain how to grant access');
+      expect(clock.elapsed, lessThan(const Duration(seconds: 10)),
+          reason: 'a pending permission prompt must not freeze the scan');
     }
-
-    final networks = await hotspot.scanForNetworks();
-    print('scan returned ${networks.length} network(s)');
-    expect(networks, isNotEmpty,
-        reason: 'with authorization granted, a machine on Wi-Fi sees itself '
-            'and its neighbours');
-
-    final ours = await hotspot.scanForNetworks(prefix: 'DirectDrop-');
-    expect(ours.every((n) => n.startsWith('DirectDrop-')), isTrue,
-        reason: 'the prefix filter is what turns networks into devices');
   }, timeout: const Timeout(Duration(seconds: 60)));
 
   testWidgets('the bridge knows which network this Mac is on', (tester) async {

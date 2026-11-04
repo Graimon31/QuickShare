@@ -18,6 +18,8 @@ import 'package:path/path.dart' as p;
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
+import 'package:quickshare/core/errors/failures.dart';
+import 'package:quickshare/core/storage/disk_space.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/features/receiver/data/client/isolated_qhtp_receiver.dart';
 import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
@@ -30,6 +32,17 @@ class _FakeWakelock extends WakelockPlusPlatformInterface {
   Future<void> toggle({required bool enable}) async {}
   @override
   Future<bool> get enabled async => false;
+}
+
+class _Fixed extends DiskSpaceProbe {
+  _Fixed(this.answer);
+  final DiskSpace answer;
+  final asked = <String>[];
+  @override
+  Future<DiskSpace> available(String path) async {
+    asked.add(path);
+    return answer;
+  }
 }
 
 void main() {
@@ -184,4 +197,30 @@ void main() {
 
     expect(result.isLeft, isTrue);
   });
+
+  test('the free-space question crosses to the isolate that can answer it',
+      () async {
+    // Platform channels answer on the main isolate only, and the session runs
+    // in a worker. The worker asks; this side answers with the real probe.
+    final payload = await serve(2 * 1024 * 1024);
+    final probe = _Fixed(const DiskSpace.known(5 * 1024 * 1024));
+    final worker = IsolatedQhtpReceiver(
+      stateDirectory: () async => state.path,
+      fallbackDirectory: () async => target.path,
+      diskSpace: probe,
+    );
+
+    final result = await worker.downloadSession(
+        payload: payload, targetBaseDir: target.path);
+
+    expect(probe.asked, [target.path]);
+    final failure = result.fold((f) => f, (_) => fail('should not fit'));
+    expect(FailureCode.parseNotEnoughSpace(failure.code), (
+      needed: 2 * 1024 * 1024 + 64 * 1024 * 1024,
+      available: 5 * 1024 * 1024,
+    ));
+    expect(
+        Directory(target.path).listSync(recursive: true).whereType<File>(),
+        isEmpty);
+  }, timeout: const Timeout(Duration(minutes: 2)));
 }

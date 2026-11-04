@@ -151,4 +151,80 @@ void main() {
       expect(written, hasLength(2));
     });
   });
+
+  group('what a resume needs to trust the record', () {
+    test('the modification time recorded at completion survives a reload',
+        () async {
+      await store.saveState(
+        sessionId: 'sid',
+        host: 'h',
+        port: 1,
+        token: 't',
+        baseDir: '/dest',
+        items: {
+          'a': const QhtpItemState(
+            id: 'a',
+            path: 'a.bin',
+            size: 10,
+            status: 'completed',
+            sha256: 'sha256:abc',
+            finalPath: '/dest/a.bin',
+            modifiedMs: 1700000000123,
+          ),
+        },
+      );
+
+      final loaded = await store.loadState('sid');
+      expect(loaded!['a']!.modifiedMs, 1700000000123);
+      expect(loaded['a']!.sha256, 'sha256:abc');
+    });
+
+    test('a record from before the field existed still loads', () async {
+      final dir = Directory(p.join(root.path, 'qhtp_sessions'))..createSync();
+      File(p.join(dir.path, 'old.json')).writeAsStringSync(
+          '{"sessionId":"old","baseDir":"/d","items":{"a":{"id":"a",'
+          '"path":"a.bin","size":3,"status":"completed"}}}');
+      final loaded = await store.loadState('old');
+      expect(loaded!['a']!.modifiedMs, isNull);
+    });
+
+    test('loadSession returns the destination and session it was saved for',
+        () async {
+      await store.saveState(
+        sessionId: 'sid/with:odd chars',
+        host: 'h',
+        port: 1,
+        token: 't',
+        baseDir: '/dest',
+        items: {'a': item()},
+      );
+      final saved = await store.loadSession('sid/with:odd chars');
+      expect(saved!.sessionId, 'sid/with:odd chars');
+      expect(saved.baseDir, '/dest');
+      expect(saved.items.keys, ['a']);
+    });
+
+    test('loadSession on nothing is null', () async {
+      expect(await store.loadSession('never saved'), isNull);
+    });
+
+    test('a record is replaced whole, with no scratch file left over',
+        () async {
+      for (var i = 0; i < 3; i++) {
+        await store.saveState(
+          sessionId: 'sid',
+          host: 'h',
+          port: i,
+          token: 't',
+          baseDir: '/dest',
+          items: {'a': item()},
+        );
+      }
+      final names = Directory(p.join(root.path, 'qhtp_sessions'))
+          .listSync()
+          .map((e) => p.basename(e.path))
+          .toList();
+      expect(names, ['sid.json']);
+    });
+  });
 }

@@ -103,16 +103,32 @@ class SessionCode {
     return buffer.toString();
   }
 
-  /// A public name for this session, used as a locator.
+  /// A locator derived from the code. **Never announce it.**
   ///
-  /// Note on threat model: with 10 decimal digits (~33.2 bits of entropy),
-  /// a public identifier derived via SHA-256 can be brute-forced offline in seconds
-  /// if observed by an attacker on the same L2 network. Therefore, [publicId] acts
-  /// strictly as a discovery locator. For high-security channels (such as QR flow),
-  /// the session token must be generated independently using 128-bit cryptographically
-  /// secure randomness, breaking the link between the advertised code/locator and the
-  /// authentication token.
+  /// Forty bits of a hash over a space of about 33: anybody who reads this off
+  /// the air can hash all ten billion codes and keep the one that matches,
+  /// which takes seconds, and the code derives the session token, the network
+  /// name and the passphrase. It used to be announced over mDNS on the
+  /// understanding that it could not be reversed. It can.
+  ///
+  /// What goes to a multicast group or a radio is [discoveryHint]. This one
+  /// remains for values that only ever travel inside something already
+  /// secret — the QR code, a sealed frame — and for the Bluetooth
+  /// advertisement, which still carries it.
   String get publicId => _deriveString('cid', 8);
+
+  /// One byte of the code's hash, as two hex digits: what a sender announces
+  /// so that a receiver who was told the code can skip most of the devices in
+  /// range.
+  ///
+  /// Eight bits leave about forty million codes behind every value, so seeing
+  /// one tells an eavesdropper next to nothing, and it is as cheap for an
+  /// attacker to forge as to read. That is the whole contract: a prefilter.
+  /// Neither a match nor a mismatch proves anything about the device that
+  /// announced it, and the code itself is checked by proving it to that
+  /// device, over its own certificate, before any of it is sent.
+  String get discoveryHint =>
+      _derive('hint').first.toRadixString(16).padLeft(2, '0');
 
   /// What every network this app raises is called, before the derived part.
   ///

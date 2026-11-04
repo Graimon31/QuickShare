@@ -4,6 +4,15 @@ class AppConstants {
   static const int serverPortMin = 8000;
   static const int serverPortMax = 9000;
   static const int sessionTimeoutSeconds = 300; // 5 min
+
+  /// How long the code and the QR on an offer screen are good for.
+  ///
+  /// Whatever a sender shows — the digits a person types, the QR a phone
+  /// scans, the link an internet offer carries — is replaced on this interval
+  /// for as long as the screen stays up. It is the only number: the countdown
+  /// on screen, the rotation timer and the wall-clock check after a sleep all
+  /// read it from here.
+  static const Duration sessionCodeLifetime = Duration(minutes: 5);
   static const int maxRetryAttempts = 3;
   static const int connectionTimeoutMs = 3000;
   static const int qrPayloadVersion = 1;
@@ -86,11 +95,18 @@ class AppConstants {
     defaultValue: '',
   );
 
-  /// Shared with the Worker as `TURN_CLIENT_SECRET`. Signs `POST /turn`.
-  /// Empty means the app will not call `/turn` at all (STUN-only fallback).
-  static const String turnClientSecret = String.fromEnvironment(
-    'QUICKSHARE_TURN_SECRET',
-    defaultValue: '',
+  /// Debug builds only: gather relay candidates and nothing else
+  /// (`iceTransportPolicy: relay`), so a hand-run check proves the TURN path
+  /// itself rather than whichever path happened to win. Off by default, and
+  /// ignored outside debug mode — see [IceServers.transportPolicy].
+  ///
+  ///   `--dart-define=QUICKSHARE_FORCE_RELAY=true`
+  ///
+  /// The hand-run entry point is `integration_test/live_turn_relay_check.dart`
+  /// (NET-02-B).
+  static const bool forceRelay = bool.fromEnvironment(
+    'QUICKSHARE_FORCE_RELAY',
+    defaultValue: false,
   );
 
   /// Every TURN transport to offer ICE, best first.
@@ -112,10 +128,12 @@ class AppConstants {
   ///
   /// A direct path costs nothing and carries no limit — send 500 GB over it.
   /// A relayed path rides on the project's own Cloudflare Calls allocation
-  /// (free tier is measured in hundreds of GB a month, not megabytes), so the
-  /// ceiling now matches the largest file the WebRTC path can carry at all.
-  /// TCP-over-TLS relaying realistically runs at 1-3 MB/s — a gigabyte means
-  /// ten minutes — but that is a slow transfer, not a failed one.
+  /// (free tier is measured in hundreds of GB a month, not megabytes). The
+  /// default equals [maxFileSizeBytes], which bounds the legacy single-file
+  /// download; the WebRTC path itself carries sessions up to
+  /// [qhtpMaxSessionBytes], so this is a cost ceiling, not a protocol one.
+  /// TCP-over-TLS relaying is slow — an estimate here put it at 1-3 MB/s,
+  /// never measured — but a slow transfer is not a failed one.
   ///
   /// Override with `--dart-define=QUICKSHARE_RELAY_LIMIT=<bytes>`; 0 means no
   /// limit.

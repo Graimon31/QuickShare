@@ -9,12 +9,18 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/security/path_sanitizer.dart';
+import 'package:quickshare/core/storage/disk_space.dart';
 import 'package:quickshare/core/storage/durable_file.dart';
+import 'package:quickshare/core/storage/safe_path.dart';
+import 'package:quickshare/core/storage/storage_failure.dart';
 import 'package:quickshare/core/utils/wakelock_guard.dart';
+import 'package:quickshare/core/webrtc/ice_connect_deadline.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/core/webrtc/idle_watchdog.dart';
+import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/core/webrtc/sdp_compressor.dart';
 import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
@@ -56,6 +62,27 @@ class WebRtcReceiveProgress {
 /// offer arrives in the QR code and the answer goes back through a sealed
 /// out-of-band channel.
 class WebRtcReceiverTransport {
+  WebRtcReceiverTransport({
+    DiskSpaceProbe? diskSpace,
+    this.debugFileFactory,
+    this.iceConnectBudget = IceConnectDeadline.defaultBudget,
+  }) : _diskSpace = diskSpace ?? DiskSpaceProbe.forCurrentPlatform();
+
+  /// How long a negotiation may take once the answer is delivered.
+  /// Overridable only so a test need not spend a minute to see the deadline
+  /// act.
+  final Duration iceConnectBudget;
+
+  /// Says how much room the destination has; see [DiskSpaceProbe].
+  final DiskSpaceProbe _diskSpace;
+
+  /// Test seam: builds the file an incoming item is written to, so a test can
+  /// fill the disk or change the filesystem at an exact moment. Null in
+  /// production.
+  @visibleForTesting
+  final DurableFile Function(String path,
+      {required bool staged, required String base})? debugFileFactory;
+
   RTCPeerConnection? _peerConnection;
   RTCDataChannel? _dataChannel;
 
@@ -101,6 +128,21 @@ class WebRtcReceiverTransport {
   /// from the middle of a folder must not land under its real name with the
   /// rest of the transfer looking fine.
   int _currentItemExpectedBytes = -1;
+
+  /// Which manifest item is open, and how many of its bytes have arrived.
+  int _currentItemIndex = -1;
+  int _currentItemReceived = 0;
+
+  /// The manifest items that have been sealed — closed at exactly their
+  /// announced size. A session is received when every item is in here, not
+  /// when the running byte total happens to add up.
+  final Set<int> _sealedItems = <int>{};
+
+  /// A complete staged folder whose rename onto its real name failed. It is
+  /// the only copy of what was received, so nothing deletes it: not the
+  /// failure's own cleanup, and (by the `.qs.kept` mark inside it) not the
+  /// startup sweep either.
+  String? _keptStagedRoot;
   String _baseDir = '';
   final _gathering = IceGatheringTracker();
 
@@ -167,6 +209,41 @@ class WebRtcReceiverTransport {
   /// §9 — refreshes TURN credentials before they expire.
   TurnCredentialRefresher? _turnRefresher;
 
+  /// Why this session has no relay, from the Worker fetch that opened the peer
+  /// connection; null when it has one. Kept so a negotiation that fails can
+  /// say whether the relay was missing from the start.
+  RelayUnavailable? _relayUnavailable;
+
+  /// Bounds the wait for a connection once the answer has been delivered;
+  /// expiry is treated exactly like ICE reporting `failed`.
+  late final IceConnectDeadline _connectDeadline = IceConnectDeadline(
+    budget: iceConnectBudget,
+    tag: 'WEBRTC_RECEIVER',
+    onExpired: () => unawaited(_failNegotiation()),
+  );
+
+  /// Whether the connect deadline is running right now. For a test that has to
+  /// see it stop once the connection is up.
+  @visibleForTesting
+  bool get iceDeadlineArmed => _connectDeadline.isArmed;
+
+  /// True once ICE has connected at least once. Before that, an ICE failure is
+  /// "no path between the devices"; after it, an interruption.
+  bool _iceEstablished = false;
+
+  /// Set when the connection never came up, so the caller awaiting the
+  /// transfer gets the typed reason rather than a bare `Exception`.
+  IceNegotiationFailed? _iceFailure;
+
+  /// Set when the session stopped on a storage problem — a full disk, a link
+  /// in the destination — so the screen can say which in the user's language
+  /// instead of repeating an exception's text.
+  FileException? _storageFailure;
+
+  /// A negotiation failure is being worked out (it reads the stats before it
+  /// tears anything down), so a second trigger — ICE `failed` right behind the
+  /// deadline, say — must not start another.
+  bool _negotiationFailing = false;
 
   String sanitizeFileName(String name) {
     return PathSanitizer.sanitizeSegment(p.basename(name),
@@ -193,22 +270,20 @@ class WebRtcReceiverTransport {
     // An empty base makes p.isWithin('', 'photo.jpg') return true and the
     // guard below wave through a relative path, which lands the file in the
     // process working directory. Reject it outright rather than trusting every
-    // caller to have set the destination.
-    if (baseDir.isEmpty || !p.isAbsolute(baseDir)) {
-      throw Exception('Receive directory is not set (got "$baseDir")');
-    }
-    return PathSanitizer.resolveSafePath(fileName, baseDir,
-        defaultName: 'received_file');
+    // caller to have set the destination. A link already sitting on the way
+    // to the name ends the transfer too: see [SafePath].
+    return SafePath.resolve(fileName, baseDir, defaultName: 'received_file');
   }
 
-  Future<Map<String, dynamic>> _buildIceConfiguration() =>
-      IceServers.configurationDynamic();
+  Future<IceSetup> _buildIceConfiguration() => IceServers.configurationDynamic();
 
   /// Starts the TURN credential refresh timer (§9).
   Future<void> _startTurnRefresher({DateTime? expiresAt}) async {
     _turnRefresher?.cancel();
     final workerUrl = AppConstants.workerBaseUrl.trim();
     if (workerUrl.isEmpty || _peerConnection == null) return;
+    // Switched off or never configured will still be so in 25 minutes.
+    if (_relayUnavailable?.reason.isTerminal ?? false) return;
 
     _turnRefresher = TurnCredentialRefresher(
       peerConnection: _peerConnection!,
@@ -254,8 +329,16 @@ class WebRtcReceiverTransport {
 
       final rawSdp = SdpCompressor.decompress(sdpOffer);
 
-      final ice = await _buildIceConfiguration();
+      final setup = await _buildIceConfiguration();
+      final ice = setup.configuration;
       final expectingRelay = IceServers.containsTurn(ice);
+      _relayUnavailable = setup.relayUnavailable;
+      AppLogger.info(
+          'Receiver: creating peer connection '
+          '(expectingRelay=$expectingRelay, '
+          'relay=${_relayUnavailable?.reason.name ?? 'available'}, '
+          'policy=${ice['iceTransportPolicy']})',
+          tag: 'WEBRTC_RECEIVER');
       _peerConnection = await createPeerConnection(ice);
       await _startTurnRefresher(); // §9
 
@@ -306,6 +389,11 @@ class WebRtcReceiverTransport {
         await deliverAnswer(finalAnswerSdp ?? '');
       }
 
+      // Both descriptions are in and the sender has (or is about to have) the
+      // answer: from here a connection comes up or the session is written off,
+      // whether or not libwebrtc ever says `failed`.
+      _connectDeadline.arm();
+
       final completer = Completer<String>();
 
       late StreamSubscription sub;
@@ -323,7 +411,9 @@ class WebRtcReceiverTransport {
             // here too — `_completion` carries it, but nothing awaits that one.
             completer.completeError(_cancelledBySender
                 ? const TransferCancelledBySender()
-                : Exception('Serverless WebRTC transfer failed'));
+                : _iceFailure ??
+                    _storageFailure ??
+                    Exception('Serverless WebRTC transfer failed'));
           }
         }
       });
@@ -399,8 +489,20 @@ class WebRtcReceiverTransport {
             ? GZipDecoder().decodeBytes(message.binary)
             : message.binary;
 
+        // More than the item announced is a broken sender (or a hostile one):
+        // the bytes would land in a file whose size the manifest already
+        // promised, and a count that happens to add up later hides it.
+        if (_currentItemExpectedBytes >= 0 &&
+            _currentItemReceived + bytes.length > _currentItemExpectedBytes) {
+          final name = p.basename(_currentFile!.finalPath);
+          _fail('"$name" sent more than the $_currentItemExpectedBytes bytes '
+              'it announced');
+          return;
+        }
+
         _idleWatchdog?.kick();
         await _currentFile!.add(bytes);
+        _currentItemReceived += bytes.length;
         // Progress is reported across the whole session, so a ten-photo
         // transfer does not snap back to 0% ten times.
         _sessionReceivedBytes += bytes.length;
@@ -427,7 +529,7 @@ class WebRtcReceiverTransport {
 
       switch (type) {
         case TransferProtocol.manifest:
-          _openSession(TransferProtocol.parseManifest(data));
+          await _openSession(TransferProtocol.parseManifest(data));
 
         case TransferProtocol.manifestBegin:
           // Only the promise of a manifest so far. Sessions large enough to
@@ -464,7 +566,7 @@ class WebRtcReceiverTransport {
           _armIdleWatchdog();
           if (_manifestPartsSeen >= _manifestPartsExpected) {
             _partialManifest = null;
-            _openSession(pending);
+            await _openSession(pending);
           }
 
         case TransferProtocol.fileStart:
@@ -474,9 +576,24 @@ class WebRtcReceiverTransport {
                 'which is not in a manifest of ${_manifest.length}');
             return;
           }
+          // One item at a time, each closed before the next opens. A
+          // file-start over an open file used to replace it without sealing
+          // it: its bytes still counted, the file was never committed, and
+          // the running total could add up regardless.
+          if (_currentFile != null) {
+            _fail('file-start for item $index arrived while item '
+                '$_currentItemIndex was still open');
+            return;
+          }
+          if (_sealedItems.contains(index)) {
+            _fail('item $index was announced twice');
+            return;
+          }
           final item = _manifest[index];
           _isCompressed = item.compressed;
           _currentItemExpectedBytes = item.size;
+          _currentItemIndex = index;
+          _currentItemReceived = 0;
           _currentFile = _openIncoming(item.path);
           await _currentFile!.open();
           _lastProgressReport =
@@ -508,6 +625,7 @@ class WebRtcReceiverTransport {
             mimeType: data['mime'] as String? ?? 'application/octet-stream',
             compressed: (data['compressed'] as bool?) ?? false,
           );
+          if (!await _hasRoomFor(item.size)) return;
           _manifest = [item];
           _sessionTotalBytes = item.size;
           _sessionReceivedBytes = 0;
@@ -517,6 +635,9 @@ class WebRtcReceiverTransport {
           _lastBytes = 0;
           _lastTick = DateTime.now();
           _currentItemExpectedBytes = item.size;
+          _currentItemIndex = 0;
+          _currentItemReceived = 0;
+          _sealedItems.clear();
           _currentFile = _openIncoming(_fileName);
           await _currentFile!.open();
           _lastProgressReport =
@@ -542,6 +663,7 @@ class WebRtcReceiverTransport {
           // file-end, so flush whatever is still open.
           await _sealCurrentFile();
           _idleWatchdog?.cancel();
+          if (_completion.isCompleted) return;
 
           if (_sessionTotalBytes > 0 &&
               _sessionReceivedBytes < _sessionTotalBytes) {
@@ -552,7 +674,9 @@ class WebRtcReceiverTransport {
           }
       }
     } catch (e) {
-      _fail('Failed to write incoming file: $e');
+      final problem = classifyStorageError(e);
+      _fail(problem?.message ?? 'Failed to write incoming file: $e',
+          problem: problem);
     }
   }
 
@@ -568,7 +692,7 @@ class WebRtcReceiverTransport {
 
   /// Starts a session from the manifest it opened with, however many frames
   /// that manifest took to arrive.
-  void _openSession(List<TransferItem> items) {
+  Future<void> _openSession(List<TransferItem> items) async {
     if (items.length > AppConstants.qhtpMaxFileCount) {
       _fail(
           'Manifest item count (${items.length}) exceeds the limit of ${AppConstants.qhtpMaxFileCount}');
@@ -579,10 +703,16 @@ class WebRtcReceiverTransport {
       _fail('Manifest total size exceeds the maximum session limit');
       return;
     }
+    // Before a file is opened: a session that cannot fit is refused here, in
+    // words, rather than discovered at the end of the transfer.
+    if (!await _hasRoomFor(totalBytes)) return;
     _manifest = items;
     _sessionTotalBytes = totalBytes;
     _sessionReceivedBytes = 0;
     _writtenPaths.clear();
+    _sealedItems.clear();
+    _currentItemIndex = -1;
+    _currentItemReceived = 0;
     _lastBytes = 0;
     _lastTick = DateTime.now();
     // A folder is named after the folder, not after the first photo in it and
@@ -604,6 +734,21 @@ class WebRtcReceiverTransport {
         tag: 'WEBRTC_RECEIVER');
   }
 
+  /// Whether the destination has room for [bytes] more, failing the session
+  /// with the sizes when it is known not to. An answer of "unknown" lets the
+  /// transfer run and says so in the log.
+  Future<bool> _hasRoomFor(int bytes) async {
+    if (_baseDir.isEmpty || bytes <= 0) return true;
+    try {
+      await requireFreeSpace(_diskSpace, _baseDir,
+          remainingBytes: bytes, tag: 'WEBRTC_RECEIVER');
+      return true;
+    } on NotEnoughSpaceException catch (e) {
+      _fail(e.message, problem: classifyStorageError(e));
+      return false;
+    }
+  }
+
   /// Decides whether this session writes into a staged `<name>.qs.partial/`
   /// directory that is renamed whole at the end (folder mode), or straight
   /// into the destination.
@@ -618,22 +763,39 @@ class WebRtcReceiverTransport {
     _finalRoot = null;
     if (folderRoot == null || _baseDir.isEmpty) return;
 
-    final finalRoot = p.normalize(p.join(_baseDir, folderRoot));
-    if (!p.isWithin(_baseDir, finalRoot)) return;
-    if (Directory(finalRoot).existsSync() || File(finalRoot).existsSync()) {
+    final String finalRoot;
+    try {
+      finalRoot =
+          SafePath.resolve(folderRoot, _baseDir, defaultName: 'received_file');
+    } on UnsafePathException {
+      // Not staged; the files are written one at a time instead, and the
+      // first of them reports what is wrong with the path, with its code.
       return;
     }
+    // Looked at without following links: a link named like the folder is a
+    // taken name, and so is a dangling one.
+    if (SafePath.exists(finalRoot)) return;
 
     _folderMode = true;
     _finalRoot = finalRoot;
     _stagedRoot = '$finalRoot$kPartialSuffix';
-    final staged = Directory(_stagedRoot!);
-    if (staged.existsSync()) {
+    final stagedType =
+        FileSystemEntity.typeSync(_stagedRoot!, followLinks: false);
+    if (stagedType != FileSystemEntityType.notFound) {
       try {
-        staged.deleteSync(recursive: true);
+        // Debris from an earlier attempt. A link there is removed as a link:
+        // a recursive delete would be the one place this receiver went
+        // *through* it.
+        if (stagedType == FileSystemEntityType.link) {
+          Link(_stagedRoot!).deleteSync();
+        } else if (stagedType == FileSystemEntityType.directory) {
+          Directory(_stagedRoot!).deleteSync(recursive: true);
+        } else {
+          File(_stagedRoot!).deleteSync();
+        }
       } catch (_) {
-        // A leftover we could not clear; open() will still write into it and
-        // the sweep gets it next launch.
+        // A leftover we could not clear; open() will report it if it is in the
+        // way, and the sweep gets it next launch.
       }
     }
   }
@@ -648,14 +810,29 @@ class WebRtcReceiverTransport {
       final within = _pathBelowRoot(manifestPath);
       final target = p.normalize(p.join(_stagedRoot!, within));
       if (!p.isWithin(_stagedRoot!, target)) {
-        throw Exception('Path traversal detected in "$manifestPath"');
+        throw UnsafePathException(target, 'it leaves the staging folder');
       }
-      _targetPath = target;
-      return DurableFile(target, staged: false);
+      // The staging folder is ours, but everything between it and the
+      // destination — and every folder inside it — is checked as well.
+      SafePath.assertNoLinksBelow(_baseDir, target);
+      // Two items can land on one name: paths that clean to the same thing,
+      // or names that differ only in case on a volume that folds it. The file
+      // is written straight into the staged folder with no partial of its own,
+      // so opening it truncates whatever is there — the second item would
+      // erase the first, and both would be counted as received. Looked at
+      // without following links, like every other check here.
+      final unique = SafePath.uniquePath(target);
+      _targetPath = unique;
+      return _newFile(unique, staged: false);
     }
-    _targetPath = _uniquePath(resolveTargetPath(manifestPath, _baseDir));
-    return DurableFile(_targetPath!);
+    _targetPath =
+        SafePath.uniquePath(resolveTargetPath(manifestPath, _baseDir));
+    return _newFile(_targetPath!, staged: true);
   }
+
+  DurableFile _newFile(String path, {required bool staged}) =>
+      debugFileFactory?.call(path, staged: staged, base: _baseDir) ??
+      DurableFile(path, staged: staged, base: _baseDir);
 
   /// The part of a manifest path below its top folder, every segment cleaned.
   /// `Trip/Day 1/IMG_0042.HEIC` → `Day 1/IMG_0042.HEIC`.
@@ -673,10 +850,18 @@ class WebRtcReceiverTransport {
     await _currentFile?.abort();
     _currentFile = null;
     if (_folderMode && _stagedRoot != null) {
-      final staged = Directory(_stagedRoot!);
-      if (staged.existsSync()) {
+      // Looked at without following links. A link standing where the staging
+      // folder was is removed as a link; nothing is deleted through it.
+      final type = FileSystemEntity.typeSync(_stagedRoot!, followLinks: false);
+      if (_keptStagedRoot == _stagedRoot) {
+        // Complete, and the only copy: see [_keptStagedRoot].
+      } else if (type == FileSystemEntityType.link) {
         try {
-          await staged.delete(recursive: true);
+          await Link(_stagedRoot!).delete();
+        } catch (_) {}
+      } else if (type == FileSystemEntityType.directory) {
+        try {
+          await Directory(_stagedRoot!).delete(recursive: true);
         } catch (_) {}
       }
     } else if (_targetPath != null) {
@@ -737,7 +922,12 @@ class WebRtcReceiverTransport {
 
     final path = await file.commit();
     if (!_writtenPaths.contains(path)) _writtenPaths.add(path);
+    if (_currentItemIndex >= 0) _sealedItems.add(_currentItemIndex);
   }
+
+  /// Whether every item the manifest announced has been sealed.
+  bool get _everyItemSealed =>
+      _manifest.isNotEmpty && _sealedItems.length == _manifest.length;
 
   /// Declares the session received: every byte the manifest announced is on
   /// disk. Runs once; later calls only get a chance to tear down immediately
@@ -755,7 +945,21 @@ class WebRtcReceiverTransport {
       // A short final item fails inside the seal. Nothing below should run:
       // no folder commit, no "completed", no successful completion.
       if (_completion.isCompleted) return;
-      await _commitFolderIfStaged();
+      // The bytes add up; that is not the same as every item being here. An
+      // item that was skipped, or one that was replaced before it was sealed,
+      // is a hole the running total can paper over.
+      if (!_everyItemSealed) {
+        final missing = [
+          for (var i = 0; i < _manifest.length; i++)
+            if (!_sealedItems.contains(i)) i,
+        ];
+        _fail(missing.isEmpty
+            ? 'the session ended without announcing any item'
+            : '${missing.length} of ${_manifest.length} items never arrived '
+                'complete (first: "${_manifest[missing.first].path}")');
+        return;
+      }
+      if (!await _commitFolderIfStaged()) return;
       _statusController.add(TransferStatus.completed);
       _emit('completed');
       if (!_completion.isCompleted) {
@@ -780,35 +984,95 @@ class WebRtcReceiverTransport {
     return _targetPath ?? p.join(_baseDir, 'received_file');
   }
 
+  /// How long to wait between attempts at the rename onto the real name. The
+  /// first failure is often not the last word: antivirus and the indexer hold
+  /// a freshly written tree open for a moment on Windows, and a rename of a
+  /// folder with open files in it is refused for exactly that moment.
+  static const List<Duration> _commitRetryDelays = [
+    Duration(milliseconds: 200),
+    Duration(milliseconds: 500),
+    Duration(seconds: 1),
+  ];
+
   /// Renames a staged folder onto its real name in one atomic step, once every
   /// file inside it is on disk. The session result then points at the folder,
   /// not at some photo three levels down inside it.
-  Future<void> _commitFolderIfStaged() async {
-    if (!_folderMode || _stagedRoot == null || _finalRoot == null) return;
-    try {
-      await commitDirectory(_stagedRoot!, _finalRoot!);
-      _writtenPaths
-        ..clear()
-        ..add(_finalRoot!);
-    } catch (e) {
-      // The name was free when the session opened; if the rename still fails
-      // the staged directory stays for the sweep, and the result path below
-      // will not resolve — logged rather than silently dropped.
-      AppLogger.error('Could not commit the received folder "$_finalRoot": $e',
-          tag: 'WEBRTC_RECEIVER');
+  ///
+  /// Never replaces: a folder (even an empty one), file or link that took the
+  /// name while the transfer ran leaves the session's folder to land as
+  /// `Name (1)`. Returns false when the commit failed and the session has been
+  /// failed with it — a folder that was not committed is not "received".
+  ///
+  /// A failure is not the end of the folder. Every file in it is whole, and it
+  /// is the only copy: the rename is tried again after a short wait, and if it
+  /// still fails the folder is kept where it is — marked so the startup sweep
+  /// leaves it alone — and the failure names the path, so the person can
+  /// recover it by hand.
+  Future<bool> _commitFolderIfStaged() async {
+    if (!_folderMode || _stagedRoot == null || _finalRoot == null) return true;
+    Object? failure;
+    for (var attempt = 0; attempt <= _commitRetryDelays.length; attempt++) {
+      try {
+        final landed =
+            await commitDirectory(_stagedRoot!, _finalRoot!, base: _baseDir);
+        _finalRoot = landed;
+        _writtenPaths
+          ..clear()
+          ..add(landed);
+        return true;
+      } catch (e) {
+        failure = e;
+        // Only an operating-system refusal can be transient. A link in the
+        // chain or a name that cannot be had will not change by waiting.
+        if (e is! FileSystemException || attempt == _commitRetryDelays.length) {
+          break;
+        }
+        AppLogger.warning(
+            'Could not commit the received folder "$_finalRoot" '
+            '(attempt ${attempt + 1}): $e; trying again',
+            tag: 'WEBRTC_RECEIVER');
+        await Future<void>.delayed(_commitRetryDelays[attempt]);
+      }
     }
+
+    final staged = _stagedRoot!;
+    _keptStagedRoot = staged;
+    _markKept(staged, failure);
+    AppLogger.error(
+        'Could not commit the received folder "$_finalRoot": $failure. It is '
+        'complete and has been kept at "$staged"',
+        tag: 'WEBRTC_RECEIVER');
+    final problem = classifyStorageError(failure);
+    final kept = 'The folder "${p.basename(_finalRoot!)}" was received in '
+        'full but could not be saved under its name '
+        '(${problem?.message ?? failure}). It was kept at "$staged" — '
+        'rename it to keep it.';
+    _fail(kept,
+        problem: problem == null ? null : StorageProblem(kept, problem.code));
+    return false;
   }
 
-  String _uniquePath(String path) {
-    var candidate = path;
-    var counter = 1;
-    while (File(candidate).existsSync()) {
-      final ext = p.extension(path);
-      final stem = p.basenameWithoutExtension(path);
-      candidate = p.join(p.dirname(path), '$stem ($counter)$ext');
-      counter++;
+  /// Puts the mark that tells the startup sweep this `.qs.partial` folder is
+  /// not debris. Written inside the folder: creating a file is far less likely
+  /// to be refused than the rename that just was.
+  void _markKept(String staged, Object? cause) {
+    try {
+      final marker = p.join(staged, kKeptMarker);
+      // The chain is checked first: if the staging folder has been swapped for
+      // a link, the mark would be written into whatever it points at.
+      SafePath.assertNoLinksBelow(_baseDir, marker);
+      File(marker)
+        ..createSync(exclusive: true)
+        ..writeAsStringSync(
+            'This folder was received in full but could not be renamed to '
+            'its real name ($cause). Rename it to keep it, then delete this '
+            'file.\n');
+    } catch (e) {
+      AppLogger.warning(
+          'Could not mark "$staged" as kept; the startup sweep may remove it: '
+          '$e',
+          tag: 'WEBRTC_RECEIVER');
     }
-    return candidate;
   }
 
   void _emit(String phase, {String? detail}) {
@@ -847,6 +1111,8 @@ class WebRtcReceiverTransport {
     switch (state) {
       case RTCIceConnectionState.RTCIceConnectionStateConnected:
       case RTCIceConnectionState.RTCIceConnectionStateCompleted:
+        _iceEstablished = true;
+        _connectDeadline.connected();
         _iceRecoveryTimer?.cancel();
         _iceRecoveryTimer = null;
       case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
@@ -865,6 +1131,10 @@ class WebRtcReceiverTransport {
         if (_sessionTotalBytes > 0 &&
             _sessionReceivedBytes >= _sessionTotalBytes) {
           unawaited(_completeSession());
+        } else if (!_iceEstablished) {
+          // Never connected: not an interruption but an absent route, and the
+          // useful thing to say is why there was no relay to fall back on.
+          unawaited(_failNegotiation());
         } else {
           _fail('Peer connection failed (ICE $state)');
         }
@@ -873,20 +1143,52 @@ class WebRtcReceiverTransport {
     }
   }
 
-  void _fail(String reason) {
+  /// The connection never came up. Reads what is known about why — relay
+  /// availability, what was gathered, which pair (if any) was chosen — before
+  /// anything is torn down, and fails the session with it.
+  Future<void> _failNegotiation() async {
+    // `_completion` settled means the session already ended some other way —
+    // the person cancelled, and closing the connection is what made ICE report
+    // `closed` — and that is not a missing route.
+    if (_negotiationFailing ||
+        _completion.isCompleted ||
+        _sessionFinished ||
+        _cancelledBySender) {
+      return;
+    }
+    _negotiationFailing = true;
+    _connectDeadline.cancel();
+
+    final diagnosis = await diagnoseNoPath(
+      relayUnavailable: _relayUnavailable,
+      gathering: _gathering,
+      connection: _peerConnection,
+    );
+    AppLogger.error(diagnosis.summary, tag: 'WEBRTC_RECEIVER');
+    if (_completion.isCompleted || _sessionFinished || _cancelledBySender) {
+      return;
+    }
+
+    _iceFailure = IceNegotiationFailed(diagnosis);
+    _fail(diagnosis.summary);
+  }
+
+  void _fail(String reason, {StorageProblem? problem}) {
     debugPrint('WebRTC receive failed: $reason');
+    if (problem != null) _storageFailure ??= problem.toException();
     unawaited(_discardInFlight());
     _statusController.add(TransferStatus.failed);
     _emit('failed', detail: reason);
     if (!_completion.isCompleted) {
       _completion.completeError(_cancelledBySender
           ? const TransferCancelledBySender()
-          : Exception(reason));
+          : _iceFailure ?? _storageFailure ?? Exception(reason));
     }
     _cleanup();
   }
 
   Future<void> _cleanup() async {
+    _connectDeadline.cancel();
     _idleWatchdog?.cancel();
     _teardownTimer?.cancel();
     _teardownTimer = null;

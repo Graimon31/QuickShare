@@ -5,6 +5,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter/foundation.dart';
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
+import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/features/receiver/domain/usecases/download_file_usecase.dart';
@@ -17,10 +18,10 @@ import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_tra
         WebRtcReceiveProgress,
         WebRtcReceiverTransport;
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
-import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_announcer.dart';
 import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_session.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/transfer/interruption_guard.dart';
+import 'package:quickshare/core/signaling/answer_channel.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/storage/receive_destination.dart';
 import 'package:quickshare/core/storage/received_item.dart';
@@ -29,6 +30,7 @@ import 'package:quickshare/core/utils/transfer_speed.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
 
 abstract class ReceiverEvent extends Equatable {
@@ -38,13 +40,6 @@ abstract class ReceiverEvent extends Equatable {
 }
 
 class StartScanning extends ReceiverEvent {}
-
-class BluetoothServeReceived extends ReceiverEvent {
-  final QRPayload payload;
-  const BluetoothServeReceived(this.payload);
-  @override
-  List<Object> get props => [payload];
-}
 
 class QRCodeScanned extends ReceiverEvent {
   final String rawData;
@@ -224,12 +219,12 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   int _transferAttempt = 0;
   WebRtcReceiverTransport? _serverlessTransport;
   final WebRtcReceiverTransport Function()? _serverlessTransportFactory;
+
+  /// Builds the channel the answer is published on. Null in production, where
+  /// it is [buildRendezvousChannel]; a test hands in one that stays in process.
+  final AnswerChannel Function()? _rendezvousChannelFactory;
   BluetoothReceiverSession? _bluetoothSession;
   final BluetoothReceiverSession Function()? _bluetoothSessionFactory;
-  BluetoothReceiverAnnouncer? _bluetoothAnnouncer;
-  final BluetoothReceiverAnnouncer Function({
-    void Function(QRPayload payload)? onServeReceived,
-  })? _bluetoothAnnouncerFactory;
 
   @visibleForTesting
   WebRtcReceiverTransport? get serverlessTransport => _serverlessTransport;
@@ -242,12 +237,6 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   @visibleForTesting
   set bluetoothSession(BluetoothReceiverSession? value) =>
       _bluetoothSession = value;
-
-  @visibleForTesting
-  BluetoothReceiverAnnouncer? get bluetoothAnnouncer => _bluetoothAnnouncer;
-  @visibleForTesting
-  set bluetoothAnnouncer(BluetoothReceiverAnnouncer? value) =>
-      _bluetoothAnnouncer = value;
 
   /// Holds the transfer's place while the user is looking at something else.
   final TransferInterruptionGuard _interruption;
@@ -288,30 +277,16 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     required this.repository,
     TransferInterruptionGuard? interruptionGuard,
     WebRtcReceiverTransport Function()? serverlessTransportFactory,
+    AnswerChannel Function()? rendezvousChannelFactory,
     BluetoothReceiverSession Function()? bluetoothSessionFactory,
-    BluetoothReceiverAnnouncer Function({
-      void Function(QRPayload payload)? onServeReceived,
-    })? bluetoothAnnouncerFactory,
   })  : _serverlessTransportFactory = serverlessTransportFactory,
+        _rendezvousChannelFactory = rendezvousChannelFactory,
         _bluetoothSessionFactory = bluetoothSessionFactory,
-        _bluetoothAnnouncerFactory = bluetoothAnnouncerFactory,
         _interruption = interruptionGuard ?? TransferInterruptionGuard(),
         super(ReceiverInitial()) {
-    _startBluetoothAnnounce();
-
-    on<StartScanning>((event, emit) {
-      emit(Scanning());
-      _startBluetoothAnnounce();
-    });
-
-    on<BluetoothServeReceived>((event, emit) async {
-      _currentPayload = event.payload;
-      emit(QRParsed(event.payload));
-      unawaited(_askSenderWhatItIsSending(event.payload));
-    });
+    on<StartScanning>((event, emit) => emit(Scanning()));
 
     on<QRCodeScanned>((event, emit) async {
-      await _stopBluetoothAnnounce();
       // A second failed paste would otherwise emit the same ReceiverError
       // the bloc already holds, which Equatable swallows — the desktop
       // Receive button stays disabled and the window looks frozen.
@@ -390,9 +365,6 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       emit(Connecting());
       _speedMeter.reset();
       _progressFloor = 0;
-      if (_bluetoothAnnouncer?.isActive == true) {
-        await _stopBluetoothAnnounce(detachOnly: true);
-      }
       if (payload.mode == QRPayloadDecoder.serverlessMode &&
           payload.sdpOffer != null) {
         await _runServerlessTransfer(payload, emit);
@@ -597,47 +569,9 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       _serverlessTransport = null;
       unawaited(_bluetoothSession?.cancel());
       _bluetoothSession = null;
-      await _stopBluetoothAnnounce();
       _currentPayload = null;
       emit(ReceiverInitial());
-      _startBluetoothAnnounce();
     });
-  }
-
-  void _startBluetoothAnnounce() {
-    if (_bluetoothAnnouncer != null && _bluetoothAnnouncer!.isActive) return;
-    if (_bluetoothAnnouncer != null && !_bluetoothAnnouncer!.isActive) {
-      unawaited(_bluetoothAnnouncer?.stop());
-      _bluetoothAnnouncer = null;
-    }
-    try {
-      final announcer = _bluetoothAnnouncerFactory?.call(
-            onServeReceived: (payload) {
-              if (!isClosed) add(BluetoothServeReceived(payload));
-            },
-          ) ??
-          BluetoothReceiverAnnouncer(
-            onServeReceived: (payload) {
-              if (!isClosed) add(BluetoothServeReceived(payload));
-            },
-          );
-      _bluetoothAnnouncer = announcer;
-      unawaited(announcer.start());
-    } catch (e) {
-      AppLogger.warning('Failed to start Bluetooth announcer: $e',
-          tag: 'RECEIVER');
-    }
-  }
-
-  Future<void> _stopBluetoothAnnounce({bool detachOnly = false}) async {
-    final announcer = _bluetoothAnnouncer;
-    if (announcer == null) return;
-    if (!detachOnly) {
-      _bluetoothAnnouncer = null;
-      await announcer.stop();
-    } else {
-      await announcer.detachForTransfer();
-    }
   }
 
   @override
@@ -645,7 +579,6 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     _interruption.detach();
     unawaited(_bluetoothSession?.cancel());
     _bluetoothSession = null;
-    await _stopBluetoothAnnounce();
     return super.close();
   }
 
@@ -669,15 +602,17 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
 
   /// Serverless path: the QR carries a compact offer and a seed. We answer it,
   /// seal the answer under a key derived from that seed, and drop it on a
-  /// public channel the sender is already listening to. Nothing we operate is
-  /// involved, and the channel operator only ever sees opaque bytes.
+  /// public channel the sender is already listening to: Nostr relays, the
+  /// DirectDrop Worker's mailbox, or both at once. Whoever runs a channel only
+  /// ever sees opaque bytes.
   Future<void> _runServerlessTransfer(
       QRPayload payload, Emitter<ReceiverState> emit) async {
-    final channel = buildRendezvousChannel();
+    final channel = (_rendezvousChannelFactory ?? buildRendezvousChannel)();
     StreamSubscription<WebRtcReceiveProgress>? progressSub;
     ReceiveDestination? dest;
     WebRtcReceiverTransport? transport;
     final attempt = _transferAttempt;
+    final started = DateTime.now();
     try {
       final qr = ServerlessQr.decode(payload.sdpOffer!);
       final topic = await qr.topic;
@@ -756,6 +691,26 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         AppLogger.info('Sender cancelled the transfer', tag: 'WEBRTC_RECEIVER');
         emit(const ReceiverError('The sender cancelled the transfer',
             canRetry: false, code: FailureCode.cancelledBySender));
+      } else if (e is IceNegotiationFailed) {
+        // The connection never came up. This side fetched its own relay
+        // credentials, so it knows whether the relay was rate-limited,
+        // unreachable, switched off — or available and not enough — and the
+        // screen says which instead of one sentence for all four.
+        AppLogger.error('Serverless transfer failed: ${e.diagnosis.summary}',
+            tag: 'WEBRTC_RECEIVER');
+        _startedAt = started;
+        _route = TransferRoute.unknown;
+        unawaited(_report(0,
+            failure: e.diagnosis.summary, code: e.diagnosis.failureCode));
+        emit(ReceiverError(e.diagnosis.summary, code: e.diagnosis.failureCode));
+      } else if (e is FileException && e.code != null) {
+        // The disk, not the network: a full volume, a link in the destination,
+        // a transfer that cannot fit. The screen says which, in its language.
+        AppLogger.error('Serverless transfer stopped: ${e.message}',
+            tag: 'WEBRTC_RECEIVER');
+        _startedAt = started;
+        unawaited(_report(0, failure: e.message, code: e.code));
+        emit(ReceiverError(e.message, code: e.code));
       } else {
         AppLogger.error('Serverless transfer failed',
             error: e, stackTrace: st, tag: 'WEBRTC_RECEIVER');
@@ -820,12 +775,20 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     } catch (e, st) {
       await dest?.release();
       if (attempt != _transferAttempt) return;
-      final errorMsg = e.toString().replaceFirst('Exception: ', '');
+      // A storage problem keeps its own code, so the screen says "the disk is
+      // full" rather than the generic Bluetooth failure.
+      final storageCode =
+          e is FileException && FailureCode.isStorage(e.code) ? e.code : null;
+      final errorMsg = e is FileException
+          ? e.message
+          : e.toString().replaceFirst('Exception: ', '');
+      final code = storageCode ?? FailureCode.bluetoothTransferFailed;
       AppLogger.error('Bluetooth transfer failed: $errorMsg',
           error: e, stackTrace: st, tag: 'BT_RECEIVER');
-      unawaited(_report(0,
-          failure: errorMsg, code: FailureCode.bluetoothTransferFailed));
-      add(DownloadFailed(errorMsg));
+      unawaited(_report(0, failure: errorMsg, code: code));
+      add(storageCode != null
+          ? DownloadFailed(errorMsg, code: storageCode)
+          : DownloadFailed(errorMsg));
     } finally {
       if (_bluetoothSession == session) {
         _bluetoothSession = null;

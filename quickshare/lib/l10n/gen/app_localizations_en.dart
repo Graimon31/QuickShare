@@ -52,7 +52,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get homeReceiveTitle => 'Receive File';
 
   @override
-  String get homeReceiveSubtitleDesktop => 'Paste a code or share link';
+  String get homeReceiveSubtitleDesktop => 'Enter the code from the sender';
 
   @override
   String get homeReceiveSubtitleMobile => 'Scan a QR code to download';
@@ -92,7 +92,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get pickerMethodBluetoothSubtitle =>
-      'Direct peer transfer via Bluetooth';
+      'To a phone that scans your QR code';
 
   @override
   String get pickerMethodInternetTitle => 'Internet Link';
@@ -377,6 +377,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get qrDisplayScanOrShare => 'Scan the QR or share the link';
 
   @override
+  String get qrDisplayScanOrEnterCode => 'Scan the QR or enter the code';
+
+  @override
+  String offerCodeChangesIn(String time) {
+    return 'Code and QR change in $time';
+  }
+
+  @override
   String get qrDisplayShareLinkToReceive =>
       'Share this link to receive the file';
 
@@ -385,7 +393,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get qrDisplayPhoneHint =>
-      'On the phone: open DirectDrop → Receive and scan this QR.';
+      'On the other device: open DirectDrop → Receive. A phone scans this QR; a computer types the code.';
 
   @override
   String qrDisplayRenderError(String error) {
@@ -401,11 +409,6 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String qrDisplayTotalSize(String size) {
     return 'Total size: $size';
-  }
-
-  @override
-  String qrDisplaySessionExpires(String time) {
-    return 'Session expires in $time';
   }
 
   @override
@@ -463,13 +466,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'No active network connection. Internet transfer is unavailable.';
 
   @override
-  String get sessionExpiredTitle => 'Session expired';
-
-  @override
-  String get sessionExpiredBody =>
-      'Nobody connected in time. Refresh to create a new session.';
-
-  @override
   String get sessionRefresh => 'Refresh';
 
   @override
@@ -513,7 +509,23 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get fallbackNoRouteBody =>
-      'A VPN or this network\'s NAT is blocking a direct connection, and no relay was reachable. Nothing has been sent yet.';
+      'A VPN or this network\'s NAT is blocking a direct connection. Nothing has been sent yet.';
+
+  @override
+  String get fallbackNoRouteBodyRelayLimited =>
+      'No direct connection was possible, and the relay service is limiting requests right now, so no relay could be set up. Try again in about a minute. Nothing has been sent yet.';
+
+  @override
+  String get fallbackNoRouteBodyRelayUnreachable =>
+      'No direct connection was possible, and the relay service could not be reached, so no relay could be set up. Check this device\'s internet connection. Nothing has been sent yet.';
+
+  @override
+  String get fallbackNoRouteBodyRelayOff =>
+      'No direct connection was possible, and the relay is switched off or not configured in this build. Nothing has been sent yet.';
+
+  @override
+  String get fallbackNoRouteBodyRelayWasAvailable =>
+      'A relay was available, but the connection still could not be made. A VPN or firewall may be blocking even relayed traffic. Nothing has been sent yet.';
 
   @override
   String get fallbackWifiTitle => 'Put both devices on one network';
@@ -588,69 +600,33 @@ class AppLocalizationsEn extends AppLocalizations {
   String get btSendPreparing => 'Preparing Bluetooth…';
 
   @override
-  String get btSendPreparingDetail => 'Making this device discoverable';
+  String get btSendPreparingDetail =>
+      'Getting the code ready for the other phone to scan';
 
   @override
-  String get btSendScanPrompt => 'Scan this QR code on the receiving device';
+  String get btSendScanPrompt => 'Scan this QR code with the receiving phone';
 
   @override
   String get btSendAutoConnectNote =>
-      'Pick a device from the list. The handshake should finish within 3 seconds.';
-
-  @override
-  String get btReceiveLookingForLink => 'Looking for a direct link…';
-
-  @override
-  String get btReceiveDirectLinkPlaceholder => 'Receiving over direct Wi-Fi';
-
-  @override
-  String get btReceiveTitle => 'Nearby devices';
-
-  @override
-  String get btReceiveLookingNearby => 'Looking for nearby Macs…';
-
-  @override
-  String get btReceiveLookingQr => 'Looking for the Mac from the QR code…';
-
-  @override
-  String get btReceiveScanning => 'Scanning for nearby devices…';
-
-  @override
-  String get btReceiveScanningDetail =>
-      'Keep Bluetooth enabled on both devices';
-
-  @override
-  String get btReceiveConnecting => 'Connecting over Bluetooth…';
-
-  @override
-  String btReceivePairingWith(String name) {
-    return 'Pairing with $name';
-  }
-
-  @override
-  String get btReceiveConnectionFailed => 'Connection failed';
-
-  @override
-  String get btReceiveScanAgain => 'Scan again';
-
-  @override
-  String get codeReceivePasteError => 'Paste the share link from the sender.';
-
-  @override
-  String get codeReceiveParseError =>
-      'Could not read that link. Copy the share link under the QR on the sender.';
+      'Bluetooth receiving works on a phone: open DirectDrop there, tap Receive File and scan this code. A computer cannot receive over Bluetooth — use Wi-Fi for that.';
 
   @override
   String get codeReceiveTitle => 'Receive a file';
 
   @override
-  String get codeReceivePastePrompt => 'Paste a code or share link';
+  String get codeReceivePrompt => 'Enter the code from the sender';
 
   @override
-  String get codeReceiveHint => 'directdrop://join?p=…';
+  String get codeReceiveCodeInvalid => 'Enter all ten digits of the code.';
 
   @override
-  String get codeReceivePasteButton => 'Paste';
+  String get linkReceiveOpening => 'Opening the shared link…';
+
+  @override
+  String get linkReceiveOpeningDetail => 'Checking what is being sent';
+
+  @override
+  String get codeReceiveHint => '12345 67890';
 
   @override
   String get codeReceiveReceiveButton => 'Receive';
@@ -687,15 +663,11 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get codeReceiveNotFoundLan =>
-      'Sender with this code was not found on your local network. Make sure both devices are on the same Wi-Fi network.';
+      'No sender with this code was found. The code may be wrong or may have expired — codes change every 5 minutes. Check it and make sure both devices are on the same Wi-Fi network.';
 
   @override
-  String get codeReceiveNotAShareLink =>
-      'That is not a DirectDrop share link. Copy the link under the QR on the sender — not the Wi-Fi address.';
-
-  @override
-  String get codeReceiveInvalidQr =>
-      'Invalid QR code. Point the camera at the QR on the sender screen — not at the Wi-Fi address text under it.';
+  String get codeReceiveUpdateRequired =>
+      'The other device is running a different version of DirectDrop and cannot take this code. Update DirectDrop on both devices, then try again.';
 
   @override
   String get codeReceiveSearchingLan =>
@@ -797,32 +769,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get logsEmpty => 'No entries yet';
 
   @override
-  String get nearbyTitle => 'Devices nearby';
-
-  @override
-  String get nearbySearching => 'Looking…';
-
-  @override
-  String get nearbyEmpty => 'No devices yet';
-
-  @override
-  String get nearbyEmptyHint =>
-      'Open DirectDrop on the other device. Both have to be on the same network.';
-
-  @override
-  String get nearbyBlocked => 'This network hides devices from each other';
-
-  @override
-  String get nearbyBlockedHint =>
-      'Guest and public Wi-Fi usually do. Use the code below instead.';
-
-  @override
-  String get nearbyReady => 'Ready to send';
-
-  @override
-  String get nearbyIdle => 'Waiting';
-
-  @override
   String get inviteTitle => 'Accept files?';
 
   @override
@@ -857,58 +803,19 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get nearbyOrPaste => 'Or paste a code';
-
-  @override
-  String get inviteAsking => 'Asking…';
-
-  @override
-  String get inviteAccepted => 'Accepted — sending now';
-
-  @override
   String get inviteDeclined => 'Declined';
 
   @override
   String get inviteUnreachable => 'Could not reach that device';
 
   @override
-  String get inviteBusy => 'That device is deciding on another transfer';
-
-  @override
-  String get nearbySendTo => 'Send straight to a device';
-
-  @override
   String get codeLabel => 'Code for the receiving device';
-
-  @override
-  String get codeHint =>
-      'Type this on the other device if it is not in the list above';
 
   @override
   String get codeEnterPrompt => 'Enter the code from the sender';
 
   @override
   String get codeEnterHint => '10 digits';
-
-  @override
-  String get codeNotFound => 'No device nearby is offering that code';
-
-  @override
-  String get btReceiveCodePrompt => 'Enter the code from the sending device';
-
-  @override
-  String get qrScanBluetoothReceive => 'Receive over Bluetooth';
-
-  @override
-  String get btReceiveWaitingToBeChosen =>
-      'Waiting to be picked on the sending device';
-
-  @override
-  String get btReceiveWaitingDetail =>
-      'This device is now listed on the sender. Choose it there to start the transfer.';
-
-  @override
-  String get btReceiveCodeInvalid => 'The code is ten digits';
 
   @override
   String get codeMalformed => 'A code is 10 digits';
@@ -990,6 +897,10 @@ class AppLocalizationsEn extends AppLocalizations {
   String get errorCancelledHere => 'You cancelled the transfer.';
 
   @override
+  String get errorOfferEnded =>
+      'This offer sat unused for too long and was closed. Start sending again.';
+
+  @override
   String get errorLinkWifiOff =>
       'Wi-Fi is turned off. The transfer builds a direct Wi-Fi link between the devices, so it cannot start without it.';
 
@@ -1012,6 +923,47 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get errorSessionWithoutCertificate =>
       'The transfer started without a certificate, so the other device has nothing to trust. Try again.';
+
+  @override
+  String get errorNoPathRelayLimited =>
+      'Could not connect: the two devices cannot reach each other directly, and the relay service is limiting requests right now. Try again in about a minute.';
+
+  @override
+  String get errorNoPathRelayUnreachable =>
+      'Could not connect: the two devices cannot reach each other directly, and the relay service could not be reached. Check the internet connection.';
+
+  @override
+  String get errorNoPathRelayOff =>
+      'Could not connect: the two devices cannot reach each other directly, and the relay is switched off or not configured in this build.';
+
+  @override
+  String get errorNoPathRelayWasAvailable =>
+      'Could not connect even though a relay was available. Something between the devices is blocking the connection — a VPN or a firewall, for example.';
+
+  @override
+  String get errorNotEnoughSpace =>
+      'There is not enough free space for this transfer. Free up some space where the files are being saved and try again.';
+
+  @override
+  String errorNotEnoughSpaceDetail(String needed, String available) {
+    return 'Not enough free space: $needed needed, $available available. Free up some space where the files are being saved and try again.';
+  }
+
+  @override
+  String get errorDiskFull =>
+      'The disk filled up while saving. Free up some space and try again.';
+
+  @override
+  String get errorUnsafeDestination =>
+      'The save folder has a shortcut (a symbolic link) where a file or folder should be, so nothing was written there. Remove it, or choose another save folder.';
+
+  @override
+  String get errorPathTooLong =>
+      'The save location is nested too deeply — Windows cannot open files at a path this long. Choose a folder closer to the root of the drive.';
+
+  @override
+  String get errorReceivedFilesNotIntact =>
+      'Some received files went missing or changed before the transfer finished, so it is not reported as complete. Try again — only what is missing will be received again.';
 
   @override
   String get qrDisplayStillCounting => 'Still counting the files…';

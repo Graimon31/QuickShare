@@ -138,6 +138,23 @@ void main() {
       expect(fresh.existsSync(), isTrue);
     });
 
+    test('a link that is named like a partial is not followed', () async {
+      final outside = Directory.systemTemp.createTempSync('dd_sweep_outside_');
+      addTearDown(() => outside.deleteSync(recursive: true));
+      final precious = File(p.join(outside.path, 'precious.bin'))
+        ..writeAsBytesSync(List.filled(64, 1));
+      Link(p.join(root.path, 'x.mp4$kPartialSuffix')).createSync(outside.path);
+      Link(p.join(root.path, 'y.mp4$kPartialSuffix')).createSync(precious.path);
+
+      await sweepPartials(root.path,
+          before: DateTime.now().add(const Duration(seconds: 1)));
+
+      expect(precious.existsSync(), isTrue);
+      expect(precious.lengthSync(), 64);
+      expect(outside.listSync().map((e) => p.basename(e.path)),
+          ['precious.bin']);
+    });
+
     test('returns 0 and does nothing for a missing root', () async {
       final freed =
           await sweepPartials(p.join(root.path, 'gone'), before: DateTime.now());

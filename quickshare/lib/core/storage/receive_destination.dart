@@ -5,6 +5,7 @@ import 'package:quickshare/core/storage/save_destination.dart';
 import 'package:quickshare/core/storage/save_location_store.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/features/receiver/data/store/session_state_store.dart';
 
 /// Where an incoming transfer is written, and what happens to it there.
 ///
@@ -77,11 +78,21 @@ class ReceiveDestination {
   /// the moment the folder is known and, on macOS, already inside an open
   /// scope. The cutoff keeps it well clear of anything a second running copy
   /// of the app might be writing right now.
+  ///
+  /// Not everything old in that folder is debris. A QHTP partial that a live
+  /// session record can resume is exactly what the client tells the user it
+  /// kept, and a QHTP single-file session writes it straight into this folder
+  /// — so the sweep that starts the *resume* would be the one to delete it.
+  /// Those paths are looked up first; if the session store cannot be read the
+  /// sweep is skipped rather than guessed at.
   static void _sweepInBackground(String path) {
     final cutoff = DateTime.now().subtract(const Duration(minutes: 10));
-    sweepPartials(path, before: cutoff).catchError((Object e) {
+    () async {
+      final pinned = await SessionStateStore().pinnedPartials();
+      await sweepPartials(path, before: cutoff, pinned: pinned);
+    }()
+        .catchError((Object e) {
       AppLogger.warning('Partial sweep of $path failed: $e', tag: 'DISK');
-      return 0;
     });
   }
 }

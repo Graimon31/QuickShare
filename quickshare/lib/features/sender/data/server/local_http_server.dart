@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' show Random;
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
@@ -10,11 +11,11 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:uuid/uuid.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
-import 'package:quickshare/core/network/device_presence.dart';
+import 'package:quickshare/core/crypto/spake2.dart';
+import 'package:quickshare/core/network/code_pake.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/network/session_tls_identity.dart';
-import 'package:quickshare/core/transfer/invitation_sender.dart';
-import 'package:quickshare/core/transfer/transfer_invitation.dart';
+import 'package:quickshare/core/utils/device_name.dart';
 import 'package:quickshare/core/utils/streaming_digest.dart';
 import 'package:quickshare/features/sender/data/server/http_range.dart';
 import 'package:quickshare/features/sender/data/indexer/file_indexer.dart';
@@ -24,11 +25,14 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 /// Represents a pending human-approval request when a receiver asks for files
 /// via LAN code entry (/v2/invite/request).
+///
+/// Only ever created for a receiver that has already proved it holds the code,
+/// so the person looking at it is being asked about a device that knew
+/// something it should, not about whoever found the port.
 class TransferApprovalRequest {
   final String id;
   final InternetAddress? remoteAddress;
   final String deviceName;
-  final String code;
   final int itemCount;
   final int totalBytes;
   final Completer<bool> _completer = Completer<bool>();
@@ -37,7 +41,6 @@ class TransferApprovalRequest {
     required this.id,
     required this.remoteAddress,
     required this.deviceName,
-    required this.code,
     this.itemCount = 0,
     this.totalBytes = 0,
   });
@@ -51,12 +54,57 @@ class TransferApprovalRequest {
   }
 }
 
+/// One first round that has been answered and is waiting for the second.
+class _PendingPake {
+  /// `cA`: what a receiver that holds the code will send back.
+  final Uint8List expectedConfirmation;
+  final DateTime expires;
+
+  _PendingPake({required this.expectedConfirmation, required this.expires});
+}
+
 class LocalHttpServer {
   HttpServer? _server;
-  String? _authToken;
-  String? _sessionPublicId;
 
-  final Map<InternetAddress, List<DateTime>> _codeAttempts = {};
+  /// The token a newly scanned QR or an approved code peer is given. Replaced
+  /// on every rotation.
+  String? _authToken;
+
+  /// Tokens that have done something: authenticated a request, or been
+  /// released to a person who was approved. Each goes on working until the
+  /// session ends, however many times [_authToken] changes after it — the
+  /// receiver in the middle of a transfer, or about to resume one, holds
+  /// exactly that token. A token that never got that far is not in here, and
+  /// dies when it is replaced.
+  final Set<String> _grantedTokens = {};
+  SessionCode? _sessionCode;
+
+  /// How often the code can be tried, and how much a stranger can make this
+  /// server remember while it does.
+  ///
+  /// Every first round is one guess at the code for whoever sent it: the
+  /// exchange is built so that is all a round gives, which makes these numbers
+  /// the whole defence of a 33-bit secret. Five a minute from one address and
+  /// thirty from everywhere is about a hundred years per code at the
+  /// session-wide rate; a person typing a code wrong twice stays well inside
+  /// it. Instance fields only so a test can lower them.
+  @visibleForTesting
+  int maxPakeStartsPerAddress = 5;
+  @visibleForTesting
+  int maxPakeStartsPerSession = 30;
+
+  /// Rounds begun and not yet answered. Bounded so the table cannot be grown
+  /// by a stranger, and short-lived because a receiver answers within a
+  /// second of the first round.
+  @visibleForTesting
+  int maxPendingPake = 16;
+  @visibleForTesting
+  Duration pakeTimeToLive = const Duration(seconds: 30);
+
+  /// The confirmation each open exchange must be answered with, by pakeId.
+  final Map<String, _PendingPake> _pendingPake = {};
+  final Map<InternetAddress, List<DateTime>> _pakeStartsByAddress = {};
+  final List<DateTime> _pakeStarts = [];
   final Map<InternetAddress, DateTime> _declineCooldowns = {};
   final Map<String, TransferApprovalRequest> _pendingApprovals = {};
   final _approvalController =
@@ -93,6 +141,10 @@ class LocalHttpServer {
       return false;
     } finally {
       _pendingApprovals.remove(request.id);
+      // Whoever was watching the request — the sender's screen, holding the
+      // code in place while a dialog is open — learns it is over even when
+      // nobody answered and the wait simply ran out.
+      request.complete(false);
     }
   }
 
@@ -107,8 +159,10 @@ class LocalHttpServer {
   String? get tlsFingerprint => _tls?.fingerprint;
   Completer<void> _firstClient = Completer<void>();
 
-  /// Resolves to true when the first HTTP client reaches this server,
-  /// or false if [timeout] expires without any request arriving.
+  /// Resolves to true when the first request that carries the session token
+  /// reaches this server, or false if [timeout] expires without one. A request
+  /// that was refused, or that went to a route open to everyone, is not a
+  /// client: the point is to know the receiver came across the link.
   Future<bool> waitForFirstClient({Duration timeout = const Duration(seconds: 10)}) async {
     try {
       await _firstClient.future.timeout(timeout);
@@ -319,6 +373,54 @@ class LocalHttpServer {
 
   bool get isRunning => _server != null;
 
+  /// Replaces what gets a stranger in, without touching the session.
+  ///
+  /// The port, the certificate and the indexed files stay; what changes is the
+  /// token the QR carries and the code a receiver must prove. Anything that
+  /// was never used dies here: the old token, the old code, and any proof of
+  /// the old code that was begun and not finished. Anything that was used, or
+  /// released to an approved person, keeps working (see [_grantedTokens]).
+  ///
+  /// False when there is no session to rotate, in which case nothing changed.
+  bool rotateCredentials({required String authToken, SessionCode? sessionCode}) {
+    if (_server == null || !_isQhtpSession || _tls == null) return false;
+    _authToken = authToken;
+    _sessionCode = sessionCode;
+    _pendingPake.clear();
+    return true;
+  }
+
+  /// Whether this server still answers on its own port, as a receiver would
+  /// see it: a TLS handshake against the session's own certificate and a
+  /// health check that says QHTP.
+  ///
+  /// For the moment an app comes back to the foreground. An operating system
+  /// may close a listening socket while it is suspended without telling the
+  /// process, and a code that leads to a dead port is worse than none.
+  Future<bool> probeHealth(
+      {Duration timeout = const Duration(seconds: 3)}) async {
+    final server = _server;
+    final tls = _tls;
+    if (server == null || tls == null) return false;
+    final client =
+        HttpClient(context: SecurityContext(withTrustedRoots: false));
+    client.connectionTimeout = timeout;
+    client.badCertificateCallback =
+        (cert, host, port) => SessionTlsIdentity.matches(cert, tls.fingerprint);
+    try {
+      final request = await client
+          .getUrl(Uri.parse('https://127.0.0.1:${server.port}/v2/health'))
+          .timeout(timeout);
+      final response = await request.close().timeout(timeout);
+      final body = await utf8.decodeStream(response).timeout(timeout);
+      return response.statusCode == HttpStatus.ok && body.contains('QHTP');
+    } catch (_) {
+      return false;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   /// Legacy single-file start method
   Future<int> start(
     String filePath,
@@ -336,6 +438,7 @@ class LocalHttpServer {
     unawaited(WakelockPlus.enable().catchError((_) {}));
     unawaited(BackgroundHold.begin());
     _authToken = authToken;
+    _grantedTokens.clear();
     _sessionComplete = false;
 
     final router = Router();
@@ -444,13 +547,13 @@ class LocalHttpServer {
     required String sessionId,
     required Future<QhtpIndexerResult> index,
     required String authToken,
-    String? sessionPublicId,
+    SessionCode? sessionCode,
   }) =>
       _serveQhtpSession(
         sessionId: sessionId,
         index: index,
         authToken: authToken,
-        sessionPublicId: sessionPublicId,
+        sessionCode: sessionCode,
       );
 
   Future<int> _serveQhtpSession({
@@ -458,7 +561,7 @@ class LocalHttpServer {
     required Future<QhtpIndexerResult> index,
     required String authToken,
     Map<String, Future<String?>>? checksums,
-    String? sessionPublicId,
+    SessionCode? sessionCode,
   }) async {
     if (_server != null) {
       await stop();
@@ -466,7 +569,8 @@ class LocalHttpServer {
     WakelockPlus.enable();
     unawaited(BackgroundHold.begin());
     _authToken = authToken;
-    _sessionPublicId = sessionPublicId;
+    _grantedTokens.clear();
+    _sessionCode = sessionCode;
     _sessionComplete = false;
     _firstClient = Completer<void>();
     _isQhtpSession = true;
@@ -512,28 +616,172 @@ class LocalHttpServer {
       );
     });
 
-    // POST /v2/invite/request (No auth required — authenticated via 10-digit code)
+    // POST /v2/pake/start (No auth required — it is how a receiver proves the
+    // code, and it learns nothing it can use if it cannot.)
+    //
+    // The first round of a SPAKE2 run with the receiver, bound to this
+    // server's certificate. The answer is the sender's share and its
+    // confirmation; what the receiver does with them is its own business, and
+    // a receiver without the code can do nothing with them at all. The second
+    // round, /v2/invite/request, is where this side finds out who it was
+    // talking to.
+    router.post(CodePake.startPath, (Request request) async {
+      try {
+        final code = _sessionCode;
+        final tls = _tls;
+        if (code == null || tls == null) return _codeMismatch();
+
+        final connection =
+            request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
+        final remoteAddress = connection?.remoteAddress;
+
+        // Counted before anything is read or computed: a round that is
+        // refused afterwards was still an attempt. Per address first, so one
+        // noisy device cannot spend the budget everyone shares.
+        final now = DateTime.now();
+        final window = now.subtract(const Duration(minutes: 1));
+        if (remoteAddress != null) {
+          final attempts = (_pakeStartsByAddress[remoteAddress] ??= [])
+            ..removeWhere((t) => t.isBefore(window));
+          if (attempts.length >= maxPakeStartsPerAddress) {
+            return _rateLimited();
+          }
+          attempts.add(now);
+        }
+        _pakeStarts.removeWhere((t) => t.isBefore(window));
+        if (_pakeStarts.length >= maxPakeStartsPerSession) {
+          return _rateLimited();
+        }
+        _pakeStarts.add(now);
+
+        _dropExpiredPake();
+        if (_pendingPake.length >= maxPendingPake) {
+          return Response(
+            503,
+            body: jsonEncode({'error': 'busy', 'code': 'BUSY'}),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+          );
+        }
+
+        final bodyText = await _readBounded(request);
+        Map<String, dynamic>? body;
+        try {
+          body = bodyText == null
+              ? null
+              : jsonDecode(bodyText) as Map<String, dynamic>;
+        } catch (_) {}
+        final share = CodePake.decode(body?['pA'], length: Spake2.shareLength);
+        if (share == null) {
+          return Response.badRequest(
+            body: jsonEncode({'error': 'invalid request', 'code': 'BAD_REQUEST'}),
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              if (bodyText == null) 'Connection': 'close',
+            },
+          );
+        }
+
+        final PakeReply reply;
+        try {
+          reply = await CodePake.respond(code,
+              receiverShare: share, certFingerprint: tls.fingerprint);
+        } catch (_) {
+          return Response.badRequest(
+            body: jsonEncode({'error': 'invalid share', 'code': 'PAKE_INVALID'}),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+          );
+        }
+
+        // The session may have ended while the curve arithmetic ran, and other
+        // rounds may have filled the table in the meantime.
+        if (!identical(_tls, tls)) return _codeMismatch();
+        _dropExpiredPake();
+        if (_pendingPake.length >= maxPendingPake) {
+          return Response(
+            503,
+            body: jsonEncode({'error': 'busy', 'code': 'BUSY'}),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+          );
+        }
+
+        final random = Random.secure();
+        final pakeId = CodePake.encode(
+            List<int>.generate(16, (_) => random.nextInt(256)));
+        _pendingPake[pakeId] = _PendingPake(
+          expectedConfirmation: reply.keys.confirmationA,
+          expires: DateTime.now().add(pakeTimeToLive),
+        );
+        return Response.ok(
+          jsonEncode({
+            'pakeId': pakeId,
+            'pB': CodePake.encode(reply.share),
+            'cB': CodePake.encode(reply.keys.confirmationB),
+          }),
+          headers: {'Content-Type': 'application/json; charset=utf-8'},
+        );
+      } catch (e) {
+        return Response.internalServerError(
+          body: jsonEncode({'error': '$e'}),
+          headers: {'Content-Type': 'application/json; charset=utf-8'},
+        );
+      }
+    });
+
+    // POST /v2/invite/request (No auth required — authenticated by the proof
+    // of the code made in /v2/pake/start)
     router.post('/v2/invite/request', (Request request) async {
       try {
         final connection =
             request.context['shelf.io.connection_info'] as HttpConnectionInfo?;
         final remoteAddress = connection?.remoteAddress;
 
-        // Rate limit attempts per source address (Layer C): max 5 attempts per minute
-        if (remoteAddress != null) {
-          final now = DateTime.now();
-          final attempts = (_codeAttempts[remoteAddress] ??= [])
-            ..removeWhere((t) => now.difference(t) > const Duration(minutes: 1));
-          if (attempts.length >= 5) {
-            return Response(
-              429,
-              body: jsonEncode(
-                  {'error': 'too many attempts', 'code': 'RATE_LIMITED'}),
-              headers: {'Content-Type': 'application/json; charset=utf-8'},
-            );
-          }
-          attempts.add(now);
+        final bodyText = await _readBounded(request);
+        final Map<String, dynamic> body;
+        try {
+          if (bodyText == null) throw const FormatException('too large');
+          body = jsonDecode(bodyText) as Map<String, dynamic>;
+        } catch (_) {
+          return Response.badRequest(
+            body: jsonEncode({'error': 'invalid json'}),
+            headers: {
+              'Content-Type': 'application/json; charset=utf-8',
+              if (bodyText == null) 'Connection': 'close',
+            },
+          );
+        }
 
+        // The request an earlier build sends carries the code itself. It is
+        // not read, let alone compared: a receiver that sends the code to a
+        // device it has not authenticated is the thing this protocol exists to
+        // end, and quietly accepting it would keep it working.
+        final pakeId = body['pakeId'];
+        if (body.containsKey('code') || pakeId is! String) {
+          return Response(
+            426,
+            body: jsonEncode({
+              'error': 'this version of DirectDrop no longer accepts the code '
+                  'directly; update the other device',
+              'code': 'UPDATE_REQUIRED',
+            }),
+            headers: {'Content-Type': 'application/json; charset=utf-8'},
+          );
+        }
+
+        // Before anything else, and before a person is bothered: the receiver
+        // must hold the code. The exchange is spent whatever the verdict — one
+        // guess per round, never two.
+        final pending = _pendingPake.remove(pakeId);
+        final confirmation = CodePake.decode(body['cA'],
+            length: CodePake.tagLength);
+        if (pending == null ||
+            pending.expires.isBefore(DateTime.now()) ||
+            confirmation == null ||
+            !_constantTimeBytesEqual(
+                confirmation, pending.expectedConfirmation)) {
+          return _codeMismatch();
+        }
+
+        if (remoteAddress != null) {
           final cooldownUntil = _declineCooldowns[remoteAddress];
           if (cooldownUntil != null && DateTime.now().isBefore(cooldownUntil)) {
             return Response.ok(
@@ -546,30 +794,10 @@ class LocalHttpServer {
           }
         }
 
-        final bodyText = await request.readAsString();
-        final Map<String, dynamic> body;
-        try {
-          body = jsonDecode(bodyText) as Map<String, dynamic>;
-        } catch (_) {
-          return Response.badRequest(
-            body: jsonEncode({'error': 'invalid json'}),
-            headers: {'Content-Type': 'application/json; charset=utf-8'},
-          );
-        }
-
-        final codeText = body['code'] as String? ?? '';
-        final parsedCode = SessionCode.parse(codeText);
-        if (parsedCode == null ||
-            _sessionPublicId == null ||
-            parsedCode.publicId != _sessionPublicId) {
-          return Response.forbidden(
-            jsonEncode({'error': 'invalid code', 'code': 'CODE_MISMATCH'}),
-            headers: {'Content-Type': 'application/json; charset=utf-8'},
-          );
-        }
-
-        final rawDeviceName = body['deviceName'] as String? ??
-            (remoteAddress?.address ?? 'Unknown Device');
+        final announcedName = body['deviceName'];
+        final rawDeviceName = announcedName is String && announcedName.isNotEmpty
+            ? announcedName
+            : (remoteAddress?.address ?? 'Unknown Device');
         final deviceName = rawDeviceName.length > 40
             ? '${rawDeviceName.substring(0, 40)}…'
             : rawDeviceName;
@@ -580,7 +808,6 @@ class LocalHttpServer {
           id: const Uuid().v4(),
           remoteAddress: remoteAddress,
           deviceName: deviceName,
-          code: codeText,
           itemCount: indexed?.manifest.itemCount ?? 0,
           totalBytes: indexed?.manifest.totalBytes ?? 0,
         );
@@ -606,60 +833,30 @@ class LocalHttpServer {
 
         if (indexed == null) return _indexUnavailable();
 
-        final invitePort = body['invitePort'] as int? ?? 0;
+        // Whatever the token is at this moment is what the person approved a
+        // receiver for, so it is the one that stays good for the session.
+        final released = _authToken;
+        if (released != null) _grantedTokens.add(released);
 
-        if (invitePort > 0 && remoteAddress != null) {
-          final result = await InvitationSender().invite(
-            address: remoteAddress,
-            port: invitePort,
-            invitation: TransferInvitation(
-              senderName: DevicePresence.describeThisDevice(),
-              senderPlatform: Platform.operatingSystem,
-              itemCount: indexed.manifest.itemCount,
-              totalBytes: indexed.manifest.totalBytes,
-              port: _server?.port ?? 8000,
-              sessionId: sessionId,
-              token: _authToken ?? '',
-              tlsFingerprint: _tls?.fingerprint ?? '',
-            ),
-          );
-          final responseBody = <String, dynamic>{
-            'outcome': result.accepted ? 'accepted' : 'declined',
-            'detail': result.detail,
-          };
-          // Token and session details only returned upon explicit acceptance (Layer A)
-          if (result.accepted) {
-            responseBody.addAll({
-              'token': _authToken,
-              'sessionId': sessionId,
-              'port': _server?.port ?? 8000,
-              'tlsFingerprint': _tls?.fingerprint ?? '',
-              'itemCount': indexed.manifest.itemCount,
-              'totalBytes': indexed.manifest.totalBytes,
-              'senderName': DevicePresence.describeThisDevice(),
-            });
-          } else {
-            // Receiver declined the invitation that already received the auth token.
-            // Invalidate/stop the session immediately so the issued token cannot be abused.
-            unawaited(stop());
-          }
-          return Response.ok(
-            jsonEncode(responseBody),
-            headers: {'Content-Type': 'application/json; charset=utf-8'},
-          );
-        }
-
-        // Long-poll / probe path (invitePort == 0): sender has approved, return token (Layer A)
+        // The sender's person has approved. The token goes back in this
+        // response, over the TLS connection the receiver just proved the code
+        // on, and nowhere else.
+        //
+        // A receiver may still send an `invitePort`, as an older build does. It
+        // is not read: pushing the token to an address the request names would
+        // mean a plaintext POST of the bearer token to whoever is listening
+        // there, for a token that is already on its way back here. Nothing in
+        // this app pushes a token to another device any more.
         return Response.ok(
           jsonEncode({
             'outcome': 'accepted',
-            'token': _authToken,
+            'token': released,
             'sessionId': sessionId,
             'port': _server?.port ?? 8000,
             'tlsFingerprint': _tls?.fingerprint ?? '',
             'itemCount': indexed.manifest.itemCount,
             'totalBytes': indexed.manifest.totalBytes,
-            'senderName': DevicePresence.describeThisDevice(),
+            'senderName': describeThisDevice(),
           }),
           headers: {'Content-Type': 'application/json; charset=utf-8'},
         );
@@ -688,7 +885,7 @@ class LocalHttpServer {
           'protocolVersion': 1,
           'supportsRange': true,
           'supportsNdjsonManifest': false,
-          'senderName': DevicePresence.describeThisDevice(),
+          'senderName': describeThisDevice(),
         }),
         headers: {'Content-Type': 'application/json; charset=utf-8'},
       );
@@ -893,6 +1090,65 @@ class LocalHttpServer {
         headers: {'Content-Type': 'application/json; charset=utf-8'},
       );
 
+  Response _codeMismatch() => Response.forbidden(
+        jsonEncode({'error': 'invalid code', 'code': 'CODE_MISMATCH'}),
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+      );
+
+  Response _rateLimited() => Response(
+        429,
+        body: jsonEncode({'error': 'too many attempts', 'code': 'RATE_LIMITED'}),
+        headers: {'Content-Type': 'application/json; charset=utf-8'},
+      );
+
+  void _dropExpiredPake() {
+    final now = DateTime.now();
+    _pendingPake.removeWhere((_, pending) => pending.expires.isBefore(now));
+  }
+
+  /// A request body, or null if it runs past a few kilobytes. These two
+  /// routes are open to anyone who can reach the port, and nothing they carry
+  /// is larger than a couple of hundred bytes.
+  Future<String?> _readBounded(Request request, {int limit = 4096}) async {
+    final bytes = <int>[];
+    final result = Completer<String?>();
+    // The HTTP server closes the socket after sending the refusal. Cancelling
+    // this subscription ourselves would close it before the response is sent.
+    // ignore: cancel_subscriptions
+    late StreamSubscription<List<int>> subscription;
+    subscription = request.read().listen((chunk) {
+      if (result.isCompleted) return;
+      if (chunk.length > limit - bytes.length) {
+        // Cancelling the request stream also cancels dart:io's socket. Pause
+        // instead, so the HTTP response can be sent before the server closes
+        // the connection with its unread body. No excess bytes are buffered.
+        subscription.pause();
+        result.complete(null);
+        return;
+      }
+      bytes.addAll(chunk);
+    }, onDone: () {
+      if (result.isCompleted) return;
+      try {
+        result.complete(utf8.decode(bytes));
+      } on FormatException {
+        result.complete(null);
+      }
+    }, onError: (Object error, StackTrace stack) {
+      if (!result.isCompleted) result.completeError(error, stack);
+    });
+    return result.future;
+  }
+
+  bool _constantTimeBytesEqual(List<int> a, List<int> b) {
+    if (a.length != b.length) return false;
+    var result = 0;
+    for (var i = 0; i < a.length; i++) {
+      result |= a[i] ^ b[i];
+    }
+    return result == 0;
+  }
+
   Future<int> _bindServer(Router router) async {
     final handler = const Pipeline()
         .addMiddleware(_authMiddleware())
@@ -933,13 +1189,12 @@ class LocalHttpServer {
   Middleware _authMiddleware() {
     return (Handler innerHandler) {
       return (Request request) async {
-        final path = request.url.path;
-        if (path != 'v2/health') {
-          if (!_firstClient.isCompleted) _firstClient.complete();
-        }
-        if (path.startsWith('v2/files') || path == 'v2/invite/request') {
-          _recordClientAddress(request);
-        }
+        // Nothing is noted about the caller here: this runs before the token
+        // is checked, and "a client reached us" and "this is the route the
+        // bytes took" are claims only a caller we have authenticated, or a
+        // transfer we actually served, may make. Anyone on the network can
+        // send a junk POST.
+        //
         // One route is unauthenticated, and it answers nothing about the
         // session: /v2/health says a server of this protocol is listening and
         // stops there. /info used to sit here too, and it is a name and a
@@ -953,6 +1208,7 @@ class LocalHttpServer {
         // the active peer connection, and the rendezvous moved to a sealed
         // out-of-band channel long ago.
         if (request.url.path == 'v2/health' ||
+            request.url.path == 'v2/pake/start' ||
             request.url.path == 'v2/invite/request') {
           return innerHandler(request);
         }
@@ -976,8 +1232,7 @@ class LocalHttpServer {
         }
 
         final token = authHeader.substring(7);
-        // Constant-time token comparison
-        if (!_constantTimeEquals(token, _authToken ?? '')) return refuse();
+        if (!_acceptsToken(token)) return refuse();
 
         // A finished session's token opens nothing further. The server lives
         // on for a moment after the last byte — long enough to be asked
@@ -995,9 +1250,32 @@ class LocalHttpServer {
         // Reset idle timeout on any valid authenticated request
         _startTimeoutTimer();
 
+        // The first caller to prove it holds the token is the receiver having
+        // reached us over the link: that is what the direct-link ladder waits
+        // for. Where the bytes went is noted by the file route itself.
+        if (!_firstClient.isCompleted) _firstClient.complete();
+
         return innerHandler(request);
       };
     };
+  }
+
+  /// Whether [token] is the current one or one that has already been used.
+  ///
+  /// Every candidate is compared, without stopping at the first match, so the
+  /// time taken says nothing about which of them a guess came close to. A
+  /// current token that authenticates a request is granted on the spot: from
+  /// then on it outlives rotations.
+  bool _acceptsToken(String token) {
+    final current = _authToken;
+    var ok = _constantTimeEquals(token, current ?? '') && current != null;
+    for (final granted in _grantedTokens) {
+      if (_constantTimeEquals(token, granted)) ok = true;
+    }
+    if (ok && current != null && _constantTimeEquals(token, current)) {
+      _grantedTokens.add(current);
+    }
+    return ok;
   }
 
   bool _constantTimeEquals(String a, String b) {
@@ -1011,6 +1289,7 @@ class LocalHttpServer {
 
   void _invalidateToken() {
     _authToken = null;
+    _grantedTokens.clear();
     _sessionComplete = false;
     stop();
   }
@@ -1090,6 +1369,7 @@ class LocalHttpServer {
     unawaited(BackgroundHold.end());
     _timeoutTimer?.cancel();
     _authToken = null;
+    _grantedTokens.clear();
     _sessionComplete = false;
     _tls = null;
     _activeManifest = null;
@@ -1106,7 +1386,10 @@ class LocalHttpServer {
     }
     _pendingApprovals.clear();
     _declineCooldowns.clear();
-    _codeAttempts.clear();
+    _pendingPake.clear();
+    _pakeStartsByAddress.clear();
+    _pakeStarts.clear();
+    _sessionCode = null;
     if (_server != null) {
       await _server!.close(force: force);
       _server = null;

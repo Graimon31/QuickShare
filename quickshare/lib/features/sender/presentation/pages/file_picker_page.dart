@@ -237,15 +237,18 @@ class _FilePickerPageState extends State<FilePickerPage> {
             context.go('/send/bluetooth');
           } else if (state is RelayTooExpensive) {
             _selectionInFlight = false;
-            context.go('/send/fallback', extra: <String, int?>{
+            context.go('/send/fallback', extra: <String, Object?>{
               'sessionBytes': state.sessionBytes,
               'limitBytes': state.limitBytes,
             });
           } else if (state is NoUsablePathFound) {
             _selectionInFlight = false;
-            context.go('/send/fallback', extra: const <String, int?>{
+            context.go('/send/fallback', extra: <String, Object?>{
               'sessionBytes': null,
               'limitBytes': null,
+              // Why, so the page can say which of four things happened
+              // instead of blaming the relay for all of them.
+              'noPathCode': state.failureCode,
             });
           } else if (state is SenderError) {
             _selectionInFlight = false;

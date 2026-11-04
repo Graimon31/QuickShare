@@ -209,6 +209,43 @@ jobs:
           path: quickshare/dist/windows/DirectDrop-windows-setup.exe
           retention-days: 30
 
+  # What only a Windows machine can say about the storage layer: the Win32
+  # free-space call, junctions and symbolic links, NTFS rename semantics,
+  # MAX_PATH, reserved device names, a genuinely full volume (a small VHD, which
+  # diskpart can mount because this runner is an administrator) and a QHTP
+  # transfer with resume on NTFS. The first step is required; the second is a
+  # first look at how the whole suite behaves on Windows and does not gate
+  # anything. `release` deliberately does not wait for this job: a red run here
+  # is a finding to read, not a reason to hold a tagged build.
+  test_windows_native:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ./quickshare
+    # Same reason as in the build job: a JDK on the runner makes package:jni
+    # try to compile dartjni.dll.
+    env:
+      JAVA_HOME: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Windows native tests
+        run: flutter test --no-pub test/platform/windows_native_test.dart --reporter=expanded
+
+      - name: Full test suite on Windows (first look, does not gate)
+        continue-on-error: true
+        run: flutter test --no-pub
+
   # Android answers to the same tag the desktop builds do: its APKs were
   # built in ci.yml and stayed there as run artifacts, invisible to the
   # Release a user downloads from. Built here instead, they sit one

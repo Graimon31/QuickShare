@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
 import 'package:quickshare/core/storage/media_saver.dart';
+import 'package:quickshare/core/storage/safe_path.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 
 void main() {
@@ -126,6 +127,92 @@ void main() {
       expect(p.basename(saved.savedPath!), equals('report (1).pdf'));
       expect(File(p.join(downloads.path, 'report.pdf')).readAsStringSync(),
           equals('the original'));
+    });
+  });
+
+  group('saving never goes through a link', () {
+    test('a dangling link at the name is a taken name, not a hole', () async {
+      final ghost = File(p.join(workspace.path, 'ghost.pdf'));
+      Link(p.join(downloads.path, 'report.pdf')).createSync(ghost.path);
+
+      final saved = await saverWith()
+          .saveToDownloads(cached('report.pdf', 'application/pdf'));
+
+      expect(ghost.existsSync(), isFalse,
+          reason: 'moving "onto" a dangling link would have created its target');
+      expect(p.basename(saved.savedPath!), 'report (1).pdf');
+      expect(File(saved.savedPath!).readAsStringSync(), 'payload');
+    });
+
+    test('a folder is never moved onto a link or an empty folder', () async {
+      final folder = Directory(p.join(cacheDir.path, 'Trip'))..createSync();
+      File(p.join(folder.path, 'one.jpg')).writeAsStringSync('1');
+      final item = ReceivedItem(
+        cachePath: folder.path,
+        name: 'Trip',
+        size: 1,
+        mimeType: 'inode/directory',
+        isDirectory: true,
+      );
+      Directory(p.join(downloads.path, 'Trip')).createSync();
+
+      final saved = await saverWith().saveToDownloads(item);
+
+      expect(p.basename(saved.savedPath!), 'Trip (1)');
+      expect(Directory(p.join(downloads.path, 'Trip')).listSync(), isEmpty);
+      expect(File(p.join(saved.savedPath!, 'one.jpg')).readAsStringSync(), '1');
+    });
+  });
+
+  group('a name taken while the item is being placed', () {
+    // The name is picked, and then the item is moved onto it. In between,
+    // another program can put something there — and a plain move would
+    // replace it without a word. `debugRace` is how a test is that program.
+    tearDown(() => SafePath.debugRace = null);
+
+    test('a file that appeared there is kept, and the item goes beside it',
+        () async {
+      final target = p.join(downloads.path, 'report.pdf');
+      SafePath.debugRace = (stage, path) {
+        if (stage == 'place' && path == target) {
+          File(target).writeAsStringSync('arrived meanwhile');
+        }
+      };
+
+      final saved = await saverWith()
+          .saveToDownloads(cached('report.pdf', 'application/pdf'));
+
+      expect(File(target).readAsStringSync(), 'arrived meanwhile',
+          reason: 'something the user did not know about was replaced');
+      expect(p.basename(saved.savedPath!), 'report (1).pdf');
+      expect(File(saved.savedPath!).readAsStringSync(), 'payload');
+    });
+
+    test('a folder that appeared there is kept, and the item goes beside it',
+        () async {
+      final folder = Directory(p.join(cacheDir.path, 'Trip'))..createSync();
+      File(p.join(folder.path, 'one.jpg')).writeAsStringSync('1');
+      final item = ReceivedItem(
+        cachePath: folder.path,
+        name: 'Trip',
+        size: 1,
+        mimeType: 'inode/directory',
+        isDirectory: true,
+      );
+      final target = p.join(downloads.path, 'Trip');
+      SafePath.debugRace = (stage, path) {
+        if (stage == 'place' && path == target) {
+          Directory(target).createSync();
+        }
+      };
+
+      final saved = await saverWith().saveToDownloads(item);
+
+      expect(Directory(target).listSync(), isEmpty,
+          reason: 'the empty folder somebody just made is theirs, and a '
+              'plain rename replaces an empty folder without a word');
+      expect(p.basename(saved.savedPath!), 'Trip (1)');
+      expect(File(p.join(saved.savedPath!, 'one.jpg')).readAsStringSync(), '1');
     });
   });
 

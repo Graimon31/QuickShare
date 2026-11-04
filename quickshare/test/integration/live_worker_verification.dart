@@ -7,6 +7,10 @@
 // It answers the one question the stubbed tests cannot: does the shape the
 // real Worker returns survive TurnCredentialService and come out as something
 // RTCPeerConnection would accept.
+//
+// `POST /turn` is public: there is no secret to supply, and nothing to pass
+// with the request. If the Worker is limiting this address the test fails with
+// the reason (`rateLimited`, `relayDisabled`, ...) rather than a bare error.
 // ignore_for_file: avoid_print
 import 'package:flutter_test/flutter_test.dart';
 
@@ -42,7 +46,10 @@ void main() {
     expect(firstRelayUrl, contains('443'));
 
     print('\n=== merged configuration handed to createPeerConnection ===');
-    final config = await IceServers.configurationDynamic(workerBaseUrl: workerUrl);
+    final setup = await IceServers.configurationDynamic(workerBaseUrl: workerUrl);
+    expect(setup.relayAvailable, isTrue,
+        reason: 'the live Worker gave no relay: ${setup.relayUnavailable}');
+    final config = setup.configuration;
     final merged = config['iceServers'] as List;
     print('  ${merged.length} entries, policy=${config['iceTransportPolicy']}');
 

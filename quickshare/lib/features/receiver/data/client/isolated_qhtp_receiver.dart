@@ -4,6 +4,7 @@ import 'dart:isolate';
 import 'package:path_provider/path_provider.dart';
 
 import 'package:quickshare/core/errors/failures.dart';
+import 'package:quickshare/core/storage/disk_space.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/features/receiver/data/client/qhtp_receiver_client.dart';
@@ -41,11 +42,21 @@ class IsolatedQhtpReceiver {
   final Future<String> Function() stateDirectory;
   final Future<String> Function() fallbackDirectory;
 
+  /// Answers "how much room is there?" for the worker.
+  ///
+  /// The real probe on macOS, iOS and Android is a platform channel, and a
+  /// channel answers on the main isolate only. So the worker does not hold a
+  /// probe of its own: it asks this isolate, which asks this one. Injectable so
+  /// a test can say how much room there is.
+  final DiskSpaceProbe diskSpace;
+
   IsolatedQhtpReceiver({
     Future<String> Function()? stateDirectory,
     Future<String> Function()? fallbackDirectory,
+    DiskSpaceProbe? diskSpace,
   })  : stateDirectory = stateDirectory ?? _supportDirectory,
-        fallbackDirectory = fallbackDirectory ?? _documentsDirectory;
+        fallbackDirectory = fallbackDirectory ?? _documentsDirectory,
+        diskSpace = diskSpace ?? DiskSpaceProbe.forCurrentPlatform();
 
   static Future<String> _supportDirectory() async =>
       (await getApplicationSupportDirectory()).path;
@@ -81,6 +92,12 @@ class IsolatedQhtpReceiver {
           onProgress?.call(progress);
         case final _WorkerLog line:
           AppLogger.adopt(line.text);
+        case final _SpaceQuestion question:
+          unawaited(diskSpace
+              .available(question.path)
+              .catchError((Object e) =>
+                  DiskSpace.unknown('the probe failed: $e'))
+              .then(question.reply.send));
         case final _WorkerResult result:
           if (!done.isCompleted) done.complete(result.value);
         case final _WorkerCrash crash:
@@ -158,6 +175,7 @@ class IsolatedQhtpReceiver {
     final client = QhtpReceiverClient(
       store: SessionStateStore(storeDirectory: request.stateDirectory),
       fallbackDirectory: () async => request.fallbackDirectory,
+      diskSpace: _AskTheMainIsolate(request.replies),
     );
     commands.listen((Object? message) {
       if (message == _cancel) client.cancel();
@@ -210,6 +228,40 @@ class _WorkerRequest {
     required this.stateDirectory,
     required this.fallbackDirectory,
   });
+}
+
+/// The worker's question about free space, and where to send the answer.
+class _SpaceQuestion {
+  final String path;
+  final SendPort reply;
+  const _SpaceQuestion(this.path, this.reply);
+}
+
+/// The probe a worker isolate holds: it forwards the question to the isolate
+/// that owns the platform channels and waits for the answer. Never throws —
+/// silence is "unknown", not a stalled transfer.
+class _AskTheMainIsolate extends DiskSpaceProbe {
+  _AskTheMainIsolate(this._port);
+
+  final SendPort _port;
+
+  @override
+  Future<DiskSpace> available(String path) async {
+    final answer = ReceivePort();
+    try {
+      _port.send(_SpaceQuestion(path, answer.sendPort));
+      final reply = await answer.first.timeout(const Duration(seconds: 8));
+      return reply is DiskSpace
+          ? reply
+          : const DiskSpace.unknown('the main isolate answered nonsense');
+    } on TimeoutException {
+      return const DiskSpace.unknown('the main isolate did not answer in time');
+    } catch (e) {
+      return DiskSpace.unknown('the question could not be asked: $e');
+    } finally {
+      answer.close();
+    }
+  }
 }
 
 class _WorkerLog {

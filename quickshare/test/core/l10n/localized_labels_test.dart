@@ -90,6 +90,32 @@ void main() {
       }
     });
 
+    test('running out of room says how much was needed and how much there is',
+        () {
+      final code = FailureCode.notEnoughSpaceFor(40 * 1000 * 1000 * 1000, 9 * 1000 * 1000 * 1000);
+      final shownEn = localizedFailure(en, code: code, fallback: 'raw');
+      expect(shownEn, contains('40 GB'));
+      expect(shownEn, contains('9.0 GB'));
+      final shownRu = localizedFailure(ru, code: code, fallback: 'raw');
+      expect(_cyrillic.hasMatch(shownRu), isTrue);
+      expect(shownRu, contains('40 GB'));
+      expect(shownRu, contains('9.0 GB'));
+    });
+
+    test('the storage failures read in plain words, not as the OS says them',
+        () {
+      for (final code in [
+        FailureCode.diskFull,
+        FailureCode.unsafeDestination,
+        FailureCode.pathTooLong,
+        FailureCode.receivedFilesNotIntact,
+      ]) {
+        final shown = localizedFailure(en, code: code, fallback: 'raw');
+        expect(shown, isNot('raw'), reason: code);
+        expect(shown, isNot(contains('errno')), reason: code);
+      }
+    });
+
     test('a caught exception still shows its own text', () {
       // No table covers a `DioException`, and inventing a vague sentence in
       // place of the only words that exist for it helps nobody.

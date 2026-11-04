@@ -73,6 +73,10 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
     private let authorizationAnswered = DispatchSemaphore(value: 0)
     private var hasAnswered = false
 
+    /// Keep the system prompt active without freezing a scan or join while
+    /// waiting for a person to answer it. A retry will see a later grant.
+    private static let authorizationPromptWait: Double = 3
+
     public static func register(with registrar: FlutterPluginRegistrar) {
         let instance = HotspotBridge()
         instance.location.delegate = instance
@@ -97,7 +101,7 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
             location.requestWhenInUseAuthorization()
             queue.async { [weak self] in
                 guard let self = self else { return }
-                _ = self.authorizationAnswered.wait(timeout: .now() + 60)
+                _ = self.authorizationAnswered.wait(timeout: .now() + HotspotBridge.authorizationPromptWait)
                 DispatchQueue.main.async { result(self.authorizationName()) }
             }
         case "startHotspot":
@@ -142,7 +146,7 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
 
             if self.settledAuthorization() == .notDetermined {
                 DispatchQueue.main.async { self.location.requestWhenInUseAuthorization() }
-                _ = self.authorizationAnswered.wait(timeout: .now() + 60)
+                _ = self.authorizationAnswered.wait(timeout: .now() + HotspotBridge.authorizationPromptWait)
             }
 
             if !self.locationGranted {
@@ -214,9 +218,9 @@ public class HotspotBridge: NSObject, CLLocationManagerDelegate {
             // achieved nothing.
             if self.settledAuthorization() == .notDetermined {
                 DispatchQueue.main.async { self.location.requestWhenInUseAuthorization() }
-                // The prompt is answered by a person, so this waits on the
-                // delegate rather than on a fixed delay.
-                _ = self.authorizationAnswered.wait(timeout: .now() + 60)
+                // Give the delegate a short chance to report a grant, then
+                // return a permission error if nobody has answered.
+                _ = self.authorizationAnswered.wait(timeout: .now() + HotspotBridge.authorizationPromptWait)
             }
 
             if !self.locationGranted {

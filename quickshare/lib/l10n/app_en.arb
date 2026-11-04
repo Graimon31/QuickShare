@@ -14,7 +14,7 @@
   "homeSendTitle": "Send File",
   "homeSendSubtitle": "Select and share a file",
   "homeReceiveTitle": "Receive File",
-  "homeReceiveSubtitleDesktop": "Paste a code or share link",
+  "homeReceiveSubtitleDesktop": "Enter the code from the sender",
   "homeReceiveSubtitleMobile": "Scan a QR code to download",
   "homeDropHere": "Drop file here to send",
   "homeSettingsTooltip": "Settings",
@@ -27,7 +27,7 @@
   "pickerMethodWifiTitle": "Wi-Fi / Local Network",
   "pickerMethodWifiSubtitle": "Fast transfer over local Wi-Fi / LAN",
   "pickerMethodBluetoothTitle": "Bluetooth",
-  "pickerMethodBluetoothSubtitle": "Direct peer transfer via Bluetooth",
+  "pickerMethodBluetoothSubtitle": "To a phone that scans your QR code",
   "pickerMethodInternetTitle": "Internet Link",
   "pickerMethodInternetSubtitle": "Share link via WebRTC signaling server",
   "pickerStepWhat": "2. Choose What to Share",
@@ -188,9 +188,18 @@
   "qrDisplayPreparing": "Preparing share…",
   "qrDisplayPreparingDetail": "Generating a secure QR session",
   "qrDisplayScanOrShare": "Scan the QR or share the link",
+  "qrDisplayScanOrEnterCode": "Scan the QR or enter the code",
+  "offerCodeChangesIn": "Code and QR change in {time}",
+  "@offerCodeChangesIn": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
   "qrDisplayShareLinkToReceive": "Share this link to receive the file",
   "qrDisplayScanToReceive": "Scan this QR code to receive the file",
-  "qrDisplayPhoneHint": "On the phone: open DirectDrop → Receive and scan this QR.",
+  "qrDisplayPhoneHint": "On the other device: open DirectDrop → Receive. A phone scans this QR; a computer types the code.",
   "qrDisplayRenderError": "QR Render Error: {error}",
   "@qrDisplayRenderError": {
     "placeholders": {
@@ -205,14 +214,6 @@
   "@qrDisplayTotalSize": {
     "placeholders": {
       "size": {
-        "type": "String"
-      }
-    }
-  },
-  "qrDisplaySessionExpires": "Session expires in {time}",
-  "@qrDisplaySessionExpires": {
-    "placeholders": {
-      "time": {
         "type": "String"
       }
     }
@@ -232,8 +233,6 @@
   "precondBluetoothNeedsWifiBodyApple": "The file itself crosses a direct Wi-Fi link between the two devices — Bluetooth only finds them. iOS lets no app open the Wi-Fi pane, so switch it on yourself in Settings › Wi-Fi. You do not need to join a network.",
   "precondBluetoothWifiBlocked": "Bluetooth transfer is unavailable until Wi-Fi is turned on.",
   "precondInternetBlocked": "No active network connection. Internet transfer is unavailable.",
-  "sessionExpiredTitle": "Session expired",
-  "sessionExpiredBody": "Nobody connected in time. Refresh to create a new session.",
   "sessionRefresh": "Refresh",
   "senderProgressCancelTitle": "Cancel Transfer?",
   "senderProgressCancelBody": "Are you sure you want to stop sending this file?",
@@ -254,7 +253,11 @@
       }
     }
   },
-  "fallbackNoRouteBody": "A VPN or this network's NAT is blocking a direct connection, and no relay was reachable. Nothing has been sent yet.",
+  "fallbackNoRouteBody": "A VPN or this network's NAT is blocking a direct connection. Nothing has been sent yet.",
+  "fallbackNoRouteBodyRelayLimited": "No direct connection was possible, and the relay service is limiting requests right now, so no relay could be set up. Try again in about a minute. Nothing has been sent yet.",
+  "fallbackNoRouteBodyRelayUnreachable": "No direct connection was possible, and the relay service could not be reached, so no relay could be set up. Check this device's internet connection. Nothing has been sent yet.",
+  "fallbackNoRouteBodyRelayOff": "No direct connection was possible, and the relay is switched off or not configured in this build. Nothing has been sent yet.",
+  "fallbackNoRouteBodyRelayWasAvailable": "A relay was available, but the connection still could not be made. A VPN or firewall may be blocking even relayed traffic. Nothing has been sent yet.",
   "fallbackWifiTitle": "Put both devices on one network",
   "fallbackWifiBody": "The local transfer has no size limit and runs at full link speed.",
   "fallbackWifiBodyCanHost": "The local transfer has no size limit and runs at full link speed. This device can create that network itself if there is no router around.",
@@ -290,33 +293,15 @@
   },
   "btSendTitle": "Bluetooth",
   "btSendPreparing": "Preparing Bluetooth…",
-  "btSendPreparingDetail": "Making this device discoverable",
-  "btSendScanPrompt": "Scan this QR code on the receiving device",
-  "btSendAutoConnectNote": "Pick a device from the list. The handshake should finish within 3 seconds.",
-  "btReceiveLookingForLink": "Looking for a direct link…",
-  "btReceiveDirectLinkPlaceholder": "Receiving over direct Wi-Fi",
-  "btReceiveTitle": "Nearby devices",
-  "btReceiveLookingNearby": "Looking for nearby Macs…",
-  "btReceiveLookingQr": "Looking for the Mac from the QR code…",
-  "btReceiveScanning": "Scanning for nearby devices…",
-  "btReceiveScanningDetail": "Keep Bluetooth enabled on both devices",
-  "btReceiveConnecting": "Connecting over Bluetooth…",
-  "btReceivePairingWith": "Pairing with {name}",
-  "@btReceivePairingWith": {
-    "placeholders": {
-      "name": {
-        "type": "String"
-      }
-    }
-  },
-  "btReceiveConnectionFailed": "Connection failed",
-  "btReceiveScanAgain": "Scan again",
-  "codeReceivePasteError": "Paste the share link from the sender.",
-  "codeReceiveParseError": "Could not read that link. Copy the share link under the QR on the sender.",
+  "btSendPreparingDetail": "Getting the code ready for the other phone to scan",
+  "btSendScanPrompt": "Scan this QR code with the receiving phone",
+  "btSendAutoConnectNote": "Bluetooth receiving works on a phone: open DirectDrop there, tap Receive File and scan this code. A computer cannot receive over Bluetooth — use Wi-Fi for that.",
   "codeReceiveTitle": "Receive a file",
-  "codeReceivePastePrompt": "Paste a code or share link",
-  "codeReceiveHint": "directdrop://join?p=…",
-  "codeReceivePasteButton": "Paste",
+  "codeReceivePrompt": "Enter the code from the sender",
+  "codeReceiveCodeInvalid": "Enter all ten digits of the code.",
+  "linkReceiveOpening": "Opening the shared link…",
+  "linkReceiveOpeningDetail": "Checking what is being sent",
+  "codeReceiveHint": "12345 67890",
   "codeReceiveReceiveButton": "Receive",
   "codeReceiveFileFound": "File found",
   "codeReceiveIncomingTransfer": "Incoming transfer",
@@ -334,9 +319,8 @@
     }
   },
   "codeReceiveTryAnother": "Try another code",
-  "codeReceiveNotFoundLan": "Sender with this code was not found on your local network. Make sure both devices are on the same Wi-Fi network.",
-  "codeReceiveNotAShareLink": "That is not a DirectDrop share link. Copy the link under the QR on the sender — not the Wi-Fi address.",
-  "codeReceiveInvalidQr": "Invalid QR code. Point the camera at the QR on the sender screen — not at the Wi-Fi address text under it.",
+  "codeReceiveNotFoundLan": "No sender with this code was found. The code may be wrong or may have expired — codes change every 5 minutes. Check it and make sure both devices are on the same Wi-Fi network.",
+  "codeReceiveUpdateRequired": "The other device is running a different version of DirectDrop and cannot take this code. Update DirectDrop on both devices, then try again.",
   "codeReceiveSearchingLan": "Searching for sender on local network…",
   "qrScanCameraPermission": "Camera permission required",
   "qrScanDetected": "QR detected — opening transfer…",
@@ -381,14 +365,6 @@
   "settingsLogsSubtitle": "Technical journal — copy it when reporting a transfer problem",
   "logsCopyAll": "Copy entire log",
   "logsEmpty": "No entries yet",
-  "nearbyTitle": "Devices nearby",
-  "nearbySearching": "Looking…",
-  "nearbyEmpty": "No devices yet",
-  "nearbyEmptyHint": "Open DirectDrop on the other device. Both have to be on the same network.",
-  "nearbyBlocked": "This network hides devices from each other",
-  "nearbyBlockedHint": "Guest and public Wi-Fi usually do. Use the code below instead.",
-  "nearbyReady": "Ready to send",
-  "nearbyIdle": "Waiting",
   "inviteTitle": "Accept files?",
   "inviteAccept": "Accept",
   "inviteDecline": "Decline",
@@ -414,23 +390,11 @@
       "sender": { "type": "String" }
     }
   },
-  "nearbyOrPaste": "Or paste a code",
-  "inviteAsking": "Asking…",
-  "inviteAccepted": "Accepted — sending now",
   "inviteDeclined": "Declined",
   "inviteUnreachable": "Could not reach that device",
-  "inviteBusy": "That device is deciding on another transfer",
-  "nearbySendTo": "Send straight to a device",
   "codeLabel": "Code for the receiving device",
-  "codeHint": "Type this on the other device if it is not in the list above",
   "codeEnterPrompt": "Enter the code from the sender",
   "codeEnterHint": "10 digits",
-  "codeNotFound": "No device nearby is offering that code",
-  "btReceiveCodePrompt": "Enter the code from the sending device",
-  "qrScanBluetoothReceive": "Receive over Bluetooth",
-  "btReceiveWaitingToBeChosen": "Waiting to be picked on the sending device",
-  "btReceiveWaitingDetail": "This device is now listed on the sender. Choose it there to start the transfer.",
-  "btReceiveCodeInvalid": "The code is ten digits",
   "codeMalformed": "A code is 10 digits",
   "routeDirectWifiLink": "Direct Wi-Fi link",
   "routeLocalNetwork": "Local network",
@@ -473,11 +437,32 @@
   "errorReceiverTooOldForDirectLink": "The receiving device is on an older version that can only receive over Bluetooth. Update it, and the transfer moves to a direct Wi-Fi link.",
   "errorReceiverTooOldToPair": "The receiving device is on an older version that cannot pair securely over Bluetooth. Update it, or send over Wi-Fi.",
   "errorCancelledHere": "You cancelled the transfer.",
+  "errorOfferEnded": "This offer sat unused for too long and was closed. Start sending again.",
   "errorLinkWifiOff": "Wi-Fi is turned off. The transfer builds a direct Wi-Fi link between the devices, so it cannot start without it.",
   "errorLinkPeerSilentAtSetup": "The other device did not answer the setup for a private link. Make sure it is running the current version and try again.",
   "errorLinkSetupFailed": "Could not set up the direct Wi-Fi link. Keep the devices next to each other and try again.",
   "errorLinkPeerLost": "Lost contact with the other device before the link was set up. Stay on this screen and try again.",
   "errorLinkWithoutAddress": "The link is up, but this device could not work out its own address on it.",
   "errorSessionWithoutCertificate": "The transfer started without a certificate, so the other device has nothing to trust. Try again.",
+  "errorNoPathRelayLimited": "Could not connect: the two devices cannot reach each other directly, and the relay service is limiting requests right now. Try again in about a minute.",
+  "errorNoPathRelayUnreachable": "Could not connect: the two devices cannot reach each other directly, and the relay service could not be reached. Check the internet connection.",
+  "errorNoPathRelayOff": "Could not connect: the two devices cannot reach each other directly, and the relay is switched off or not configured in this build.",
+  "errorNoPathRelayWasAvailable": "Could not connect even though a relay was available. Something between the devices is blocking the connection — a VPN or a firewall, for example.",
+  "errorNotEnoughSpace": "There is not enough free space for this transfer. Free up some space where the files are being saved and try again.",
+  "errorNotEnoughSpaceDetail": "Not enough free space: {needed} needed, {available} available. Free up some space where the files are being saved and try again.",
+  "@errorNotEnoughSpaceDetail": {
+    "placeholders": {
+      "needed": {
+        "type": "String"
+      },
+      "available": {
+        "type": "String"
+      }
+    }
+  },
+  "errorDiskFull": "The disk filled up while saving. Free up some space and try again.",
+  "errorUnsafeDestination": "The save folder has a shortcut (a symbolic link) where a file or folder should be, so nothing was written there. Remove it, or choose another save folder.",
+  "errorPathTooLong": "The save location is nested too deeply — Windows cannot open files at a path this long. Choose a folder closer to the root of the drive.",
+  "errorReceivedFilesNotIntact": "Some received files went missing or changed before the transfer finished, so it is not reported as complete. Try again — only what is missing will be received again.",
   "qrDisplayStillCounting": "Still counting the files…"
 }

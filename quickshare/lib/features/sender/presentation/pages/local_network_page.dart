@@ -5,8 +5,10 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/features/sender/presentation/widgets/offer_lifecycle_guard.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
+import 'package:quickshare/shared/widgets/offer_countdown.dart';
 
 /// Walks the sender through handing a network to the other device.
 ///
@@ -30,7 +32,8 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    return Scaffold(
+    return OfferLifecycleGuard(
+        child: Scaffold(
       backgroundColor: AppColors.backgroundDark,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
@@ -68,7 +71,7 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
           return _Busy(message: l10n.localNetWorking);
         },
       ),
-    );
+    ));
   }
 
   Widget _ready(
@@ -123,7 +126,15 @@ class _LocalNetworkPageState extends State<LocalNetworkPage> {
                       state.credentials.hostAddress ?? ''),
                   active: _joined,
                   child: _joined
-                      ? _QrCard(data: state.transferQr)
+                      ? Column(
+                          children: [
+                            _QrCard(data: state.transferQr),
+                            if (state.expiresAt != null) ...[
+                              const SizedBox(height: 12),
+                              OfferCountdown(expiresAt: state.expiresAt!),
+                            ],
+                          ],
+                        )
                       : const SizedBox.shrink(),
                 ),
               ],

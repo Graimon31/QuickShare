@@ -14,6 +14,9 @@ class MainActivity : FlutterActivity() {
         hotspotPlugin = plugin
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "quickshare/hotspot")
             .setMethodCallHandler(plugin)
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "quickshare/disk_space")
+            .setMethodCallHandler(DiskSpacePlugin())
     }
 
     override fun onDestroy() {

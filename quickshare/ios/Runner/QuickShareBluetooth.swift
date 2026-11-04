@@ -189,7 +189,6 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   private var receivedPaths: [String] = []
   private var centralConnectTimeoutTimer: Timer?
   /// This device is waiting to receive: GATT peripheral, sender will connect.
-  private var waitingAsReceiver = false
   /// This device is sending: GATT central, we scan and connect to a receiver.
   private var senderAsCentral = false
   private var scanningForReceivers = false
@@ -228,12 +227,6 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
       startScanning(sessionToken: args?["sessionToken"] as? String,
                     publicId: args?["publicId"] as? String,
                     forReceivers: args?["forReceivers"] as? Bool ?? false)
-      result(nil)
-
-    case "startReceiverAdvertising":
-      let args = call.arguments as? [String: Any]
-      let name = args?["deviceName"] as? String ?? UIDevice.current.name
-      startReceiverAdvertising(deviceName: name)
       result(nil)
 
     case "stopScanning":
@@ -277,14 +270,6 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
       stopAdvertising()
       result(nil)
 
-    // The person sending picked a device off the list. Everything the transfer
-    // needs is already in place — the receiver connected and subscribed when
-    // it announced itself — so this is only the go-ahead that used to arrive
-    // as the receiver's own START.
-    case "beginTransfer":
-      beginSenderTransferIfReady()
-      result(nil)
-
     // A generation-4 session negotiates over this channel instead of
     // transferring over it: the "link" frame says which side raises the
     // Wi-Fi network, the "serve" frame says where on it the file is.
@@ -319,7 +304,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
         result(FlutterError(code: "BAD_ARGS", message: "sendApOffer needs sealed credentials", details: nil))
         return
       }
-      sendTowardsPeer(QuickShareBleControl.apOffer(sealed), result)
+      writeControl(QuickShareBleControl.apOffer(sealed), result)
 
     case "sendKeyExchange":
       guard let args = call.arguments as? [String: Any],
@@ -327,7 +312,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
         result(FlutterError(code: "BAD_ARGS", message: "sendKeyExchange needs a key", details: nil))
         return
       }
-      sendTowardsPeer(QuickShareBleControl.keyExchange(key), result)
+      writeControl(QuickShareBleControl.keyExchange(key), result)
 
     default:
       result(FlutterMethodNotImplemented)
@@ -452,46 +437,10 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     )]
   }
 
-  private func startReceiverAdvertising(deviceName: String) {
-    waitingAsReceiver = true
-    senderAsCentral = false
-    startAdvertising(items: [], sessionToken: nil, publicId: nil, localName: deviceName)
-  }
-
-  /// KEX and AP must go to the sender we are connected to as central.
-  /// Advertising as a waiting receiver at the same time used to steal those
-  /// writes onto our own GATT notify, so the Mac never saw the key exchange.
-  private func sendTowardsPeer(_ command: String, _ result: @escaping FlutterResult) {
-    if targetPeripheral != nil {
-      writeControl(command, result)
-    } else if waitingAsReceiver {
-      notifyWaitingReceiver(command, result)
-    } else {
-      writeControl(command, result)
-    }
-  }
-
-  private func notifyWaitingReceiver(_ command: String, _ result: @escaping FlutterResult) {
-    guard let metadata = senderMetadata, let manager = peripheralManager,
-          let payload = command.data(using: .utf8) else {
-      result(FlutterError(code: "UNAVAILABLE", message: "receiver is not advertising", details: nil))
-      return
-    }
-    if manager.updateValue(payload, for: metadata, onSubscribedCentrals: nil) {
-      result(nil)
-    } else {
-      result(FlutterError(code: "BUSY", message: "the notification queue is full", details: nil))
-    }
-  }
-
   private func startAdvertising(items: [QuickShareSenderItem],
                                 sessionToken: String?,
-                                publicId: String? = nil,
-                                localName: String? = nil) {
+                                publicId: String? = nil) {
     stopAdvertising()
-    if localName != nil {
-      waitingAsReceiver = true
-    }
     senderItems = items
     senderItemIndex = 0
     senderItemBytesSent = 0
@@ -518,11 +467,9 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     )
     let metadataCharacteristic = CBMutableCharacteristic(
       type: QuickShareBluetoothIDs.metadata,
-      properties: waitingAsReceiver
-        ? [.notify, .write, .writeWithoutResponse]
-        : [.notify],
+      properties: [.notify],
       value: nil,
-      permissions: waitingAsReceiver ? [.readable, .writeable] : [.readable]
+      permissions: [.readable]
     )
     let data = CBMutableCharacteristic(
       type: QuickShareBluetoothIDs.data,
@@ -543,9 +490,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     // to a slice of the token is what every earlier build did, and it puts
     // eight characters of the session's secret in a packet anyone in range
     // can read.
-    if let localName, !localName.isEmpty {
-      pendingDeviceName = localName
-    } else if let publicId, !publicId.isEmpty {
+    if let publicId, !publicId.isEmpty {
       pendingDeviceName = "QuickShare-\(publicId)"
     } else {
       pendingDeviceName = "QuickShare-directdrop"
@@ -577,7 +522,6 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     senderTransferStarted = false
     senderSessionToken = nil
     senderPeerGeneration = nil
-    waitingAsReceiver = false
   }
 
   /// Opens the file at [senderItemIndex] and queues its metadata frame.
@@ -881,11 +825,6 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
   }
 
   public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
-    if waitingAsReceiver {
-      senderSubscribedCentral = central
-      emit(["type": "waitingToBeChosen"])
-      return
-    }
     guard characteristic.uuid == QuickShareBluetoothIDs.data else { return }
     senderSubscribedCentral = central
     emit(["type": "centralConnected"])
@@ -894,19 +833,6 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
   public func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
     for request in requests {
       let command = request.value.flatMap { String(data: $0, encoding: .utf8) }
-
-      if waitingAsReceiver, request.characteristic.uuid == QuickShareBluetoothIDs.metadata,
-         let value = request.value,
-         let json = try? JSONSerialization.jsonObject(with: value) as? [String: Any] {
-        peripheral.respond(to: request, withResult: .success)
-        if let link = json["link"] as? [String: Any] {
-          emit(["type": "linkDirective", "link": link])
-        }
-        if let serve = json["serve"] as? [String: Any] {
-          emit(["type": "serveInfo", "serve": serve])
-        }
-        continue
-      }
 
       guard request.characteristic.uuid == QuickShareBluetoothIDs.control else {
         peripheral.respond(to: request, withResult: .requestNotSupported)
@@ -921,8 +847,9 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
         continue
       }
 
-      // A receiver saying it is here without asking for anything. The person
-      // sending picks it off the list; nothing starts until they do.
+      // The name a receiver gives itself, written ahead of its START. Dart
+      // reads it only to tell an Apple receiver from the rest; nothing is
+      // listed and nothing starts because of it.
       if let name = QuickShareBleControl.parseHello(command) {
         if senderPeerGeneration == nil {
           senderPeerGeneration = QuickShareBleControl.generation
@@ -944,12 +871,6 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
       if let key = QuickShareBleControl.parseKeyExchange(command) {
         peripheral.respond(to: request, withResult: .success)
         emit(["type": "peerKey", "key": key])
-        continue
-      }
-
-      if waitingAsReceiver, let command, command.hasPrefix("START:") {
-        peripheral.respond(to: request, withResult: .success)
-        emit(["type": "waitingToBeChosen"])
         continue
       }
 
@@ -1049,8 +970,8 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     let capsWriteType: CBCharacteristicWriteType = control.properties.contains(.writeWithoutResponse) ? .withoutResponse : writeType
     peripheral.writeValue(Data(QuickShareBleControl.capabilities().utf8), for: control, type: capsWriteType)
 
-    // Who this is, so the sender can list it. With a token this is a courtesy
-    // ahead of START; without one it is the whole point.
+    // Who this is, ahead of START. The sender reads the name only to tell an
+    // Apple receiver from the rest; it is never listed.
     if !senderAsCentral {
       peripheral.writeValue(
         Data(QuickShareBleControl.hello(UIDevice.current.name).utf8),
@@ -1064,10 +985,7 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     }
     pendingControlWrites.removeAll()
 
-    guard let token = expectedSessionToken, !token.isEmpty else {
-      emit(["type": "waitingToBeChosen"])
-      return
-    }
+    guard let token = expectedSessionToken, !token.isEmpty else { return }
     peripheral.writeValue(Data("START:\(token)".utf8), for: control, type: writeType)
     if senderAsCentral {
       emit(["type": "receiverReady"])
