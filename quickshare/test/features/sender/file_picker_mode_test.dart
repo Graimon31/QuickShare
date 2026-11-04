@@ -312,6 +312,8 @@ void main() {
         UniversalBle.setInstance(_Radio(AvailabilityState.poweredOff));
         return <String>['/tmp/trip'];
       });
+      FilePicker.platform = _FilesDialog(
+          () => UniversalBle.setInstance(_Radio(AvailabilityState.poweredOff)));
       await tester.tap(find.text(selectionLabel));
       await tester.pumpAndSettle();
 
