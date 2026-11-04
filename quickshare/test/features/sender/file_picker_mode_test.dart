@@ -11,6 +11,7 @@
 //  * the pages that sit on top of it (the QR code, the progress screen) do
 //    not change what it sends over.
 import 'package:bloc_test/bloc_test.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -59,6 +60,33 @@ class _Network extends NetworkInfoService {
   Future<bool> hasAnyActiveConnection() async => true;
 }
 
+/// The dialog on Windows and Linux, which have no unified pick to call through
+/// the folder channel.
+class _FilesDialog extends FilePicker {
+  _FilesDialog(this.onOpened);
+  final void Function() onOpened;
+
+  @override
+  Future<FilePickerResult?> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    bool allowCompression = true,
+    int compressionQuality = 30,
+    bool allowMultiple = false,
+    bool withData = false,
+    bool withReadStream = false,
+    bool lockParentWindow = false,
+    bool readSequential = false,
+  }) async {
+    onOpened();
+    return FilePickerResult(
+        [PlatformFile(name: 'trip', size: 4, path: '/tmp/trip')]);
+  }
+}
+
 void main() {
   const folderChannel = MethodChannel('quickshare/folder_picker');
 
@@ -83,6 +111,7 @@ void main() {
     TransportPreconditions.networkInfo = _Network();
     TransportPreconditions.peerLink = const _Wifi();
     UniversalBle.setInstance(_Radio(AvailabilityState.poweredOn));
+    FilePicker.platform = _FilesDialog(() => dialogCalls++);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(folderChannel, (call) async {
       if (call.method == 'pickItems' || call.method == 'pickFolders') {
