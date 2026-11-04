@@ -13,10 +13,61 @@ kv_namespaces = [
   { binding = "RENDEZVOUS_KV", id = "9ab05c1d929d4f69b1a72c489b6077c9", preview_id = "5183319a750a4d19aae2e9ef7f92a35a" }
 ]
 
+# Abuse limits for the two public routes (Workers Rate Limiting bindings; the
+# code in src/index.js only names them). `period` can only be 10 or 60 seconds.
+# Limits are counted per Cloudflare location, so the "global" buckets cap a
+# burst at each data centre, not the whole network.
+#
+# `namespace_id` must be unique across the whole Cloudflare ACCOUNT (a positive
+# integer, given as a string). Two limiters, or two Workers, sharing one id
+# would share one counter. Change these if another Worker already uses them.
+
+# POST /turn, per client IP (IPv6 counted per /64)
+[[ratelimits]]
+name = "RL_TURN_IP"
+namespace_id = "4101"
+simple = { limit = 20, period = 60 }
+
+# POST /turn, all clients together (key "global")
+[[ratelimits]]
+name = "RL_TURN_GLOBAL"
+namespace_id = "4102"
+simple = { limit = 300, period = 60 }
+
+# POST /r/:roomId, per client IP
+[[ratelimits]]
+name = "RL_ROOM_POST_IP"
+namespace_id = "4103"
+simple = { limit = 10, period = 60 }
+
+# POST /r/:roomId, all clients together: every POST is a KV write, and the free
+# KV tier allows 1000 writes a day
+[[ratelimits]]
+name = "RL_ROOM_POST_GLOBAL"
+namespace_id = "4104"
+simple = { limit = 60, period = 60 }
+
+# GET /r/:roomId, per client IP. A waiting sender polls every 2 s (30/min) and
+# several devices can sit behind one NAT, hence the headroom.
+[[ratelimits]]
+name = "RL_ROOM_GET_IP"
+namespace_id = "4105"
+simple = { limit = 120, period = 60 }
+
+# Workers Logs: where the one-line JSON 429/503/provider-error events go.
+[observability]
+enabled = true
+
 # Secrets (never put these values here — set via `wrangler secret put <NAME>`):
 #   CF_TURN_KEY_ID       Cloudflare Calls TURN key ID
 #   CF_TURN_API_TOKEN    Cloudflare Calls TURN API token
 #   METERED_SUBDOMAIN    Metered account subdomain, e.g. "quickshare" for
 #                        https://quickshare.metered.live
 #   METERED_API_KEY      Metered API key
-#   TURN_CLIENT_SECRET   Shared HMAC secret for authenticating POST /turn
+#
+# Kill switch (optional, set it only when you need it):
+#   TURN_ENABLED         "false" makes POST /turn answer 503 relay_disabled
+#                        without calling any provider. Set it with
+#                        `wrangler secret put TURN_ENABLED` or in the dashboard,
+#                        and do NOT add it under [vars] here: every deploy would
+#                        reset it. Remove it again to turn the relay back on.

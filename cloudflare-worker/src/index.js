@@ -10,69 +10,21 @@
 // The Worker never sees plaintext file data or file keys. For /r/:room it
 // doesn't even know what it's storing — client encrypts, Worker just holds
 // bytes for up to TTL_SECONDS.
+//
+// Both routes are public. /turn used to demand an HMAC from the client, but a
+// secret compiled into a public binary protects nothing, so abuse is bounded
+// by rate limits instead (see "Rate limiting" below) plus a kill switch.
 
 const TTL_SECONDS = 30 * 60; // matches the spec's 30-minute room lifetime
 const MAX_BLOB_BYTES = 8 * 1024; // encrypted SDP + AEAD overhead, generous headroom
 const ROOM_ID_RE = /^[A-Za-z0-9_-]{16,64}$/; // base64url, no padding
+const RETRY_AFTER_SECONDS = '60'; // the rate-limit window, and a sane wait after a 503
 
 function withCors(response) {
   response.headers.set('Access-Control-Allow-Origin', '*');
   response.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   response.headers.set('Access-Control-Allow-Headers', 'Content-Type');
   return response;
-}
-
-/// HMAC-SHA256 hex of [message] under [secret].
-async function hmacSha256Hex(secret, message) {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const sig = await crypto.subtle.sign(
-    'HMAC',
-    key,
-    new TextEncoder().encode(message),
-  );
-  return [...new Uint8Array(sig)]
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
-function timingSafeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  if (a.length !== b.length) return false;
-  let out = 0;
-  for (let i = 0; i < a.length; i++) out |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return out === 0;
-}
-
-/// DD-02: /turn mints live TURN credentials. A browser page with CORS *
-/// used to be enough to drain the project's Cloudflare Calls quota. The
-/// client signs the unix timestamp with TURN_CLIENT_SECRET; a missing
-/// secret is a misconfigured deploy, not an open endpoint.
-const TURN_AUTH_WINDOW_SECONDS = 300;
-
-async function authorizeTurn(request, env) {
-  const secret = env.TURN_CLIENT_SECRET;
-  if (!secret) {
-    return text('turn client secret is not configured', 503, { cors: false });
-  }
-  const ts = request.headers.get('X-DD-Ts');
-  const mac = request.headers.get('X-DD-Mac');
-  if (!ts || !mac) return text('unauthorized', 401, { cors: false });
-  const t = Number(ts);
-  const now = Math.floor(Date.now() / 1000);
-  if (!Number.isFinite(t) || Math.abs(now - t) > TURN_AUTH_WINDOW_SECONDS) {
-    return text('unauthorized', 401, { cors: false });
-  }
-  const expected = await hmacSha256Hex(secret, ts);
-  if (!timingSafeEqual(expected, mac.toLowerCase())) {
-    return text('unauthorized', 401, { cors: false });
-  }
-  return null;
 }
 
 function json(body, init = {}) {
@@ -87,6 +39,161 @@ function json(body, init = {}) {
 function text(body, status, { cors = true } = {}) {
   const response = new Response(body, { status });
   return cors ? withCors(response) : response;
+}
+
+/// One JSON object per line, so Workers Logs can filter on the fields.
+///
+/// Callers pass `{event, route, scope, status}` and nothing else but, for
+/// provider errors, a structural `shape`. No client address, room id, token or
+/// credential goes through here, and none may be added.
+function logEvent(fields, level = 'log') {
+  console[level](JSON.stringify(fields));
+}
+
+// --- Rate limiting ----------------------------------------------------------
+//
+// Workers Rate Limiting bindings (`[[ratelimits]]` in wrangler.toml, one
+// namespace each; the numbers live there, not here). Every window is 60 s.
+//
+//   RL_TURN_IP           /turn, per client
+//   RL_TURN_GLOBAL       /turn, one shared bucket (key "global")
+//   RL_ROOM_POST_IP      POST /r/:id, per client
+//   RL_ROOM_POST_GLOBAL  POST /r/:id, one shared bucket; guards KV writes
+//   RL_ROOM_GET_IP       GET /r/:id, per client; a waiting sender polls every
+//                        2 s, so 30/min, and several devices can share a NAT
+//
+// The "global" buckets are only as global as the binding: Cloudflare counts
+// per location, so each data centre has its own allowance and the true ceiling
+// is limit x locations reached. They bound a burst, not a monthly bill.
+//
+// The per-client check runs first, so a client already over its own limit
+// never spends the shared budget.
+const TURN_LIMITS = [
+  { scope: 'turn_ip', binding: 'RL_TURN_IP', perClient: true },
+  { scope: 'turn_global', binding: 'RL_TURN_GLOBAL', perClient: false },
+];
+const ROOM_POST_LIMITS = [
+  { scope: 'room_post_ip', binding: 'RL_ROOM_POST_IP', perClient: true },
+  { scope: 'room_post_global', binding: 'RL_ROOM_POST_GLOBAL', perClient: false },
+];
+const ROOM_GET_LIMITS = [
+  { scope: 'room_get_ip', binding: 'RL_ROOM_GET_IP', perClient: true },
+];
+
+/// The 8 sixteen-bit groups of an IPv6 text address, or null if it is not one.
+function ipv6Groups(ip) {
+  let addr = ip.toLowerCase();
+  // A dotted IPv4 tail (::ffff:192.0.2.1) is the last two groups in disguise.
+  const dotted = addr.match(/^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (dotted) {
+    const [a, b, c, d] = dotted.slice(2).map(Number);
+    if ([a, b, c, d].some((n) => n > 255)) return null;
+    addr = `${dotted[1]}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = addr.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const gap = 8 - head.length - tail.length;
+  if (halves.length === 2 ? gap < 1 : gap !== 0) return null;
+  const groups = [...head, ...Array(halves.length === 2 ? gap : 0).fill('0'), ...tail];
+  if (!groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+  return groups.map((g) => parseInt(g, 16));
+}
+
+/// The bucket a caller is counted in.
+///
+/// CF-Connecting-IP is set by Cloudflare's edge and cannot be forged by a
+/// client of a Worker that is only reachable through it. IPv6 is cut to the
+/// /64: that is what one subscriber gets, and counting full addresses would
+/// hand a single client 2^64 buckets. An IPv4-mapped address is the IPv4 host
+/// it carries; treated as a /64 it would pool every IPv4 client into one.
+function clientKey(request) {
+  const ip = request.headers.get('CF-Connecting-IP')?.trim();
+  if (!ip) return 'unknown'; // only outside Cloudflare, e.g. a bare workerd
+  if (!ip.includes(':')) return ip;
+  const g = ipv6Groups(ip);
+  if (!g) return ip;
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) {
+    return `${g[6] >> 8}.${g[6] & 255}.${g[7] >> 8}.${g[7] & 255}`;
+  }
+  return `${g.slice(0, 4).map((x) => x.toString(16)).join(':')}::/64`;
+}
+
+/// Spends one token: 'ok', 'limited', or 'unavailable' when the binding is
+/// missing or throws. What an outage means is the caller's policy.
+async function spend(limiter, key) {
+  if (!limiter || typeof limiter.limit !== 'function') return 'unavailable';
+  try {
+    const { success } = await limiter.limit({ key });
+    return success ? 'ok' : 'limited';
+  } catch (_) {
+    return 'unavailable';
+  }
+}
+
+/// Runs [limits] in order. Returns the Response that refuses the request, or
+/// null to let it through.
+///
+/// [failOpen] is the answer to "the limiter itself is down". /turn fails
+/// closed: an unguarded mint is the whole risk, and the client falls back to
+/// STUN-only. The mailbox fails open: Nostr is the primary rendezvous, nothing
+/// there costs money per call, and a limiter outage should not also take the
+/// reserve channel down.
+async function enforceLimits(request, env, route, limits, { failOpen, cors }) {
+  const client = clientKey(request);
+  for (const { scope, binding, perClient } of limits) {
+    const verdict = await spend(env[binding], perClient ? client : 'global');
+    if (verdict === 'limited') {
+      logEvent({ event: 'rate_limited', route, scope, status: 429 });
+      return json(
+        { error: 'rate_limited', scope },
+        { status: 429, cors, headers: { 'Retry-After': RETRY_AFTER_SECONDS } },
+      );
+    }
+    if (verdict === 'unavailable') {
+      if (failOpen) {
+        logEvent({ event: 'limiter_fail_open', route, scope }, 'warn');
+        continue;
+      }
+      logEvent({ event: 'limiter_unavailable', route, scope, status: 503 });
+      return json(
+        { error: 'limiter_unavailable' },
+        { status: 503, cors, headers: { 'Retry-After': RETRY_AFTER_SECONDS } },
+      );
+    }
+  }
+  return null;
+}
+
+/// Reads at most [max] bytes of the request body, or returns null the moment
+/// it goes over, cancelling the rest of the upload.
+///
+/// Content-Length can be absent (chunked transfer) or wrong, and
+/// `arrayBuffer()` would buffer whatever arrives; checking the size afterwards
+/// is too late.
+async function readCapped(request, max) {
+  if (!request.body) return new ArrayBuffer(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
 }
 
 /// Summarises an unexpected upstream payload without echoing its values.
@@ -126,6 +233,58 @@ function requireSecrets(env, provider, names) {
   if (missing.length) throw new NotConfigured(provider, missing);
 }
 
+/// A provider that was asked and failed.
+///
+/// [code] is one of three fixed words and is all the public 502 repeats:
+///   http_error   the provider answered with an error status ([status])
+///   bad_payload  it answered 200 with something that holds no credentials
+///   unreachable  the call itself threw
+/// Nothing the provider or the runtime wrote is kept. An exception from
+/// `fetch` quotes the address it was given, and Metered's address carries the
+/// API key; a body can quote anything. Those never reach a response, and the
+/// log gets a structural description, never a message.
+class ProviderFailure extends Error {
+  constructor(code, status) {
+    super(code);
+    this.code = code;
+    if (Number.isInteger(status)) this.status = status;
+  }
+}
+
+/// The class name of whatever was thrown, and nothing it said.
+function errorKind(e) {
+  const name = e instanceof Error ? e.name : typeof e;
+  return /^[A-Za-z]{1,40}$/.test(name) ? name : 'Error';
+}
+
+/// Runs a provider call. If it throws, only the kind of exception is logged and
+/// the caller sees a [ProviderFailure].
+async function callProvider(scope, call) {
+  try {
+    return await call();
+  } catch (e) {
+    logEvent({ event: 'provider_error', route: '/turn', scope, shape: errorKind(e) });
+    throw new ProviderFailure('unreachable');
+  }
+}
+
+/// Reads a provider's 200 as JSON. A body that is not JSON is a payload with no
+/// credentials in it, and what the parser quoted of it stays here.
+async function readProviderJson(scope, res) {
+  try {
+    return await res.json();
+  } catch (_) {
+    logEvent({
+      event: 'provider_error',
+      route: '/turn',
+      scope,
+      status: res.status,
+      shape: 'not json',
+    });
+    throw new ProviderFailure('bad_payload');
+  }
+}
+
 /// Pulls username/credential out of either shape Cloudflare's TURN API serves.
 ///
 /// Not a legacy fallback — both are current, documented endpoints that differ
@@ -155,16 +314,18 @@ async function fetchCloudflareTurn(env) {
   // `generate-ice-servers`, not `generate`: this is the endpoint Cloudflare
   // documents, and it returns a list already shaped like RTCPeerConnection's
   // iceServers.
-  const res = await fetch(
-    `https://rtc.live.cloudflare.com/v1/turn/keys/${env.CF_TURN_KEY_ID}/credentials/generate-ice-servers`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.CF_TURN_API_TOKEN}`,
-        'Content-Type': 'application/json',
+  const res = await callProvider('cloudflare', () =>
+    fetch(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${env.CF_TURN_KEY_ID}/credentials/generate-ice-servers`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.CF_TURN_API_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ttl: TTL_SECONDS }),
       },
-      body: JSON.stringify({ ttl: TTL_SECONDS }),
-    },
+    ),
   );
   if (!res.ok) {
     const errorText = await res.text().catch(() => '');
@@ -172,22 +333,27 @@ async function fetchCloudflareTurn(env) {
     try {
       shape = describeShape(JSON.parse(errorText));
     } catch (_) {}
-    console.log(`cloudflare turn credential fetch failed (${res.status}):`, shape);
-    throw new Error(`cloudflare turn credential fetch failed: ${res.status}`);
+    logEvent({
+      event: 'provider_error',
+      route: '/turn',
+      scope: 'cloudflare',
+      status: res.status,
+      shape,
+    });
+    throw new ProviderFailure('http_error', res.status);
   }
 
-  const data = await res.json();
+  const data = await readProviderJson('cloudflare', res);
   const creds = extractCredentials(data.iceServers ?? data);
   if (!creds) {
-    console.log(
-      'cloudflare /turn unexpected payload shape:',
-      describeShape(data.iceServers ?? data),
-    );
-    throw new Error(
-      `cloudflare turn response carried no credentials (got ${describeShape(
-        data.iceServers ?? data,
-      )})`,
-    );
+    logEvent({
+      event: 'provider_error',
+      route: '/turn',
+      scope: 'cloudflare',
+      status: res.status,
+      shape: describeShape(data.iceServers ?? data),
+    });
+    throw new ProviderFailure('bad_payload');
   }
 
   // Transports are pinned rather than passed through verbatim. Cloudflare
@@ -233,8 +399,10 @@ function pickMeteredTlsUrl(servers) {
 async function fetchMeteredTurn(env) {
   requireSecrets(env, 'metered', ['METERED_SUBDOMAIN', 'METERED_API_KEY']);
 
-  const res = await fetch(
-    `https://${env.METERED_SUBDOMAIN}.metered.live/api/v1/turn/credentials?apiKey=${env.METERED_API_KEY}`,
+  const res = await callProvider('metered', () =>
+    fetch(
+      `https://${env.METERED_SUBDOMAIN}.metered.live/api/v1/turn/credentials?apiKey=${env.METERED_API_KEY}`,
+    ),
   );
   if (!res.ok) {
     const errorText = await res.text().catch(() => '');
@@ -242,17 +410,27 @@ async function fetchMeteredTurn(env) {
     try {
       shape = describeShape(JSON.parse(errorText));
     } catch (_) {}
-    console.log(`metered turn credential fetch failed (${res.status}):`, shape);
-    throw new Error(`metered turn credential fetch failed: ${res.status}`);
+    logEvent({
+      event: 'provider_error',
+      route: '/turn',
+      scope: 'metered',
+      status: res.status,
+      shape,
+    });
+    throw new ProviderFailure('http_error', res.status);
   }
 
-  const servers = await res.json();
+  const servers = await readProviderJson('metered', res);
   const creds = extractCredentials(servers);
   if (!creds) {
-    console.log('metered /turn unexpected payload shape:', describeShape(servers));
-    throw new Error(
-      `metered response carried no credentials (got ${describeShape(servers)})`,
-    );
+    logEvent({
+      event: 'provider_error',
+      route: '/turn',
+      scope: 'metered',
+      status: res.status,
+      shape: describeShape(servers),
+    });
+    throw new ProviderFailure('bad_payload');
   }
 
   const url =
@@ -270,26 +448,63 @@ async function fetchMeteredTurn(env) {
   };
 }
 
-async function handleTurn(env) {
+/// The kill switch: set TURN_ENABLED to "false" (a secret or a dashboard
+/// variable, not [vars] in wrangler.toml, which every deploy would overwrite)
+/// and /turn stops calling providers at once. `String()` so a TOML boolean
+/// `false` works the same as the text.
+function relayDisabled(env) {
+  return String(env.TURN_ENABLED).trim().toLowerCase() === 'false';
+}
+
+async function handleTurn(request, env) {
+  if (relayDisabled(env)) {
+    logEvent({ event: 'relay_disabled', route: '/turn', status: 503 });
+    return json({ error: 'relay_disabled' }, { status: 503, cors: false });
+  }
+
+  const limited = await enforceLimits(request, env, '/turn', TURN_LIMITS, {
+    failOpen: false,
+    cors: false,
+  });
+  if (limited) return limited;
+
   const [cloudflare, metered] = await Promise.allSettled([
     fetchCloudflareTurn(env),
     fetchMeteredTurn(env),
   ]);
 
   if (cloudflare.status === 'rejected' && metered.status === 'rejected') {
+    // Nothing was asked of any provider: the deploy has no secrets for either.
+    if (cloudflare.reason?.notConfigured && metered.reason?.notConfigured) {
+      logEvent({ event: 'relay_unconfigured', route: '/turn', status: 503 });
+      return json({ error: 'relay_unconfigured' }, { status: 503, cors: false });
+    }
+
     // An unconfigured provider is reported as `skipped` rather than as an
     // error, so a Cloudflare-only deployment that genuinely breaks still reads
     // as one clear failure instead of two.
-    const describe = (r) =>
-      r.reason && r.reason.notConfigured
-        ? { skipped: r.reason.message }
-        : { error: String(r.reason) };
+    //
+    // A failure is a fixed code and, for an error status, that number. The
+    // rest of what went wrong is in the log (a structural description), never
+    // here: this body goes to whoever called a public route.
+    const describe = (scope, r) => {
+      if (r.reason && r.reason.notConfigured) return { skipped: r.reason.message };
+      if (r.reason instanceof ProviderFailure) {
+        return r.reason.status === undefined
+          ? { error: r.reason.code }
+          : { error: r.reason.code, status: r.reason.status };
+      }
+      // Not one of ours: a bug. Say only what kind it was.
+      logEvent({ event: 'provider_error', route: '/turn', scope, shape: errorKind(r.reason) });
+      return { error: 'unreachable' };
+    };
 
+    logEvent({ event: 'provider_error', route: '/turn', status: 502 });
     return json(
       {
-        error: 'no TURN provider available',
-        cloudflare: describe(cloudflare),
-        metered: describe(metered),
+        error: 'provider_error',
+        cloudflare: describe('cloudflare', cloudflare),
+        metered: describe('metered', metered),
       },
       { status: 502, cors: false },
     );
@@ -309,10 +524,29 @@ async function handleTurn(env) {
   return json(body, { cors: false });
 }
 
+/// KV refused the call, most likely because the free tier's daily quota
+/// (1000 writes, 100k reads) is spent. Reported, not thrown: an unhandled
+/// exception would reach the client as an opaque 1101 with no Retry-After.
+function storageUnavailable(scope) {
+  logEvent({ event: 'storage_unavailable', route: '/r', scope, status: 503 });
+  return json(
+    { error: 'storage_unavailable' },
+    { status: 503, headers: { 'Retry-After': RETRY_AFTER_SECONDS } },
+  );
+}
+
 async function handleRoomPost(request, env, roomId) {
   if (!ROOM_ID_RE.test(roomId)) {
     return text('invalid room id', 400);
   }
+  // Before the body is read and before KV is touched: a refused request must
+  // cost neither buffering nor a write against the daily quota.
+  const limited = await enforceLimits(request, env, '/r', ROOM_POST_LIMITS, {
+    failOpen: true,
+    cors: true,
+  });
+  if (limited) return limited;
+
   const contentLength = request.headers.get('content-length');
   if (contentLength !== null) {
     const len = parseInt(contentLength, 10);
@@ -320,22 +554,37 @@ async function handleRoomPost(request, env, roomId) {
       return text('invalid blob size', 400);
     }
   }
-  const blob = await request.arrayBuffer();
-  if (blob.byteLength === 0 || blob.byteLength > MAX_BLOB_BYTES) {
+  const blob = await readCapped(request, MAX_BLOB_BYTES);
+  if (blob === null || blob.byteLength === 0) {
     return text('invalid blob size', 400);
   }
   // Plain overwrite, not create-once: the room is a bulletin board a sender
   // and receiver can both post to during a handshake (offer, then answer),
   // not a single-write slot. Each POST also refreshes the TTL.
-  await env.RENDEZVOUS_KV.put(`room:${roomId}`, blob, { expirationTtl: TTL_SECONDS });
+  try {
+    await env.RENDEZVOUS_KV.put(`room:${roomId}`, blob, { expirationTtl: TTL_SECONDS });
+  } catch (_) {
+    return storageUnavailable('kv_put');
+  }
   return text(null, 201);
 }
 
-async function handleRoomGet(env, roomId) {
+async function handleRoomGet(request, env, roomId) {
   if (!ROOM_ID_RE.test(roomId)) {
     return text('invalid room id', 400);
   }
-  const blob = await env.RENDEZVOUS_KV.get(`room:${roomId}`, 'arrayBuffer');
+  const limited = await enforceLimits(request, env, '/r', ROOM_GET_LIMITS, {
+    failOpen: true,
+    cors: true,
+  });
+  if (limited) return limited;
+
+  let blob;
+  try {
+    blob = await env.RENDEZVOUS_KV.get(`room:${roomId}`, 'arrayBuffer');
+  } catch (_) {
+    return storageUnavailable('kv_get');
+  }
   if (blob === null) {
     return text('not found', 404);
   }
@@ -353,9 +602,7 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/turn') {
-      const denied = await authorizeTurn(request, env);
-      if (denied) return denied;
-      return handleTurn(env);
+      return handleTurn(request, env);
     }
 
     const roomMatch = url.pathname.match(/^\/r\/([^/]+)$/);
@@ -367,7 +614,7 @@ export default {
         return text('invalid room id', 400);
       }
       if (request.method === 'POST') return handleRoomPost(request, env, roomId);
-      if (request.method === 'GET') return handleRoomGet(env, roomId);
+      if (request.method === 'GET') return handleRoomGet(request, env, roomId);
     }
 
     return text('not found', 404);
