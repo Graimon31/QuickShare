@@ -91,8 +91,9 @@ void main() {
     );
   });
 
-  test('paste failures do not tell the user to point a camera', () async {
-    const raw = 'directdrop://join?p=not-a-payload';
+  test('a typed code that leads to nothing readable does not tell the user to '
+      'point a camera', () async {
+    const raw = 'not-a-payload';
     when(() => mockReceiverRepository.parseQRCode(raw))
         .thenAnswer((_) async => const Left(FileFailure('Invalid QR Code')));
 
@@ -101,7 +102,7 @@ void main() {
       emits(isA<ReceiverError>().having(
         (e) => e.message,
         'message',
-        contains('share link'),
+        allOf(contains('code'), isNot(contains('camera')), isNot(contains('link'))),
       )),
     );
     receiverBloc.add(const QRCodeScanned(raw, fromPaste: true));

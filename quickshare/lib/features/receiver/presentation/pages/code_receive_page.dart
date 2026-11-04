@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/features/receiver/data/client/code_lookup.dart';
+import 'package:quickshare/features/receiver/data/client/code_search.dart';
 import 'package:quickshare/features/receiver/data/client/code_session_resolver.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
@@ -20,7 +22,11 @@ import 'package:quickshare/l10n/gen/app_localizations.dart';
 /// Digits and nothing else. A computer has no camera to scan with and joins
 /// only this way; a phone reaches the same screen from the scanner's "Enter
 /// code". There is no field for a pasted link or a raw QR: the QR is scanned,
-/// and a share link opens from outside the app (see `LinkReceivePage`).
+/// and the digits are typed.
+///
+/// The code is looked for on the local network and, at the same moment, on the
+/// internet, because the code does not say which kind of offer it belongs to.
+/// Whichever proves the code first is the sender; the other search is stopped.
 class CodeReceivePage extends StatefulWidget {
   /// How the typed code is looked for. The real network search unless a test
   /// supplies its own.
@@ -38,12 +44,21 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
   String? _inputError;
   bool _isSubmitting = false;
 
+  /// The search in progress, so that it can be stopped at any stage — by the
+  /// Cancel button, by leaving the screen — and so that it can say how far it
+  /// has got.
+  CodeSearchControl? _search;
+  CodeSearchPhase _phase = CodeSearchPhase.searching;
+
   final FocusNode _focusNode = FocusNode();
 
   late final CodeLookup _lookup = widget.lookup ?? CodeLookup();
 
   @override
   void dispose() {
+    // A search left running would go on listening on a mailbox for a screen
+    // that is gone.
+    _search?.cancel();
     _focusNode.dispose();
     _controller.dispose();
     super.dispose();
@@ -54,6 +69,17 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       _controller.clear();
       _inputError = null;
       _isSubmitting = false;
+    });
+  }
+
+  /// The person gave up while the search was going on. Whatever it had open is
+  /// released by the search itself; this only returns the screen to the field.
+  void _cancelSearch() {
+    _search?.cancel();
+    _search = null;
+    setState(() {
+      _isSubmitting = false;
+      _phase = CodeSearchPhase.searching;
     });
   }
 
@@ -77,20 +103,42 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
 
   /// Finds the device offering [code] and starts collecting from it.
   ///
-  /// The code never leaves this device. It is the password of a proof run
-  /// against every device that might be the sender, bound to the TLS
-  /// certificate each presents: a device that does not hold the code cannot
-  /// answer in a way this side accepts, and until one does, nothing — not the
-  /// code, not this device's name — has been sent to anyone. What an
-  /// announcement says about itself (its hint, its fingerprint) only decides
-  /// who is asked first; it is never what is trusted. See
-  /// [CodeSessionResolver].
+  /// The code never leaves this device. On the local network it is the password
+  /// of a proof run against every device that might be the sender, bound to
+  /// the TLS certificate each presents; over the internet it is the password of
+  /// a proof run through a public mailbox that sees every message and is
+  /// trusted with none. A device that does not hold the code cannot answer in
+  /// a way this side accepts, and until one does, nothing — not the code, not
+  /// this device's name — has been sent to anyone. What an announcement says
+  /// about itself only decides who is asked first; it is never what is
+  /// trusted. See [CodeLookup].
   Future<void> _startFromCode(SessionCode code) async {
     final l10n = AppLocalizations.of(context);
+    final search = CodeSearchControl();
+    _search = search;
+    setState(() => _phase = CodeSearchPhase.searching);
+    final phases = search.phases.listen((phase) {
+      if (mounted) setState(() => _phase = phase);
+    });
 
-    final outcome = await _lookup.find(code);
+    final CodeSessionOutcome outcome;
+    try {
+      outcome = await _lookup.find(code, control: search);
+    } catch (e) {
+      // A search that broke is not a search that found nothing, but the person
+      // is not left looking at a spinner either.
+      AppLogger.warning('Code search failed: ${e.runtimeType}', tag: 'CODE');
+      unawaited(phases.cancel());
+      if (!mounted || search.isCancelled) return;
+      _search = null;
+      _fail(l10n.inviteUnreachable);
+      return;
+    }
+    unawaited(phases.cancel());
 
-    if (!mounted) return;
+    // Stopped by the person, or by leaving: nothing to report to anyone.
+    if (!mounted || search.isCancelled) return;
+    _search = null;
 
     switch (outcome) {
       case CodeSessionFound(:final payload):
@@ -102,6 +150,10 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
         context
             .read<ReceiverBloc>()
             .add(QRCodeScanned(payload.encode(), fromPaste: true));
+      case CodeSessionFoundOnline(:final payload):
+        AppLogger.info('Session code matched a sender over the internet',
+            tag: 'CODE');
+        context.read<ReceiverBloc>().add(QRCodeScanned(payload, fromPaste: true));
       case CodeSessionDeclined():
         _fail(l10n.inviteDeclined);
       case CodeSessionNotFound():
@@ -109,7 +161,9 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
           'No device proved it holds the session code',
           tag: 'CODE',
         );
-        _fail(l10n.codeReceiveNotFoundLan);
+        _fail(l10n.codeReceiveNotFound);
+      case CodeSessionNoNetwork():
+        _fail(l10n.codeReceiveNoNetwork);
       case CodeSessionUpdateRequired():
         _fail(l10n.codeReceiveUpdateRequired);
       case CodeSessionUnreachable():
@@ -245,9 +299,12 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
               : const Icon(Icons.download_rounded,
                   size: 18, color: Colors.white),
           label: Text(
-              _isSubmitting
-                  ? l10n.codeReceiveSearchingLan
-                  : l10n.codeReceiveReceiveButton,
+              !_isSubmitting
+                  ? l10n.codeReceiveReceiveButton
+                  : (_phase == CodeSearchPhase.awaitingApproval
+                      ? l10n.codeReceiveAwaitingApproval
+                      : l10n.codeReceiveSearching),
+              textAlign: TextAlign.center,
               style: GoogleFonts.inter(
                   color: Colors.white, fontWeight: FontWeight.w600)),
           style: ElevatedButton.styleFrom(
@@ -258,6 +315,22 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
             elevation: 6,
           ),
         ),
+        if (_isSubmitting) ...[
+          const SizedBox(height: 12),
+          OutlinedButton(
+            key: const ValueKey('code-search-cancel'),
+            onPressed: _cancelSearch,
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              side: const BorderSide(color: Color.fromRGBO(255, 255, 255, 0.3)),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16)),
+            ),
+            child: Text(l10n.commonCancel,
+                style: GoogleFonts.inter(
+                    color: Colors.white, fontWeight: FontWeight.w600)),
+          ),
+        ],
         if (_inputError != null) ...[
           const SizedBox(height: 16),
           Text(_inputError!,

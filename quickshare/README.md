@@ -125,7 +125,7 @@ The other way to start the same session on the local network is the code:
 
 ### Codes change every 5 minutes
 
-Whatever a sender shows — the digits, the QR, an internet link — is replaced
+Whatever a sender shows — the digits and the QR — is replaced
 every 5 minutes (`AppConstants.sessionCodeLifetime`) for as long as the screen
 stays up, with the time left counted down beside it. The old code and QR stop
 working at that moment.
@@ -144,8 +144,12 @@ working at that moment.
   stale code is replaced at once; on a phone the server is also asked whether it
   still answers, and the offer starts over if the system took it away.
 - **Internet.** An offer nobody has answered is replaced by a fresh one (new
-  seed, new rendezvous topic, new QR and link) and the old peer connection and
-  subscription are closed. Once an answer has arrived it is left alone.
+  seed, new rendezvous topic, new QR, a new ten-digit code and with it a new
+  request topic) and the old peer connection and subscriptions are closed; the
+  old code is answered by nobody from that moment. It waits while a dialog is
+  open and for 60 seconds after a receiver was let in; if no answer comes in
+  that time it is replaced as usual. Once an answer has arrived it is left
+  alone, and the code stops answering anyone else.
 - **Bluetooth.** The advertisement is restarted under a new code. It is left
   alone while a receiver is connected or connecting.
 - **Hotspot.** The transfer QR is replaced; the network and the Wi-Fi code that
@@ -174,17 +178,100 @@ desktop                                        phone
   └───────── DataChannel, file in chunks ────────┘
 ```
 
-An internet offer also carries a copyable link, `directdrop://join?p=…`, for a
-receiver with no camera. Opening it — from a messenger or the file manager —
-launches the app on a screen of its own that hands the link to the receiver and
-goes on to the usual preview; there is no field anywhere in the app to paste it
-into. It is the only way an internet transfer reaches a computer, which has no
-QR to scan and no digits to type for that path.
+### Finding an internet sender by its code
+
+An internet offer shows a ten-digit code beside its QR, the same way a Wi-Fi
+offer does, and a computer — which has no camera — types it. The receiver's one
+code screen looks for the code on the local network and over the internet **at
+the same time**, because the code does not say which kind of offer it belongs
+to. Whichever search proves the code first wins and the other is stopped and
+released; a receiver tells its name to at most one of them. A code is made fresh
+for the internet offer and has nothing to do with any local-network code.
+
+The mailbox is public, so the code is never put into anything the public can
+test. What a relay or the Worker sees is, in order:
+
+```
+receiver                                              sender (listening on T)
+  n (16 B), replyTopic;  subscribe replyTopic
+  {v, n, pA, reply, ts}  ── T ───────────────────────►  SPAKE2 with its code
+                                                        subscribe confirmTopic
+  ◄───────────────────────────────  {pB, cB} ── reply ──
+  check cB: wrong → ignore, keep listening
+  subscribe payloadTopic
+  AEAD{cA, name} ─ confirmTopic ─────────────────────►  check cA
+                                                        a person is asked
+  ◄──────── AEAD{offer} or AEAD{declined} ─ payloadTopic
+```
+
+- **`T`, the request topic, reveals 12 bits of the code and nothing more.** It
+  is HKDF of 12 bits of a domain-separated hash of the code, spelled like every
+  other topic (22 characters). At most 4096 topics exist, so many unrelated
+  sessions share each one; a topic cannot tell two codes with the same 12 bits
+  apart. Ten billion codes hashed into a topic would be searched in seconds, so
+  no topic carries more. The sender announces no `publicId` and no `ch` for an
+  internet offer, anywhere.
+- **The proof is SPAKE2 (P-256), as for the local network**, with the code as
+  the password and both identities carrying the domain
+  `directdrop-internet-code-v1` and the request's nonce `n`. `pA`, `pB` and the
+  confirmations are what the public sees; none of them can be tested against a
+  guessed code without the other end's private scalar, so a guess costs one
+  online run. A point that is not on the curve is refused.
+- **Everything after the proof is sealed.** HKDF over `Ke` and `n` gives the
+  ChaCha20-Poly1305 key and the two topics only a holder of the code can name
+  (`confirmTopic`, `payloadTopic`). The receiver's name and the offer travel
+  only inside AEAD messages whose associated data names the message kind and
+  `n`, so one cannot be replayed as another or into another run.
+- **Nothing is handed over until a person says yes.** After the sender checks
+  `cA` it shows the same approval dialog as on the local network, with the name
+  the receiver gave — text from the public mailbox, shown as data with control
+  and direction characters removed. 90 seconds, or it is a refusal; the
+  receiver then sees "Declined". On yes, the sender publishes the offer — the
+  string its QR holds — and the receiver goes on exactly as after a scan: the
+  usual preview, then the usual sealed answer keyed by the seed in that offer.
+- **Each side listens before it provokes a reply**, because Nostr keeps nothing
+  for a subscriber that was late; the Nostr channel waits for the relay's
+  `EOSE` before it calls a subscription live. Both channels carry every
+  message; the first copy wins, repeats are dropped, and a failure or a `429`
+  on one never stops the other. If both are down the receiver says it cannot
+  reach the internet service rather than that the code is wrong.
+- **What the sender will not do.** It drops a request older (or later) than 2
+  minutes, one whose nonce it has seen (the Worker keeps the last value for 30
+  minutes), anything over its size bounds before parsing, and anything that is
+  not exactly the format. It runs at most one SPAKE2 a second and 30 for a
+  code; after that it answers nobody until the code is replaced, and says so in
+  its log. A wrong confirmation gives nothing back. Only one dialog is open per
+  code; a second receiver is refused.
+- **Timeouts, each its own:** the receiver gives up looking after 20 seconds,
+  waits up to 95 seconds for the person, and takes a silent sender after proof
+  for "could not reach that device"; the sender waits 30 seconds for a
+  confirmation after replying. On the Worker the sender reads each room every 5
+  seconds, not the 2 the sealed answer uses, because this one stays open for
+  minutes.
+- **What a relay or the Worker operator learns:** that an address looked for a
+  topic of 12 bits at some time, the receiver's `pA`, and later the sizes and
+  times of sealed messages. Not the code, the name, the file name or the offer.
+  A receiver does this for **any** code it is typed, including one belonging to
+  a sender on its own network, so the 12 bits of a local code are visible to
+  those operators too (see Known limitations).
+
+**What has been checked.** Unit and widget tests run the real sender, the real
+search and the real cryptography over an in-memory mailbox that loses a message
+for a subscriber that was late, repeats, delays and reorders messages, drops one
+of two channels and forges messages. The Nostr and Worker channels are tested
+against local stand-ins for a relay and for `/r/:roomId`, not against the
+services themselves. `integration_test/code_internet_e2e_test.dart` moves a file
+over a real WebRTC connection after a code was typed (macOS, not part of CI), and
+`integration_test/live_code_rendezvous_check.dart` runs the exchange against the
+real relays and the real Worker and prints the delay of each step; it is run by
+hand and no result of it is recorded in this repository. Nothing has been run
+between two physical devices.
 
 `QS1` is seed plus offer. `QS2` additionally carries the file name (clipped to
 80 bytes), the size and the item count, so the receiver can show what is coming
-before the DataChannel opens; those travel in the QR code only, never through a
-relay.
+before the DataChannel opens. They travel in the QR code; when the offer is
+found by its code they also cross the mailbox, but only inside the sealed
+hand-over above, never in the clear.
 
 The answer is published to two kinds of drop point **at the same time**, and
 whichever delivers first wins; the other copy is dropped as a duplicate:
@@ -242,8 +329,8 @@ without it."
 receiver a phone.** Neither side lists devices: a receiver does not advertise
 itself to be picked, and a sender does not scan for or show the devices around
 it. Scanning needs a camera, so a phone receives over Bluetooth and a computer
-does not. A computer receives with the code on the local network or over the
-internet link, and it can still *send* over Bluetooth to a phone. The Bluetooth
+does not. A computer receives with the code, on the local network or over the
+internet, and it can still *send* over Bluetooth to a phone. The Bluetooth
 screen shows the QR and nothing to type: there is nowhere to type a code into a
 Bluetooth session.
 
@@ -316,9 +403,9 @@ deployment runs at any moment.
 | Dependency | What it is for | If it is unavailable |
 |---|---|---|
 | **STUN pool** — five public hosts (Cloudflare, two Russian, two Google) | Learning each side's public address | No server-reflexive candidates. Gathering gives up waiting after 6 s and goes ahead with what it has: a path that needs none (the same network) can still work; one that needs a public address cannot |
-| **Nostr relays** — five public relays | One of the two ways the sealed answer returns | The Worker mailbox carries it |
-| **The Worker mailbox** (`/r/<topic>`) | The other way the answer returns | The Nostr relays carry it |
-| **Both of the above** | — | The sender stops before it shows a QR code that would lead nowhere: "Could not start the transfer over the internet." (the log adds "No public rendezvous channel could be reached. Check the internet connection and try again.") |
+| **Nostr relays** — five public relays | One of the two ways the sealed answer returns, and one of the two ways a typed code finds an internet sender | The Worker mailbox carries it |
+| **The Worker mailbox** (`/r/<topic>`) | The other way both go | The Nostr relays carry it |
+| **Both of the above** | — | The sender stops before it shows a QR code and a code that would lead nowhere: "Could not start the transfer over the internet." (the log adds "No public rendezvous channel could be reached. Check the internet connection and try again."). A receiver who types a code then sees "Could not reach the internet service, and no sender was found on the local network…" instead of "not found" |
 | **The Worker's `POST /turn`** | Short-lived (30 minute) TURN credentials from Cloudflare Calls TURN, and from Metered when the Worker is configured with it | No relay credentials. The session goes ahead with STUN only — or with a private TURN account if the build was given one (see Configuration). A direct path is unaffected. If the direct path then fails (a VPN, a symmetric NAT) the connection ends with a specific message, below |
 | **A TURN provider** | Carrying the bytes when no direct path exists | The Worker answers `provider_error` and the same "relay could not be reached" message appears |
 
@@ -347,9 +434,15 @@ and sees:
 
 - `POST /turn` hands out relay credentials. It sees the requester's IP address,
   as any web server does.
-- `/r/<topic>` stores a sealed blob of at most 8 KB for 30 minutes, under a
-  topic id derived from the seed in the QR code. It never holds file bytes, and
-  it cannot read the blob.
+- `/r/<topic>` stores a blob of at most 8 KB for 30 minutes, under a topic id:
+  derived from the seed in the QR code for the sealed answer, and for finding a
+  sender by its code a request topic (shared by everyone whose code has the same
+  12 bits), a random reply topic, and two topics only the two ends can derive.
+  The code exchange's first two messages are not secret (a SPAKE2 share and a
+  nonce); everything after is sealed. It never holds file bytes, and it cannot
+  read what is sealed. One room holds one value and the last write wins, so two
+  receivers asking for codes that share a request topic at the same moment can
+  overwrite each other; the one that loses finds nothing and tries again.
 - The Worker's own log lines carry the route, the limit that was hit and the
   status — not client addresses, topic ids or credentials.
 - File bytes never touch it. A relayed transfer's bytes pass a TURN provider as
@@ -367,7 +460,8 @@ at all.
 | Transport | What protects the bytes | What vouches for the other end |
 |---|---|---|
 | **QHTP** (LAN, hotspot, peer link, Bluetooth-started link) | HTTPS with the per-session P-256 certificate, plus a bearer token on every route except `/v2/health`, `/v2/pake/start` and `/v2/invite/request` | The pinned certificate fingerprint. Where it comes from decides how far that goes — see the next table |
-| **Code entry** | The same HTTPS | SPAKE2 with the code as the password, bound to the certificate fingerprint actually served; the code is not sent |
+| **Code entry, local** | The same HTTPS | SPAKE2 with the code as the password, bound to the certificate fingerprint actually served; the code is not sent |
+| **Code entry, internet** | ChaCha20-Poly1305 under a key from the SPAKE2 `Ke`, for the receiver's name and the offer; then DTLS as above | SPAKE2 with the code as the password, bound to a per-run nonce, through a public mailbox that is trusted with none of it |
 | **WebRTC** | DTLS on the DataChannel. DirectDrop adds no second layer of its own to the file | The DTLS fingerprint of the offer travels in the QR code; the answer, which carries the other fingerprint, is sealed under a key derived from the seed in the QR code, with the offer's SHA-256 as associated data so an answer cannot be replayed into a later session |
 | **Bluetooth** | Nothing, at the Bluetooth layer: the GATT service is not bonded and its characteristics are not encrypted. The hotspot credentials an Android or desktop host offers are sealed (X25519 key exchange, ChaCha20-Poly1305). The file does not cross Bluetooth | See Known limitations |
 
@@ -378,6 +472,7 @@ delivered it:
 |---|---|---|
 | The QR code | Through the camera | Strong: it is what the person is looking at |
 | Code entry | Proven through SPAKE2 | Strong, up to the guessing limits below |
+| Code entry, internet | An offer sealed under the proof's key, from a sender that passed it | The same strength as code entry: a guess is one online run, counted by the sender |
 | A Bluetooth-started link | An unencrypted GATT frame | Passive listeners at best |
 
 ---
@@ -410,6 +505,17 @@ minute for the whole session; past that the sender answers **429**
 exchanges can be open at once, each for 30 seconds, after which it answers 503
 (`BUSY`). A person has 90 seconds to approve a request that proved the code. The
 code is ten digits, a little over 33 bits.
+
+**Guessing the code over the internet.** Each request to the sender is one
+guess for whoever made it. The sender answers at most one a second and 30 per
+code, at most 8 exchanges wait for a confirmation at once (30 seconds each), and
+a request older than 2 minutes or with a nonce it has seen is dropped without
+being counted. After the 30th the code answers nobody until it is replaced, at
+most 5 minutes later. That also means anyone who knows a code's request topic
+— 12 bits, so 4096 values — can use up its 30 attempts and lock the real receiver
+out for the rest of the code's life; the sender sees nothing but a burnt
+budget. A sender's Worker use is two writes per exchange (10 a minute per IP
+allowed), and reads 12 a minute per open topic.
 
 **Relayed transfers.** A TURN relay is used only when ICE finds no direct path.
 Once the connection is up, and before sending anything, the sender asks which
@@ -530,11 +636,28 @@ discover them.
    other: a receiver does not advertise its name and a Bluetooth sender shows no
    list. A Bluetooth session is joined by scanning its QR, which takes a camera,
    so it reaches phones. Typing the session's code does not join it — code entry
-   looks for local-network senders only — so a computer receives over Wi-Fi with
-   a code, or over the internet link. This is deliberate.
+   looks for local-network and internet senders, not Bluetooth ones — so a
+   computer receives with a code over Wi-Fi or over the internet. This is
+   deliberate.
 5. **The code is short.** What protects it is that the exchange is online-only
    (a captured SPAKE2 run gives nothing to test guesses against) and rate-limited
    as above. Limitation 1 is the way around that, which is why it matters.
+6. **Typing a code tells the public mailbox 12 bits of it, whoever the sender
+   is.** The receiver looks on the local network and over the internet at once
+   and cannot know in advance which; the internet half publishes the request
+   topic (12 bits of a hash of the code) and a SPAKE2 share. For a sender on the
+   same network that is 12 bits the relay operators should not have had. They are
+   independent of the 8-bit hint a local offer announces on the network, so
+   someone who saw both the network announcement and the mailbox would know about
+   20 bits of a code that has 33; the local server's rate limits still stand
+   between that and the rest.
+7. **An internet code can be burnt by anyone who knows its topic.** See the
+   guessing limits above: a lock-out for the rest of the code's 5 minutes, not a
+   way in.
+8. **The mailbox can lose, repeat and reorder messages, and the Worker keeps
+   one value per room.** The protocol never depends on one message arriving, and
+   every step has a timeout and its own message, but a receiver whose request
+   was overwritten sees "not found" after 20 seconds and has to try again.
 
 ---
 
@@ -611,18 +734,22 @@ lib/
 │   │                credentials)
 │   ├── network/     lan_discovery.dart, session_tls_identity.dart,
 │   │                code_pake.dart, session_code.dart, local_hotspot_service.dart,
-│   │                peer_link_service.dart, direct_link_coordinator.dart
+│   │                peer_link_service.dart, direct_link_coordinator.dart,
+│   │                internet_code.dart, internet_code_sender.dart
 │   ├── signaling/   answer_channel.dart, nostr_answer_channel.dart,
 │   │                worker_answer_channel.dart, rendezvous_channels.dart,
-│   │                sealed_envelope.dart, serverless_qr.dart
+│   │                sealed_envelope.dart, serverless_qr.dart,
+│   │                code_mailbox.dart, nostr_code_mailbox.dart,
+│   │                worker_code_mailbox.dart, code_mailbox_factory.dart
 │   ├── storage/     safe_path.dart, durable_file.dart, disk_space.dart
 │   ├── webrtc/      compact_sdp.dart, ice_gathering.dart, ice_servers.dart,
 │   │                turn_credential_service.dart, turn_credential_refresher.dart
 │   └── router/, theme/, di/, errors/, permissions/, utils/
 ├── features/
 │   ├── sender/      indexer, local_http_server, transports, sender_bloc
-│   └── receiver/    qhtp_receiver_client, code_session_resolver, transports,
-│                    session store, receiver_bloc
+│   └── receiver/    qhtp_receiver_client, code_lookup, code_session_resolver,
+│                    internet_code_search, transports, session store,
+│                    receiver_bloc
 └── shared/          models, widgets
 ```
 

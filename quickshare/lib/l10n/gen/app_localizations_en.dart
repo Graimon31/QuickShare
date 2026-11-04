@@ -76,7 +76,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get homeReceiveSubtitleDesktop => 'Enter the code from the sender';
 
   @override
-  String get homeReceiveSubtitleMobile => 'Scan a QR code to download';
+  String get homeReceiveSubtitleMobile =>
+      'Scan a QR code or enter the sender\'s code';
 
   @override
   String get homeDropHere => 'Drop file here to send';
@@ -369,9 +370,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get qrDisplayPreparingDetail => 'Generating a secure QR session';
 
   @override
-  String get qrDisplayScanOrShare => 'Scan the QR or share the link';
-
-  @override
   String get qrDisplayScanOrEnterCode => 'Scan the QR or enter the code';
 
   @override
@@ -385,10 +383,6 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get qrDisplayShareLinkToReceive =>
-      'Share this link to receive the file';
-
-  @override
   String get qrDisplayScanToReceive => 'Scan this QR code to receive the file';
 
   @override
@@ -399,12 +393,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String qrDisplayRenderError(String error) {
     return 'QR Render Error: $error';
   }
-
-  @override
-  String get qrDisplayShareLinkLabel => 'Share link';
-
-  @override
-  String get qrDisplayLinkCopied => 'Link copied to clipboard';
 
   @override
   String qrDisplayTotalSize(String size) {
@@ -620,12 +608,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get codeReceiveCodeInvalid => 'Enter all ten digits of the code.';
 
   @override
-  String get linkReceiveOpening => 'Opening the shared link…';
-
-  @override
-  String get linkReceiveOpeningDetail => 'Checking what is being sent';
-
-  @override
   String get codeReceiveHint => '12345 67890';
 
   @override
@@ -644,34 +626,32 @@ class AppLocalizationsEn extends AppLocalizations {
   String get codeReceiveDownloadButton => 'Download';
 
   @override
-  String get codeReceiveConnecting => 'Connecting to sender…';
-
-  @override
-  String get codeReceiveConnectingDetail =>
-      'Keep the Mac on the Share screen. Same Wi‑Fi required for local signaling; LTE needs a public signaling + TURN server.';
-
-  @override
   String get codeReceiveTransferFailed => 'Transfer failed';
 
   @override
-  String codeReceiveSignalingError(String url) {
-    return 'Signaling server unreachable ($url). Specify a remote server using:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com';
-  }
-
-  @override
   String get codeReceiveTryAnother => 'Try another code';
-
-  @override
-  String get codeReceiveNotFoundLan =>
-      'No sender with this code was found. The code may be wrong or may have expired — codes change every 5 minutes. Check it and make sure both devices are on the same Wi-Fi network.';
 
   @override
   String get codeReceiveUpdateRequired =>
       'The other device is running a different version of DirectDrop and cannot take this code. Update DirectDrop on both devices, then try again.';
 
   @override
-  String get codeReceiveSearchingLan =>
-      'Searching for sender on local network…';
+  String get codeReceiveNotFound =>
+      'Sender not found. Check the code: it changes every 5 minutes. For a local network both devices must be on the same network.';
+
+  @override
+  String get codeReceiveSearching => 'Looking for the sender…';
+
+  @override
+  String get codeReceiveAwaitingApproval =>
+      'Waiting for the sender to confirm…';
+
+  @override
+  String get codeReceiveNoNetwork =>
+      'Could not reach the internet service, and no sender was found on the local network. Check your connection and the code, then try again.';
+
+  @override
+  String get codeCopied => 'Code copied to clipboard';
 
   @override
   String get qrScanCameraPermission => 'Camera permission required';

@@ -52,6 +52,8 @@ void main() {
         deviceName: 'Test Laptop',
         discoveryWindow: Duration.zero,
         probeTargets: (_) async => const [],
+        // This file is about the browse; the internet search has its own.
+        lanOnly: true,
       );
 
   test('building a lookup listens for nothing', () {
@@ -82,6 +84,7 @@ void main() {
       deviceName: 'Test Laptop',
       discoveryWindow: Duration.zero,
       probeTargets: (_) async => throw StateError('boom'),
+      lanOnly: true,
     );
 
     await expectLater(throwing.find(code), throwsStateError);
@@ -97,6 +100,7 @@ void main() {
       deviceName: 'Test Laptop',
       discoveryWindow: Duration.zero,
       probeTargets: (_) async => const [],
+      lanOnly: true,
     ).find(code);
 
     expect(outcome, isA<CodeSessionNotFound>(),

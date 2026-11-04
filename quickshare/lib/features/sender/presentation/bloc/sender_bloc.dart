@@ -18,6 +18,8 @@ import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/direct_link_driver.dart';
+import 'package:quickshare/core/network/internet_code.dart';
+import 'package:quickshare/core/network/internet_code_sender.dart';
 import 'package:quickshare/core/network/lan_discovery.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
@@ -26,6 +28,8 @@ import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/network/session_rotation.dart';
 import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
+import 'package:quickshare/core/signaling/code_mailbox.dart';
+import 'package:quickshare/core/signaling/code_mailbox_factory.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/signaling/worker_answer_channel.dart'
     show PayloadAcceptor;
@@ -33,6 +37,7 @@ import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/utils/device_name.dart';
+import 'package:uuid/uuid.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/core/webrtc/relay_availability.dart';
@@ -223,7 +228,6 @@ class QRReady extends SenderState {
   final String qrData;
   final TransferSession session;
   final TransportType mode;
-  final String? webLinkUrl;
 
   /// How many files this session carries, and how many bytes in total.
   ///
@@ -249,12 +253,10 @@ class QRReady extends SenderState {
   /// selection. Only what the screen says about the size is provisional.
   final bool indexing;
 
-  /// The short numeric code for this session, on the transports where one is
-  /// offered.
-  ///
-  /// Null for the internet transport, which hands over a link instead: the two
-  /// devices are not in the same room there, so reading digits aloud is not an
-  /// option and the link is the only thing that travels.
+  /// The short numeric code for this session. A receiver types it to find the
+  /// offer: on the local network for a Wi-Fi offer, through the public
+  /// mailbox for an internet one. Null only for the single-file path that has
+  /// no code.
   final SessionCode? code;
 
   /// When the code and QR above stop working and are replaced. The screen
@@ -265,7 +267,6 @@ class QRReady extends SenderState {
     this.qrData,
     this.session,
     this.mode, {
-    this.webLinkUrl,
     this.itemCount = 1,
     this.folderName,
     this.totalBytes = 0,
@@ -283,7 +284,6 @@ class QRReady extends SenderState {
         qrData,
         session,
         mode,
-        webLinkUrl: webLinkUrl,
         itemCount: itemCount,
         folderName: folderName,
         totalBytes: totalBytes,
@@ -297,7 +297,6 @@ class QRReady extends SenderState {
         qrData,
         session,
         mode,
-        webLinkUrl,
         itemCount,
         totalBytes,
         folderName,
@@ -572,6 +571,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   AnswerChannel? _answerChannel;
   StreamSubscription<Uint8List>? _answerSubscription;
 
+  /// Listens for receivers that typed this offer's code. One per offer: a
+  /// rotation stops it and builds the next with the new code.
+  InternetCodeSender? _codeSender;
+
+  /// The offer string the code hands to an approved receiver — what the QR on
+  /// screen holds.
+  String? _internetOffer;
+
+  /// Questions put to the person on behalf of a receiver that came by the
+  /// internet code, by request id. The local server owns the others.
+  final Map<String, TransferApprovalRequest> _internetApprovals = {};
+
   /// Builds the transport an internet send runs on. Null in production, where
   /// it is a fresh [WebRtcTransferTransport]; a test hands in one with its own
   /// ICE budget.
@@ -585,6 +596,15 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// Builds the radio an Bluetooth send runs on. Null in production, where it
   /// is a fresh [BluetoothTransferTransport].
   final BluetoothTransferTransport Function()? _bluetoothTransportFactory;
+
+  /// Builds the public mailbox an internet code is found through. Null in
+  /// production, where it is [buildCodeMailbox]; a test hands in one that stays
+  /// in process.
+  final CodeMailbox Function()? _codeMailboxFactory;
+
+  /// The curve arithmetic of the code exchange, and the limits around it.
+  final InternetCodePake _codePake;
+  final InternetCodeTimings _codeTimings;
 
   /// Says, for as long as a Wi-Fi offer is on screen, that there is a session
   /// to find by its code — and nothing else, at any other time.
@@ -630,6 +650,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     BluetoothTransferTransport Function()? bluetoothTransportFactory,
     AnswerChannel Function({PayloadAcceptor? acceptPayload})?
         rendezvousChannelFactory,
+    CodeMailbox Function()? codeMailboxFactory,
+    InternetCodePake? codePake,
+    InternetCodeTimings? codeTimings,
     RendezvousAdvertiser? advertiser,
     DateTime Function()? now,
   })  : hotspot = hotspotService ?? LocalHotspotService(),
@@ -639,6 +662,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _webRtcTransportFactory = webRtcTransportFactory,
         _bluetoothTransportFactory = bluetoothTransportFactory,
         _rendezvousChannelFactory = rendezvousChannelFactory,
+        _codeMailboxFactory = codeMailboxFactory,
+        _codePake = codePake ?? const InternetCodePake(),
+        _codeTimings = codeTimings ?? const InternetCodeTimings(),
         _advertiser = advertiser ?? NsdRendezvousAdvertiser(),
         _now = now ?? DateTime.now,
         super(SenderInitial()) {
@@ -767,12 +793,16 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       ));
     } else {
       repository.respondToApproval(event.request.id, false);
+      // A question that came by the internet code is not the server's to
+      // settle, and one left open would hold the code until it timed out.
+      event.request.complete(false);
     }
   }
 
   void _onRespondToInviteApproval(
       RespondToInviteApproval event, Emitter<SenderState> emit) {
     repository.respondToApproval(event.requestId, event.accepted);
+    _internetApprovals.remove(event.requestId)?.complete(event.accepted);
     final current = state;
     if (current is InviteApprovalRequested) {
       emit(current.previousState);
@@ -789,7 +819,80 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _relayBlockedSubscription = null;
     final channel = _answerChannel;
     _answerChannel = null;
+    await _stopCodeRendezvous();
     await channel?.close();
+  }
+
+  /// Starts listening for receivers that type [code], and lets them have
+  /// [offer] once a person here has agreed.
+  ///
+  /// Throws when no public channel could be reached: a code that nobody can
+  /// find the offer by is worse than none.
+  Future<void> _startCodeRendezvous(SessionCode code, String offer) async {
+    _internetOffer = offer;
+    final sender = InternetCodeSender(
+      mailbox: (_codeMailboxFactory ?? buildCodeMailbox)(),
+      code: code,
+      offer: () async => _internetOffer,
+      approve: _askAboutInternetReceiver,
+      hold: _rotation.hold,
+      release: _rotation.release,
+      timings: _codeTimings,
+      pake: _codePake,
+      now: _now,
+    );
+    _codeSender = sender;
+    await sender.start();
+  }
+
+  Future<void> _stopCodeRendezvous() async {
+    final sender = _codeSender;
+    _codeSender = null;
+    _internetOffer = null;
+    // Whoever was being asked is told no, so that no question outlives the
+    // listener it was asked for.
+    for (final request in _internetApprovals.values.toList()) {
+      request.complete(false);
+      // And the dialog that showed it goes with it.
+      if (!isClosed) {
+        add(RespondToInviteApproval(requestId: request.id, accepted: false));
+      }
+    }
+    _internetApprovals.clear();
+    await sender?.stop();
+  }
+
+  /// The question the local server asks for a receiver on the network, asked
+  /// for a receiver that came through the public mailbox: the same dialog,
+  /// with the name the receiver gave — shown as the text it is.
+  Future<bool> _askAboutInternetReceiver(String deviceName) {
+    final shown = state;
+    if (isClosed || shown is! QRReady || shown.mode != TransportType.internet) {
+      return Future.value(false);
+    }
+    final request = TransferApprovalRequest(
+      id: const Uuid().v4(),
+      remoteAddress: null,
+      deviceName: deviceName.isEmpty ? '?' : deviceName,
+      itemCount: shown.itemCount,
+      totalBytes: shown.totalBytes,
+    );
+    _internetApprovals[request.id] = request;
+    add(InviteApprovalReceived(request));
+
+    // Like the server's own questions, this one ends when nobody answers: the
+    // receiver is told no, and the dialog goes with the question instead of
+    // staying up over an offer that has already moved on.
+    final decided = request.decision.timeout(_codeTimings.dialogTimeout,
+        onTimeout: () {
+      request.complete(false);
+      return false;
+    });
+    unawaited(decided.then((accepted) {
+      if (isClosed || !_internetApprovals.containsKey(request.id)) return;
+      add(RespondToInviteApproval(requestId: request.id, accepted: accepted));
+    }));
+    return decided;
   }
 
   /// Builds the QR the desktop shows and starts listening for the answer.
@@ -846,6 +949,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           // Somebody answered this offer, so it is no longer an offer to
           // replace but a negotiation to see through.
           _rotation.hold(_answerHold);
+          // The offer is taken, by a scan or by the code. From here the code
+          // answers no one else, and the hold that kept it in place while the
+          // answer was awaited is the transfer's to keep.
+          _codeSender?.answered();
+          unawaited(_stopCodeRendezvous());
           AppLogger.info(
               'Sender: sealed answer opened, ${answer.candidates.length} '
               'candidates',
@@ -1062,6 +1170,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
             'internet connection and try again.');
       }
 
+      // The code a receiver without a camera types. Listening before it is
+      // shown, so that the first request cannot arrive into the void.
+      final code = SessionCode.generate();
+      await _startCodeRendezvous(code, qrPayloadData);
+
       // Cancelled while the offer was being built: whatever was raised for it
       // is torn down here, because nothing else knows it exists.
       if (generation != _sessionGeneration || isClosed) {
@@ -1075,6 +1188,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         qrPayloadData,
         _makeDummySession(_sessionDisplay ?? file),
         mode,
+        code: code,
         itemCount: session.length,
         totalBytes: session.fold<int>(0, (sum, f) => sum + f.size),
         folderName: _sessionFolderName,
@@ -2049,11 +2163,13 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       unawaited(hotspot.leaveNetwork().catchError((_) {}));
     }
     await peerLink.stop();
-    await _fastPathSubscription?.cancel();
+    // Not awaited, as in [_closeAnswerChannel]: these are broadcast streams,
+    // cancelled by the time `cancel` returns.
+    unawaited(_fastPathSubscription?.cancel());
     _fastPathSubscription = null;
-    await _receiverReadySubscription?.cancel();
+    unawaited(_receiverReadySubscription?.cancel());
     _receiverReadySubscription = null;
-    await _noPathSubscription?.cancel();
+    unawaited(_noPathSubscription?.cancel());
     _noPathSubscription = null;
     _bluetoothSessionCode = null;
     await _closeAnswerChannel();

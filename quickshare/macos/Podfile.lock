@@ -1,6 +1,4 @@
 PODS:
-  - app_links (6.4.1):
-    - FlutterMacOS
   - desktop_drop (0.0.1):
     - FlutterMacOS
   - file_picker (0.0.1):
@@ -35,7 +33,6 @@ PODS:
   - WebRTC-SDK (125.6422.06)
 
 DEPENDENCIES:
-  - app_links (from `Flutter/ephemeral/.symlinks/plugins/app_links/macos`)
   - desktop_drop (from `Flutter/ephemeral/.symlinks/plugins/desktop_drop/macos`)
   - file_picker (from `Flutter/ephemeral/.symlinks/plugins/file_picker/macos`)
   - file_selector_macos (from `Flutter/ephemeral/.symlinks/plugins/file_selector_macos/macos`)
@@ -56,8 +53,6 @@ SPEC REPOS:
     - WebRTC-SDK
 
 EXTERNAL SOURCES:
-  app_links:
-    :path: Flutter/ephemeral/.symlinks/plugins/app_links/macos
   desktop_drop:
     :path: Flutter/ephemeral/.symlinks/plugins/desktop_drop/macos
   file_picker:
@@ -88,7 +83,6 @@ EXTERNAL SOURCES:
     :path: Flutter/ephemeral/.symlinks/plugins/wakelock_plus/macos
 
 SPEC CHECKSUMS:
-  app_links: 05a6ec2341985eb05e9f97dc63f5837c39895c3f
   desktop_drop: 10a3e6a7fa9dbe350541f2574092fecfa345a07b
   file_picker: 7584aae6fa07a041af2b36a2655122d42f578c1a
   file_selector_macos: 9e9e068e90ebee155097d00e89ae91edb2374db7

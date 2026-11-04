@@ -76,7 +76,8 @@ class AppLocalizationsRu extends AppLocalizations {
   String get homeReceiveSubtitleDesktop => 'Введите код отправителя';
 
   @override
-  String get homeReceiveSubtitleMobile => 'Отсканируйте QR-код';
+  String get homeReceiveSubtitleMobile =>
+      'Отсканируйте QR-код или введите код отправителя';
 
   @override
   String get homeDropHere => 'Перетащите файл сюда для отправки';
@@ -373,9 +374,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get qrDisplayPreparingDetail => 'Создаём защищённую QR-сессию';
 
   @override
-  String get qrDisplayScanOrShare => 'Отсканируйте QR или отправьте ссылку';
-
-  @override
   String get qrDisplayScanOrEnterCode => 'Отсканируйте QR или введите код';
 
   @override
@@ -389,10 +387,6 @@ class AppLocalizationsRu extends AppLocalizations {
   }
 
   @override
-  String get qrDisplayShareLinkToReceive =>
-      'Отправьте эту ссылку, чтобы получить файл';
-
-  @override
   String get qrDisplayScanToReceive =>
       'Отсканируйте этот QR-код, чтобы получить файл';
 
@@ -404,12 +398,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String qrDisplayRenderError(String error) {
     return 'Ошибка отрисовки QR: $error';
   }
-
-  @override
-  String get qrDisplayShareLinkLabel => 'Ссылка';
-
-  @override
-  String get qrDisplayLinkCopied => 'Ссылка скопирована';
 
   @override
   String qrDisplayTotalSize(String size) {
@@ -627,12 +615,6 @@ class AppLocalizationsRu extends AppLocalizations {
   String get codeReceiveCodeInvalid => 'Введите все десять цифр кода.';
 
   @override
-  String get linkReceiveOpening => 'Открываем ссылку…';
-
-  @override
-  String get linkReceiveOpeningDetail => 'Проверяем, что вам отправляют';
-
-  @override
   String get codeReceiveHint => '12345 67890';
 
   @override
@@ -652,33 +634,32 @@ class AppLocalizationsRu extends AppLocalizations {
   String get codeReceiveDownloadButton => 'Скачать';
 
   @override
-  String get codeReceiveConnecting => 'Подключаемся к отправителю…';
-
-  @override
-  String get codeReceiveConnectingDetail =>
-      'Держите Mac открытым на экране передачи. В одной Wi-Fi сети сигнализация работает напрямую; через LTE нужен публичный сервер сигнализации и TURN.';
-
-  @override
   String get codeReceiveTransferFailed => 'Передача не удалась';
 
   @override
-  String codeReceiveSignalingError(String url) {
-    return 'Сервер сигнализации недоступен ($url). Укажите свой сервер через:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com';
-  }
-
-  @override
   String get codeReceiveTryAnother => 'Попробовать другой код';
-
-  @override
-  String get codeReceiveNotFoundLan =>
-      'Отправитель с этим кодом не найден. Код может быть неверным или уже истёк — коды меняются каждые 5 минут. Проверьте код и убедитесь, что оба устройства подключены к одной сети Wi-Fi.';
 
   @override
   String get codeReceiveUpdateRequired =>
       'На другом устройстве установлена другая версия DirectDrop, и оно не может принять этот код. Обновите DirectDrop на обоих устройствах и повторите попытку.';
 
   @override
-  String get codeReceiveSearchingLan => 'Поиск отправителя в локальной сети…';
+  String get codeReceiveNotFound =>
+      'Отправитель не найден. Проверьте код: он меняется каждые 5 минут. Для локальной сети оба устройства должны быть в одной сети.';
+
+  @override
+  String get codeReceiveSearching => 'Ищем отправителя…';
+
+  @override
+  String get codeReceiveAwaitingApproval =>
+      'Ждём подтверждения на устройстве отправителя…';
+
+  @override
+  String get codeReceiveNoNetwork =>
+      'Нет связи с интернет-сервисом, а в локальной сети отправитель не найден. Проверьте подключение и код и повторите попытку.';
+
+  @override
+  String get codeCopied => 'Код скопирован';
 
   @override
   String get qrScanCameraPermission => 'Нужен доступ к камере';

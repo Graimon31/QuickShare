@@ -143,6 +143,83 @@ void main() {
     });
   }
 
+  group('the internet offer', () {
+    QRReady internetOffer(DateTime expiresAt) => QRReady(
+          'QS2-QR-DATA-FOR-TEST',
+          _session(),
+          TransportType.internet,
+          code: code,
+          itemCount: 3,
+          totalBytes: 2048,
+          expiresAt: expiresAt,
+        );
+
+    for (final desktop in [true, false]) {
+      group(desktop ? 'on a desktop' : 'on a phone', () {
+        setUp(() => DevicePlatform.debugIsDesktop = desktop);
+
+        testWidgets('shows the QR and the ten digits beside it, as the local '
+            'offer does', (tester) async {
+          showing(internetOffer(DateTime.now().add(const Duration(minutes: 5))));
+          await _mount(tester, bloc, const QRDisplayPage());
+
+          expect(find.byType(QrImageView), findsOneWidget);
+          expect(find.text(code.display), findsOneWidget);
+          expect(find.text('Code for the receiving device'), findsOneWidget);
+          expect(find.text('Scan the QR or enter the code'), findsOneWidget);
+          await tester.pumpWidget(const SizedBox());
+        });
+
+        testWidgets('counts down to the next code, like the local one',
+            (tester) async {
+          showing(internetOffer(
+              DateTime.now().add(const Duration(minutes: 4, seconds: 30))));
+          await _mount(tester, bloc, const QRDisplayPage());
+
+          expect(find.byType(OfferCountdown), findsOneWidget);
+          expect(find.textContaining('Code and QR change in'), findsOneWidget);
+          await tester.pumpWidget(const SizedBox());
+        });
+
+        testWidgets('has nothing about sharing or copying a link',
+            (tester) async {
+          showing(internetOffer(DateTime.now().add(const Duration(minutes: 5))));
+          await _mount(tester, bloc, const QRDisplayPage());
+
+          expect(find.textContaining(RegExp('link', caseSensitive: false)),
+              findsNothing);
+          expect(find.textContaining('directdrop://'), findsNothing);
+          expect(find.byIcon(Icons.link), findsNothing);
+          expect(find.textContaining(RegExp('share (the|this) link|share link',
+                  caseSensitive: false)),
+              findsNothing);
+          // The one thing that can be copied is the code.
+          final copyRows = tester.widgetList<CopyValueRow>(find.byType(CopyValueRow));
+          expect(copyRows.map((r) => r.value), [code.display]);
+          await tester.pumpWidget(const SizedBox());
+        });
+
+        testWidgets('the code is the same sort of row as on the local offer',
+            (tester) async {
+          showing(internetOffer(DateTime.now().add(const Duration(minutes: 5))));
+          await _mount(tester, bloc, const QRDisplayPage());
+          final internetRow =
+              tester.widget<CopyValueRow>(find.byType(CopyValueRow));
+          await tester.pumpWidget(const SizedBox());
+
+          showing(_offer(code, DateTime.now().add(const Duration(minutes: 5))));
+          await _mount(tester, bloc, const QRDisplayPage());
+          final localRow = tester.widget<CopyValueRow>(find.byType(CopyValueRow));
+
+          expect(internetRow.label, localRow.label);
+          expect(internetRow.icon, localRow.icon);
+          expect(internetRow.value, localRow.value);
+          await tester.pumpWidget(const SizedBox());
+        });
+      });
+    }
+  });
+
   group('the countdown', () {
     testWidgets('counts down by the clock it is given, never below zero',
         (tester) async {

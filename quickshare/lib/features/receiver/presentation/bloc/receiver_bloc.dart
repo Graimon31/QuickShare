@@ -44,9 +44,9 @@ class StartScanning extends ReceiverEvent {}
 class QRCodeScanned extends ReceiverEvent {
   final String rawData;
 
-  /// True when the payload was pasted or opened as a link, not read by camera.
-  /// The error copy has to say so: telling a desktop user to point the
-  /// camera at the QR is how a failed paste currently reads as a hang.
+  /// True when the payload came from a typed code, not from a camera. The
+  /// error copy has to say so: telling a desktop user to point the camera at
+  /// the QR is how a failed code currently reads as a hang.
   final bool fromPaste;
 
   const QRCodeScanned(this.rawData, {this.fromPaste = false});
@@ -297,7 +297,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       await result.fold(
         (failure) async => emit(ReceiverError(
           event.fromPaste
-              ? 'That is not a DirectDrop share link. Copy the link under the QR on the sender — not the Wi-Fi address.'
+              ? 'The sender\'s offer for that code could not be read. Check the code, or ask the sender to start again.'
               : 'Invalid QR Code. Point the camera at the QR on the sender screen — not at the Wi‑Fi address text under it.',
         )),
         (payload) async {

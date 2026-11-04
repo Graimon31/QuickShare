@@ -47,18 +47,5 @@
 	<string>DirectDrop uses Bluetooth to send and receive files with nearby Macs without a network.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>DirectDrop uses Bluetooth to advertise file transfer availability to nearby devices.</string>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Viewer</string>
-			<key>CFBundleURLName</key>
-			<string>com.directdrop.app.sharelink</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>directdrop</string>
-			</array>
-		</dict>
-	</array>
 </dict>
 </plist>

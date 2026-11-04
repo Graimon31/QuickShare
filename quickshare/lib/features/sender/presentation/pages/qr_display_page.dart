@@ -8,10 +8,8 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:quickshare/core/router/send_routes.dart';
-import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
-import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
@@ -103,18 +101,6 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
               );
             }
 
-            final isInternet = qrState.mode == TransportType.internet;
-            // The Room Link goes everywhere: it is the one way to hand a
-            // session over without a camera, so it is not platform-gated.
-            final shareLink = DeepLinkService.buildPayloadLink(
-              qrState.qrData,
-              name: qrState.session.fileMetadata.name,
-              bytes: qrState.totalBytes > 0
-                  ? qrState.totalBytes
-                  : qrState.session.fileMetadata.size,
-              itemCount: qrState.itemCount,
-            );
-
             return ScrollConfiguration(
               behavior:
                   ScrollConfiguration.of(context).copyWith(scrollbars: false),
@@ -131,9 +117,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                       children: [
                         // Subtitle instruction
                         Text(
-                          isInternet
-                              ? l10n.qrDisplayScanOrShare
-                              : l10n.qrDisplayScanOrEnterCode,
+                          l10n.qrDisplayScanOrEnterCode,
                           textAlign: TextAlign.center,
                           style: GoogleFonts.inter(
                             fontSize: 18,
@@ -142,17 +126,15 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                           ),
                         ).animate().fadeIn(),
 
-                        if (!isInternet) ...[
-                          const SizedBox(height: 6),
-                          Text(
-                            l10n.qrDisplayPhoneHint,
-                            textAlign: TextAlign.center,
-                            style: GoogleFonts.inter(
-                              fontSize: 13,
-                              color: Colors.white.withValues(alpha: 0.70),
-                            ),
-                          ).animate().fadeIn(),
-                        ],
+                        const SizedBox(height: 6),
+                        Text(
+                          l10n.qrDisplayPhoneHint,
+                          textAlign: TextAlign.center,
+                          style: GoogleFonts.inter(
+                            fontSize: 13,
+                            color: Colors.white.withValues(alpha: 0.70),
+                          ),
+                        ).animate().fadeIn(),
 
                         const SizedBox(height: 24),
 
@@ -218,25 +200,15 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         ).animate().scale(delay: 150.ms, duration: 350.ms),
 
                         const SizedBox(height: 20),
-                        // A link is the only thing that travels when the two
-                        // people are not together, so the internet transport
-                        // keeps it. On the local ones they are in the same
-                        // room, where ten digits read aloud beat a link that
-                        // has to go through a messenger to get across.
-                        if (isInternet)
-                          CopyValueRow(
-                            icon: Icons.link,
-                            label: l10n.qrDisplayShareLinkLabel,
-                            value: shareLink,
-                            copiedMessage: l10n.qrDisplayLinkCopied,
-                            copyTooltip: l10n.commonCopy,
-                          ).animate().fadeIn(delay: 250.ms)
-                        else if (qrState.code != null)
+                        // The same ten digits whichever way the offer travels: a
+                        // computer types them, and the app looks for the sender
+                        // on the local network and over the internet at once.
+                        if (qrState.code != null)
                           CopyValueRow(
                             icon: Icons.pin_rounded,
                             label: l10n.codeLabel,
                             value: qrState.code!.display,
-                            copiedMessage: l10n.qrDisplayLinkCopied,
+                            copiedMessage: l10n.codeCopied,
                             copyTooltip: l10n.commonCopy,
                           ).animate().fadeIn(delay: 250.ms),
 

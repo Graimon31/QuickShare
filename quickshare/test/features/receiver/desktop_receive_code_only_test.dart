@@ -20,6 +20,7 @@ import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/platform/device_platform.dart';
 import 'package:quickshare/core/router/app_router.dart';
 import 'package:quickshare/features/receiver/data/client/code_lookup.dart';
+import 'package:quickshare/features/receiver/data/client/code_search.dart';
 import 'package:quickshare/features/receiver/data/client/code_session_resolver.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/features/receiver/presentation/pages/code_receive_page.dart';
@@ -46,13 +47,14 @@ class _Wifi extends PeerLinkService {
 
 /// What the screen asked the network for, and what it was told.
 class _Lookup extends CodeLookup {
-  _Lookup() : super();
+  _Lookup() : super(lanOnly: true);
 
   final List<SessionCode> asked = [];
   CodeSessionOutcome outcome = const CodeSessionNotFound();
 
   @override
-  Future<CodeSessionOutcome> find(SessionCode code) async {
+  Future<CodeSessionOutcome> find(SessionCode code,
+      {CodeSearchControl? control}) async {
     asked.add(code);
     return outcome;
   }
@@ -295,8 +297,8 @@ void main() {
       await _teardown(tester);
     });
 
-    testWidgets('a code nobody offers says so — and that it may have expired',
-        (tester) async {
+    testWidgets('a code nobody offers says so — and that it changes every five '
+        'minutes, without promising a Wi-Fi network', (tester) async {
       await mount(tester);
 
       await tester.enterText(find.byType(TextField), '1234567890');
@@ -304,9 +306,11 @@ void main() {
       await tester.tap(find.text('Receive'));
       await _frames(tester, 3);
 
-      expect(find.textContaining('expired'), findsOneWidget,
+      expect(find.textContaining('changes every 5 minutes'), findsOneWidget,
           reason: 'codes change every five minutes: "not found" has to say '
               'that is one of the reasons');
+      expect(find.textContaining('Wi-Fi'), findsNothing,
+          reason: 'the sender may be anywhere: no promise about Wi-Fi');
       await _teardown(tester);
     });
   });

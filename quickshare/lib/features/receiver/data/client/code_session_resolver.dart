@@ -10,6 +10,7 @@ import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/network/session_tls_identity.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/features/receiver/data/client/code_search.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 
 /// Where a candidate sender might be listening.
@@ -26,9 +27,24 @@ class CodeSessionFound extends CodeSessionOutcome {
   const CodeSessionFound(this.payload);
 }
 
+/// A sender reached over the internet that proved it holds the code, and
+/// agreed. [payload] is the offer it handed over, exactly what its QR code
+/// holds: from here the receiver goes the way a scan goes.
+class CodeSessionFoundOnline extends CodeSessionOutcome {
+  final String payload;
+  const CodeSessionFoundOnline(this.payload);
+}
+
 /// A sender that proved it holds the code, and said no.
 class CodeSessionDeclined extends CodeSessionOutcome {
   const CodeSessionDeclined();
+}
+
+/// Nothing was found on the local network, and the public services that
+/// carry the internet search could not be reached at all. Told apart from
+/// [CodeSessionNotFound] because "check the code" would be the wrong advice.
+class CodeSessionNoNetwork extends CodeSessionOutcome {
+  const CodeSessionNoNetwork();
 }
 
 /// Nothing that could prove it holds the code was found: no sender, or the
@@ -158,7 +174,12 @@ class CodeSessionResolver {
   }
 
   /// Finds the sender of [code], and asks it for the session.
-  Future<CodeSessionOutcome> resolve(SessionCode code) async {
+  ///
+  /// With a [gate], the search is one of two running side by side: it stops
+  /// when the gate does, and it must win the gate before it reveals this
+  /// device to the sender it just proved.
+  Future<CodeSessionOutcome> resolve(SessionCode code,
+      {SearchGate? gate}) async {
     final hint = code.discoveryHint;
     final winner = Completer<_Verified?>();
     final started = <String>{};
@@ -230,7 +251,12 @@ class CodeSessionResolver {
 
     final _Verified? verified;
     try {
-      verified = await winner.future;
+      verified = gate == null
+          ? await winner.future
+          : await Future.any<_Verified?>([
+              winner.future,
+              gate.stopped.then<_Verified?>((_) => null),
+            ]);
     } finally {
       window?.cancel();
       await updates?.cancel();
@@ -246,6 +272,7 @@ class CodeSessionResolver {
     }
 
     if (verified == null) {
+      if (gate != null && gate.isStopped) return const CodeSessionNotFound();
       // A device that answered the proof and failed it outranks one that
       // could not run it: a wrong code is the more useful thing to say.
       if (sawWrongProof) return const CodeSessionNotFound();
@@ -253,11 +280,19 @@ class CodeSessionResolver {
       return const CodeSessionNotFound();
     }
 
+    // Proved is not chosen: with another search running, only the first to
+    // prove the code gets to say who this device is.
+    if (gate != null && !gate.tryClaim()) {
+      verified.client.close(force: true);
+      return const CodeSessionNotFound();
+    }
+
     AppLogger.info(
       'Session code proved to ${verified.address.address}:${verified.port}',
       tag: 'CODE',
     );
-    return _invite(verified);
+    gate?.awaitingApproval();
+    return _invite(verified, gate);
   }
 
   /// Runs the proof against one candidate. Never throws: every failure is a
@@ -389,8 +424,11 @@ class CodeSessionResolver {
   /// address for the sender to push it to: an earlier version offered one, and
   /// the sender then POSTed the token in plaintext to whatever was listening
   /// there.
-  Future<CodeSessionOutcome> _invite(_Verified sender) async {
+  Future<CodeSessionOutcome> _invite(_Verified sender, SearchGate? gate) async {
     final client = sender.client;
+    // The person here may give up while the person there is deciding. Closing
+    // the connection is what ends the wait.
+    unawaited(gate?.stopped.then((_) => client.close(force: true)));
     try {
       final uri = Uri.parse(
           'https://${sender.address.address}:${sender.port}/v2/invite/request');

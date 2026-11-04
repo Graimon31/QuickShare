@@ -203,35 +203,10 @@ class NostrAnswerChannel implements AnswerChannel {
     await Future<void>.delayed(const Duration(milliseconds: 250));
   }
 
-  /// Builds a signed NIP-01 event. The id is the SHA-256 of the canonical
-  /// serialization `[0, pubkey, created_at, kind, tags, content]`.
+  /// Builds a signed NIP-01 event. See [buildNostrEvent].
   @visibleForTesting
-  Map<String, dynamic> buildEvent(String topic, Uint8List payload) {
-    final pubkey = _hex(Bip340.publicKey(_secretKey));
-    final createdAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-    final tags = [
-      ['t', topic]
-    ];
-    final content = base64.encode(payload);
-
-    final serialized =
-        jsonEncode([0, pubkey, createdAt, eventKind, tags, content]);
-    final id = Uint8List.fromList(sha256.convert(utf8.encode(serialized)).bytes);
-
-    final random = Random.secure();
-    final auxRand =
-        Uint8List.fromList(List<int>.generate(32, (_) => random.nextInt(256)));
-
-    return {
-      'id': _hex(id),
-      'pubkey': pubkey,
-      'created_at': createdAt,
-      'kind': eventKind,
-      'tags': tags,
-      'content': content,
-      'sig': _hex(Bip340.sign(id, _secretKey, auxRand)),
-    };
-  }
+  Map<String, dynamic> buildEvent(String topic, Uint8List payload) =>
+      buildNostrEvent(secretKey: _secretKey, topic: topic, payload: payload);
 
   /// Relays cap subscription ids at 64 characters.
   @visibleForTesting
@@ -239,9 +214,6 @@ class NostrAnswerChannel implements AnswerChannel {
     final clean = topic.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
     return 'qs${clean.length > 32 ? clean.substring(0, 32) : clean}';
   }
-
-  static String _hex(Uint8List bytes) =>
-      bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
   @override
   Future<void> close() async {
@@ -257,4 +229,44 @@ class NostrAnswerChannel implements AnswerChannel {
     _connections.clear();
     if (!_controller.isClosed) await _controller.close();
   }
+}
+
+/// A signed NIP-01 event carrying [payload] under the tag `t = topic`. The id
+/// is the SHA-256 of the canonical serialization
+/// `[0, pubkey, created_at, kind, tags, content]`.
+///
+/// Shared by every Nostr-backed channel so that what a relay checks before it
+/// forwards an event is written once.
+Map<String, dynamic> buildNostrEvent({
+  required Uint8List secretKey,
+  required String topic,
+  required Uint8List payload,
+}) {
+  String hex(Uint8List bytes) =>
+      bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+
+  final pubkey = hex(Bip340.publicKey(secretKey));
+  final createdAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+  final tags = [
+    ['t', topic]
+  ];
+  final content = base64.encode(payload);
+
+  final serialized = jsonEncode(
+      [0, pubkey, createdAt, NostrAnswerChannel.eventKind, tags, content]);
+  final id = Uint8List.fromList(sha256.convert(utf8.encode(serialized)).bytes);
+
+  final random = Random.secure();
+  final auxRand =
+      Uint8List.fromList(List<int>.generate(32, (_) => random.nextInt(256)));
+
+  return {
+    'id': hex(id),
+    'pubkey': pubkey,
+    'created_at': createdAt,
+    'kind': NostrAnswerChannel.eventKind,
+    'tags': tags,
+    'content': content,
+    'sig': hex(Bip340.sign(id, secretKey, auxRand)),
+  };
 }

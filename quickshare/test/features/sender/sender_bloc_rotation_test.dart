@@ -13,6 +13,7 @@
 // test's end collect them.
 // ignore_for_file: close_sinks
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -21,13 +22,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/crypto/spake2.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/errors/failures.dart';
+import 'package:quickshare/core/network/internet_code.dart';
 import 'package:quickshare/core/network/lan_discovery.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
+import 'package:quickshare/core/signaling/code_mailbox.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/signaling/worker_answer_channel.dart'
@@ -41,7 +45,12 @@ import 'package:quickshare/features/sender/domain/entities/transfer_session.dart
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
+import 'package:quickshare/features/receiver/data/client/code_search.dart';
+import 'package:quickshare/features/receiver/data/client/code_session_resolver.dart';
+import 'package:quickshare/features/receiver/data/client/internet_code_search.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
+
+import '../../support/fake_mailbox.dart';
 
 // ─── Fakes ───────────────────────────────────────────────────────────────
 
@@ -210,6 +219,8 @@ class _Bloc extends SenderBloc {
     super.webRtcTransportFactory,
     super.bluetoothTransportFactory,
     super.rendezvousChannelFactory,
+    super.codeMailboxFactory,
+    super.codePake,
     super.diagnostics,
     super.hotspotService,
     super.peerLinkService,
@@ -223,7 +234,8 @@ class _Harness {
       {_Repository? repo,
       WebRtcTransferTransport Function()? webRtc,
       BluetoothTransferTransport Function()? bluetooth,
-      AnswerChannel Function({PayloadAcceptor? acceptPayload})? channels})
+      AnswerChannel Function({PayloadAcceptor? acceptPayload})? channels,
+      CodeMailbox Function()? mailbox})
       : repo = repo ?? _Repository() {
     final hotspot = _MockHotspot();
     when(hotspot.stopHosting).thenAnswer((_) async {});
@@ -237,8 +249,22 @@ class _Harness {
       webRtcTransportFactory: webRtc,
       bluetoothTransportFactory: bluetooth,
       rendezvousChannelFactory: channels,
+      // Never the real public mailbox: a test of the offer is not a test of
+      // Nostr.
+      codeMailboxFactory: mailbox ??
+          () {
+            final box = hub.endpoint('sender-${senderBoxes.length}');
+            senderBoxes.add(box);
+            return box;
+          },
+      codePake: const InternetCodePake(inline: true),
     );
   }
+
+  /// The public mailbox the code of an internet offer is found through, and
+  /// the participant each offer's listener got, oldest first.
+  final hub = FakeMailboxHub();
+  final senderBoxes = <FakeMailbox>[];
 
   static final epoch = DateTime.utc(2026, 11, 4, 12);
 
@@ -666,6 +692,316 @@ void main() {
     });
   });
 
+  group('the Internet tab: finding the offer by its code', () {
+    late List<_FakeWebRtc> transports;
+    late List<_FakeChannel> channels;
+
+    setUp(() {
+      transports = [];
+      channels = [];
+    });
+
+    _Harness internet(FakeAsync async, {CodeMailbox Function()? mailbox}) =>
+        _Harness(
+          async,
+          webRtc: () => _FakeWebRtc()..also(transports.add),
+          channels: ({PayloadAcceptor? acceptPayload}) =>
+              _FakeChannel()..also(channels.add),
+          mailbox: mailbox,
+        );
+
+    const file = FileMetadata(
+      name: 'offer.bin',
+      path: '/tmp/offer.bin',
+      size: 5,
+      mimeType: 'application/octet-stream',
+    );
+
+    void start(_Harness t) {
+      t.bloc.add(const StartSendingWithTransport(file, TransportType.internet));
+      t.settle();
+      t.pass(const Duration(milliseconds: 50));
+    }
+
+    /// A receiver that types [code], through the same public mailbox.
+    _Receiver typed(_Harness t, SessionCode code, {String name = 'Alice laptop'}) =>
+        _Receiver(t, code, name);
+
+    InviteApprovalRequested question(_Harness t) {
+      final s = t.bloc.state;
+      expect(s, isA<InviteApprovalRequested>(), reason: 'expected a dialog, got $s');
+      return s as InviteApprovalRequested;
+    }
+
+    void answer(_Harness t, bool accepted) {
+      t.bloc.add(RespondToInviteApproval(
+          requestId: question(t).request.id, accepted: accepted));
+      t.settle();
+    }
+
+    test('shows a ten-digit code beside the QR, with the same countdown', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final offer = t.offer;
+
+        expect(offer.mode, TransportType.internet);
+        expect(offer.code, isNotNull);
+        expect(offer.code!.code, hasLength(10));
+        expect(offer.expiresAt, _Harness.epoch.add(_five));
+      });
+    });
+
+    test('announces nothing on the network and nothing public about the code',
+        () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final offer = t.offer;
+
+        expect(t.advertiser.advertised, isEmpty, reason: 'no hint, no public id');
+        expect(t.advertiser.onAir, isNull);
+        // Listening is all it does: on the topic of twelve bits of the code.
+        expect(t.hub.listenedTopics, {InternetCode.requestTopic(offer.code!)});
+        expect(t.hub.published, isEmpty);
+      });
+    });
+
+    test('a receiver that types the code is asked about, by name, and gets '
+        'exactly the QR on screen once the person agrees', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final offer = t.offer;
+
+        final receiver = typed(t, offer.code!);
+        t.settle();
+        final dialog = question(t);
+        expect(dialog.request.deviceName, 'Alice laptop');
+        expect(dialog.request.remoteAddress, isNull);
+        expect(dialog.request.itemCount, offer.itemCount);
+        expect(receiver.outcome, isNull, reason: 'nothing before a yes');
+
+        answer(t, true);
+
+        expect(receiver.outcome, isA<CodeSessionFoundOnline>());
+        expect((receiver.outcome as CodeSessionFoundOnline).payload, offer.qrData);
+        expect(t.bloc.state, isA<QRReady>(), reason: 'back to the offer');
+      });
+    });
+
+    test('a wrong code is never asked about', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final offer = t.offer;
+        final wrong = SessionCode(
+            (int.parse(offer.code!.code) + 1).toString().padLeft(10, '0'));
+
+        final receiver = typed(t, wrong);
+        t.pass(const Duration(seconds: 25));
+
+        expect(receiver.outcome, isA<CodeSessionNotFound>());
+        expect(t.bloc.state, isA<QRReady>());
+        expect(t.repo.rotations, 0);
+      });
+    });
+
+    test('a refusal tells the receiver and returns to the offer, the code '
+        'unchanged', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final offer = t.offer;
+        final receiver = typed(t, offer.code!);
+        t.settle();
+
+        answer(t, false);
+
+        expect(receiver.outcome, isA<CodeSessionDeclined>());
+        expect(t.offer.code, offer.code);
+        expect(t.offer.qrData, offer.qrData);
+      });
+    });
+
+    test('a dialog nobody answers closes itself at ninety seconds, as a '
+        'refusal', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final receiver = typed(t, t.offer.code!);
+        t.settle();
+        question(t);
+
+        t.pass(const Duration(seconds: 89));
+        expect(t.bloc.state, isA<InviteApprovalRequested>());
+        t.pass(const Duration(seconds: 2));
+
+        expect(t.bloc.state, isA<QRReady>());
+        expect(receiver.outcome, isA<CodeSessionDeclined>());
+      });
+    });
+
+    test('while a dialog is open the code is not replaced, however late', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final first = t.offer;
+        // The dialog opens a minute before the deadline.
+        t.pass(_five - const Duration(minutes: 1));
+        typed(t, first.code!);
+        t.settle();
+        question(t);
+
+        t.pass(const Duration(seconds: 80));
+        expect(transports, hasLength(1), reason: 'the deadline passed, the code stayed');
+        expect(t.bloc.state, isA<InviteApprovalRequested>());
+        expect(question(t).previousState.code, first.code);
+      });
+    });
+
+    test('after consent the offer is held for the answer, for sixty seconds '
+        'and no longer; then it is replaced and the transfer is not counted',
+        () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final first = t.offer;
+        t.pass(_five - const Duration(seconds: 10));
+        final receiver = typed(t, first.code!);
+        t.settle();
+        answer(t, true);
+        expect(receiver.outcome, isA<CodeSessionFoundOnline>());
+
+        t.pass(const Duration(seconds: 55));
+        expect(transports, hasLength(1), reason: 'held while the answer is awaited');
+
+        t.pass(const Duration(seconds: 10));
+        t.pass(const Duration(milliseconds: 100));
+        expect(transports, hasLength(2), reason: 'the hold lapsed; it rotates');
+        final second = t.offer;
+        expect(second.code, isNot(first.code));
+        expect(second.qrData, isNot(first.qrData));
+        expect(t.bloc.state, isNot(isA<Transferring>()));
+        expect(t.senderBoxes, hasLength(2));
+        expect(t.senderBoxes.first.isClosed, isTrue,
+            reason: 'the old code stopped being listened for');
+      });
+    });
+
+    test('a rotation replaces the code and its topic together with the QR, '
+        'and the old code gets no answer', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final first = t.offer;
+
+        t.pass(_five);
+        t.pass(const Duration(milliseconds: 100));
+        final second = t.offer;
+
+        expect(second.code, isNot(first.code));
+        expect(second.qrData, isNot(first.qrData));
+        expect(t.senderBoxes.first.isClosed, isTrue);
+        expect(t.senderBoxes.first.subscribed, isEmpty);
+        // Only the new code's topic is listened on — unless, one time in 4096,
+        // the two share twelve bits, in which case it is the same topic.
+        expect(t.hub.listenedTopics, {InternetCode.requestTopic(second.code!)});
+
+        final stale = typed(t, first.code!);
+        t.pass(const Duration(seconds: 25));
+        expect(stale.outcome, isA<CodeSessionNotFound>(),
+            reason: 'the old code leads nowhere');
+        expect(t.bloc.state, isA<QRReady>(), reason: 'and nobody was asked');
+      });
+    });
+
+    test('an exchange that has not reached the dialog is abandoned by a '
+        'rotation', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final first = t.offer;
+        // A receiver that proves the code and then goes quiet.
+        final hand = _HalfReceiver(t, first.code!)..ask();
+        expect(hand.proved, isTrue);
+
+        t.pass(_five);
+        t.pass(const Duration(milliseconds: 100));
+        expect(t.offer.code, isNot(first.code));
+
+        hand.confirm();
+        t.settle();
+        expect(t.bloc.state, isA<QRReady>(), reason: 'no dialog for a dead exchange');
+        expect(t.repo.rotations, 0);
+      });
+    });
+
+    test('a sealed answer ends the code: nobody else is asked, the mailbox is '
+        'released and the offer stays held', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final offer = t.offer;
+        final qr = ServerlessQr.decode(offer.qrData);
+
+        unawaited(() async {
+          channels.single.deliver(await SealedEnvelope.seal(
+            plaintext: qr.offer.toBytes(),
+            seed: qr.seed,
+            offerFingerprint: qr.offerFingerprint,
+          ));
+        }());
+        t.pass(const Duration(milliseconds: 100));
+        expect(transports.single.answers, hasLength(1));
+        expect(t.senderBoxes.single.isClosed, isTrue);
+
+        final late = typed(t, offer.code!);
+        t.pass(const Duration(seconds: 25));
+        expect(late.outcome, isA<CodeSessionNotFound>());
+        expect(t.bloc.state, isA<QRReady>());
+
+        t.pass(const Duration(hours: 1));
+        expect(transports, hasLength(1), reason: 'still negotiating');
+      });
+    });
+
+    test('cancelling stops the listener and leaves nothing subscribed', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        typed(t, t.offer.code!);
+        t.settle();
+        question(t);
+
+        t.bloc.add(CancelSending());
+        t.pass(const Duration(milliseconds: 100));
+
+        expect(t.bloc.state, isA<SenderInitial>());
+        expect(t.senderBoxes.single.isClosed, isTrue);
+        expect(t.senderBoxes.single.subscribed, isEmpty,
+            reason: 'the sender listens for nothing any more');
+      });
+    });
+
+    test('with no public channel reachable the offer fails, instead of '
+        'showing a code that leads nowhere', () {
+      fakeAsync((async) {
+        late FakeMailbox box;
+        late _Harness t;
+        t = internet(async, mailbox: () {
+          box = t.hub.endpoint('dead')..down = true;
+          return box;
+        });
+        start(t);
+
+        expect(t.bloc.state, isA<SenderError>());
+        expect((t.bloc.state as SenderError).code, FailureCode.internetStartFailed);
+        expect(transports.single.stopped, isTrue);
+      });
+    });
+  });
+
   group('the Bluetooth tab', () {
     late List<_FakeBluetooth> radios;
 
@@ -848,4 +1184,77 @@ class _FakeBluetooth extends BluetoothTransferTransport {
 
   @override
   Future<void> stopSharing() async => stopped = true;
+}
+
+/// A receiver that types a code, through the public mailbox the harness owns.
+class _Receiver {
+  _Receiver(this.t, SessionCode code, String name) {
+    final control = CodeSearchControl();
+    InternetCodeSearch(
+      mailbox: () => t.hub.endpoint('receiver'),
+      pake: const InternetCodePake(inline: true),
+      now: t.now,
+    )
+        .run(code,
+            deviceName: name,
+            gate: CodeSearchArbiter(control).gate('internet'))
+        .then((o) => outcome = o);
+  }
+
+  final _Harness t;
+  CodeSessionOutcome? outcome;
+}
+
+/// A receiver written by hand, to stop it half way.
+class _HalfReceiver {
+  _HalfReceiver(this.t, SessionCode code)
+      : _begun = Spake2.start(
+            role: Spake2Role.a, w: InternetCodePake.passwordScalar(code)),
+        _code = code;
+
+  final _Harness t;
+  final SessionCode _code;
+  final Spake2 _begun;
+  final n = InternetCode.randomBytes(InternetCode.nonceLength);
+  final replyTopic = InternetCode.newReplyTopic();
+  Spake2Keys? keys;
+  InternetCodeKeys? derived;
+  bool proved = false;
+
+  void ask() {
+    final box = t.hub.endpoint('half')..subscribed.add(replyTopic);
+    box.publish(
+        InternetCode.requestTopic(_code),
+        CodeRequest(
+          n: n,
+          pA: _begun.share,
+          reply: replyTopic,
+          ts: t.now().millisecondsSinceEpoch ~/ 1000,
+        ).encode());
+    t.settle();
+    for (final m in t.hub.published.where((m) => m.topic == replyTopic)) {
+      final reply = CodeReply.tryParse(m.payload);
+      if (reply == null) continue;
+      keys = _begun.finish(reply.pB,
+          identityA: InternetCodePake.identityA(n),
+          identityB: InternetCodePake.identityB(n),
+          aad: utf8.encode('${InternetCode.domain}/pake'));
+      derived = InternetCodeKeys.derive(keys!.ke, n);
+      proved = keys!.verifies(Spake2Role.b, reply.cB);
+    }
+  }
+
+  void confirm() {
+    final box = t.hub.endpoint('half-confirm');
+    InternetCodeSeal.seal(
+      key: derived!.aeadKey,
+      role: SealRole.confirm,
+      n: n,
+      plaintext: utf8.encode(jsonEncode({
+        'cA': InternetCode.encode(keys!.confirmationA),
+        'name': 'Half',
+      })),
+    ).then((sealed) => box.publish(derived!.confirmTopic, sealed));
+    t.settle();
+  }
 }

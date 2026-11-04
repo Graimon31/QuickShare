@@ -29,7 +29,7 @@
   "homeAirdropAltSubtitle": "To a phone close by, no shared network needed",
   "homeReceiveTitle": "Receive File",
   "homeReceiveSubtitleDesktop": "Enter the code from the sender",
-  "homeReceiveSubtitleMobile": "Scan a QR code to download",
+  "homeReceiveSubtitleMobile": "Scan a QR code or enter the sender's code",
   "homeDropHere": "Drop file here to send",
   "homeSettingsTooltip": "Settings",
   "errorOops": "Oops!",
@@ -193,7 +193,6 @@
   "qrDisplayTitle": "Share File",
   "qrDisplayPreparing": "Preparing share…",
   "qrDisplayPreparingDetail": "Generating a secure QR session",
-  "qrDisplayScanOrShare": "Scan the QR or share the link",
   "qrDisplayScanOrEnterCode": "Scan the QR or enter the code",
   "offerCodeChangesIn": "Code and QR change in {time}",
   "@offerCodeChangesIn": {
@@ -211,7 +210,6 @@
       }
     }
   },
-  "qrDisplayShareLinkToReceive": "Share this link to receive the file",
   "qrDisplayScanToReceive": "Scan this QR code to receive the file",
   "qrDisplayPhoneHint": "On the other device: open DirectDrop → Receive. A phone scans this QR; a computer types the code.",
   "qrDisplayRenderError": "QR Render Error: {error}",
@@ -222,8 +220,6 @@
       }
     }
   },
-  "qrDisplayShareLinkLabel": "Share link",
-  "qrDisplayLinkCopied": "Link copied to clipboard",
   "qrDisplayTotalSize": "Total size: {size}",
   "@qrDisplayTotalSize": {
     "placeholders": {
@@ -313,29 +309,20 @@
   "codeReceiveTitle": "Receive a file",
   "codeReceivePrompt": "Enter the code from the sender",
   "codeReceiveCodeInvalid": "Enter all ten digits of the code.",
-  "linkReceiveOpening": "Opening the shared link…",
-  "linkReceiveOpeningDetail": "Checking what is being sent",
   "codeReceiveHint": "12345 67890",
   "codeReceiveReceiveButton": "Receive",
   "codeReceiveFileFound": "File found",
   "codeReceiveIncomingTransfer": "Incoming transfer",
   "codeReceiveSizeUnknown": "Size unknown until the transfer starts",
   "codeReceiveDownloadButton": "Download",
-  "codeReceiveConnecting": "Connecting to sender…",
-  "codeReceiveConnectingDetail": "Keep the Mac on the Share screen. Same Wi‑Fi required for local signaling; LTE needs a public signaling + TURN server.",
   "codeReceiveTransferFailed": "Transfer failed",
-  "codeReceiveSignalingError": "Signaling server unreachable ({url}). Specify a remote server using:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com",
-  "@codeReceiveSignalingError": {
-    "placeholders": {
-      "url": {
-        "type": "String"
-      }
-    }
-  },
   "codeReceiveTryAnother": "Try another code",
-  "codeReceiveNotFoundLan": "No sender with this code was found. The code may be wrong or may have expired — codes change every 5 minutes. Check it and make sure both devices are on the same Wi-Fi network.",
   "codeReceiveUpdateRequired": "The other device is running a different version of DirectDrop and cannot take this code. Update DirectDrop on both devices, then try again.",
-  "codeReceiveSearchingLan": "Searching for sender on local network…",
+  "codeReceiveNotFound": "Sender not found. Check the code: it changes every 5 minutes. For a local network both devices must be on the same network.",
+  "codeReceiveSearching": "Looking for the sender…",
+  "codeReceiveAwaitingApproval": "Waiting for the sender to confirm…",
+  "codeReceiveNoNetwork": "Could not reach the internet service, and no sender was found on the local network. Check your connection and the code, then try again.",
+  "codeCopied": "Code copied to clipboard",
   "qrScanCameraPermission": "Camera permission required",
   "qrScanDetected": "QR detected — opening transfer…",
   "qrScanCameraError": "Camera error: {code}\nTry closing and opening Receive again.",

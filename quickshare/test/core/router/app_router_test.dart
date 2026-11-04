@@ -42,7 +42,6 @@ void main() {
     '/send/progress',
     '/receive',
     '/receive/code',
-    '/receive/link?p=QS1AAAAAAAAAAAAAAAA',
     '/receive/preview',
     '/receive/download',
     '/receive/complete',

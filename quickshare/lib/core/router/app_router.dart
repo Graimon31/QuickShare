@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:animations/animations.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/platform/device_platform.dart';
 import 'package:quickshare/core/router/send_routes.dart';
@@ -26,7 +25,6 @@ import 'package:quickshare/features/receiver/presentation/pages/download_progres
 import 'package:quickshare/features/receiver/presentation/pages/transfer_preview_page.dart';
 import 'package:quickshare/features/receiver/presentation/pages/complete_page.dart';
 import 'package:quickshare/features/receiver/presentation/pages/code_receive_page.dart';
-import 'package:quickshare/features/receiver/presentation/pages/link_receive_page.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 
@@ -210,8 +208,7 @@ class AppRouter {
               sharedAxis: false,
             ),
           ),
-          // Ten digits, and nothing else. Not even a query: a share link no
-          // longer lands here (see `/receive/link`).
+          // Ten digits, and nothing else. Not even a query.
           GoRoute(
             path: '/receive/code',
             pageBuilder: (context, state) => _qsPage(
@@ -219,30 +216,6 @@ class AppRouter {
               const CodeReceivePage(),
               sharedAxis: false,
             ),
-          ),
-          // Where `directdrop://join?p=…` arrives. Not an interface control —
-          // there is no field for it anywhere — but the one way an internet
-          // transfer reaches a computer, which has no QR to scan and no digits
-          // to type for that path.
-          GoRoute(
-            path: '/receive/link',
-            redirect: (context, state) =>
-                (state.uri.queryParameters['p'] ?? '').isEmpty ? '/' : null,
-            pageBuilder: (context, state) {
-              final query = state.uri.queryParameters;
-              return _qsPage(
-                state,
-                LinkReceivePage(
-                  link: DeepLinkService.buildPayloadLink(
-                    query['p']!,
-                    name: query['n'],
-                    bytes: int.tryParse(query['s'] ?? ''),
-                    itemCount: int.tryParse(query['c'] ?? ''),
-                  ),
-                ),
-                sharedAxis: false,
-              );
-            },
           ),
           GoRoute(
             path: '/receive/preview',

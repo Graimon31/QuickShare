@@ -227,7 +227,7 @@ abstract class AppLocalizations {
   /// No description provided for @homeReceiveSubtitleMobile.
   ///
   /// In en, this message translates to:
-  /// **'Scan a QR code to download'**
+  /// **'Scan a QR code or enter the sender\'s code'**
   String get homeReceiveSubtitleMobile;
 
   /// No description provided for @homeDropHere.
@@ -710,12 +710,6 @@ abstract class AppLocalizations {
   /// **'Generating a secure QR session'**
   String get qrDisplayPreparingDetail;
 
-  /// No description provided for @qrDisplayScanOrShare.
-  ///
-  /// In en, this message translates to:
-  /// **'Scan the QR or share the link'**
-  String get qrDisplayScanOrShare;
-
   /// No description provided for @qrDisplayScanOrEnterCode.
   ///
   /// In en, this message translates to:
@@ -734,12 +728,6 @@ abstract class AppLocalizations {
   /// **'QR code changes in {time}'**
   String offerQrChangesIn(String time);
 
-  /// No description provided for @qrDisplayShareLinkToReceive.
-  ///
-  /// In en, this message translates to:
-  /// **'Share this link to receive the file'**
-  String get qrDisplayShareLinkToReceive;
-
   /// No description provided for @qrDisplayScanToReceive.
   ///
   /// In en, this message translates to:
@@ -757,18 +745,6 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'QR Render Error: {error}'**
   String qrDisplayRenderError(String error);
-
-  /// No description provided for @qrDisplayShareLinkLabel.
-  ///
-  /// In en, this message translates to:
-  /// **'Share link'**
-  String get qrDisplayShareLinkLabel;
-
-  /// No description provided for @qrDisplayLinkCopied.
-  ///
-  /// In en, this message translates to:
-  /// **'Link copied to clipboard'**
-  String get qrDisplayLinkCopied;
 
   /// No description provided for @qrDisplayTotalSize.
   ///
@@ -1136,18 +1112,6 @@ abstract class AppLocalizations {
   /// **'Enter all ten digits of the code.'**
   String get codeReceiveCodeInvalid;
 
-  /// No description provided for @linkReceiveOpening.
-  ///
-  /// In en, this message translates to:
-  /// **'Opening the shared link…'**
-  String get linkReceiveOpening;
-
-  /// No description provided for @linkReceiveOpeningDetail.
-  ///
-  /// In en, this message translates to:
-  /// **'Checking what is being sent'**
-  String get linkReceiveOpeningDetail;
-
   /// No description provided for @codeReceiveHint.
   ///
   /// In en, this message translates to:
@@ -1184,29 +1148,11 @@ abstract class AppLocalizations {
   /// **'Download'**
   String get codeReceiveDownloadButton;
 
-  /// No description provided for @codeReceiveConnecting.
-  ///
-  /// In en, this message translates to:
-  /// **'Connecting to sender…'**
-  String get codeReceiveConnecting;
-
-  /// No description provided for @codeReceiveConnectingDetail.
-  ///
-  /// In en, this message translates to:
-  /// **'Keep the Mac on the Share screen. Same Wi‑Fi required for local signaling; LTE needs a public signaling + TURN server.'**
-  String get codeReceiveConnectingDetail;
-
   /// No description provided for @codeReceiveTransferFailed.
   ///
   /// In en, this message translates to:
   /// **'Transfer failed'**
   String get codeReceiveTransferFailed;
-
-  /// No description provided for @codeReceiveSignalingError.
-  ///
-  /// In en, this message translates to:
-  /// **'Signaling server unreachable ({url}). Specify a remote server using:\n--dart-define=QUICKSHARE_SIGNALING_URL=wss://your-server.com'**
-  String codeReceiveSignalingError(String url);
 
   /// No description provided for @codeReceiveTryAnother.
   ///
@@ -1214,23 +1160,41 @@ abstract class AppLocalizations {
   /// **'Try another code'**
   String get codeReceiveTryAnother;
 
-  /// No description provided for @codeReceiveNotFoundLan.
-  ///
-  /// In en, this message translates to:
-  /// **'No sender with this code was found. The code may be wrong or may have expired — codes change every 5 minutes. Check it and make sure both devices are on the same Wi-Fi network.'**
-  String get codeReceiveNotFoundLan;
-
   /// No description provided for @codeReceiveUpdateRequired.
   ///
   /// In en, this message translates to:
   /// **'The other device is running a different version of DirectDrop and cannot take this code. Update DirectDrop on both devices, then try again.'**
   String get codeReceiveUpdateRequired;
 
-  /// No description provided for @codeReceiveSearchingLan.
+  /// No description provided for @codeReceiveNotFound.
   ///
   /// In en, this message translates to:
-  /// **'Searching for sender on local network…'**
-  String get codeReceiveSearchingLan;
+  /// **'Sender not found. Check the code: it changes every 5 minutes. For a local network both devices must be on the same network.'**
+  String get codeReceiveNotFound;
+
+  /// No description provided for @codeReceiveSearching.
+  ///
+  /// In en, this message translates to:
+  /// **'Looking for the sender…'**
+  String get codeReceiveSearching;
+
+  /// No description provided for @codeReceiveAwaitingApproval.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for the sender to confirm…'**
+  String get codeReceiveAwaitingApproval;
+
+  /// No description provided for @codeReceiveNoNetwork.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not reach the internet service, and no sender was found on the local network. Check your connection and the code, then try again.'**
+  String get codeReceiveNoNetwork;
+
+  /// No description provided for @codeCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Code copied to clipboard'**
+  String get codeCopied;
 
   /// No description provided for @qrScanCameraPermission.
   ///

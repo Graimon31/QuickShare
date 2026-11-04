@@ -1,36 +1,11 @@
 import 'dart:io';
 
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:quickshare/app.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 
 void main() {
-  // The app listens for `directdrop://` links through the app_links plugin,
-  // which has no platform side under `flutter test`. Left unanswered, its
-  // event channel reports a missing plugin to the framework, and the framework
-  // fails whichever test happens to be running when that lands — one of the
-  // two below, depending on how long it has to run. The plugin's two channels
-  // are answered with "no link", which is what a launch from the icon gets.
-  const links = [
-    MethodChannel('com.llfbandit.app_links/messages'),
-    MethodChannel('com.llfbandit.app_links/events'),
-  ];
-
-  setUp(() {
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    for (final channel in links) {
-      messenger.setMockMethodCallHandler(channel, (call) async => null);
-    }
-  });
-
   tearDown(() async {
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    for (final channel in links) {
-      messenger.setMockMethodCallHandler(channel, null);
-    }
     await sl.reset();
   });
 

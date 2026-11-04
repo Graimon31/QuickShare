@@ -1,7 +1,6 @@
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 import 'package:quickshare/core/errors/exceptions.dart';
-import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 
 class QRPayloadDecoder {
@@ -11,9 +10,7 @@ class QRPayloadDecoder {
   static const String bluetoothMode = 'bluetooth';
 
   QRPayload decode(String rawQRData) {
-    final share = DeepLinkService.parseShareLink(rawQRData);
-    final unwrapped =
-        share?.qrPayload ?? DeepLinkService.unwrapToQrPayload(rawQRData);
+    final unwrapped = rawQRData.trim();
     if (ServerlessQr.looksLikeOne(unwrapped)) {
       // Validate by decoding — a corrupt scan should fail here rather than
       // halfway through the handshake.
@@ -26,10 +23,9 @@ class QRPayloadDecoder {
         sessionId: qr.offer.iceUfrag,
         mode: serverlessMode,
         sdpOffer: unwrapped,
-        fileName: qr.fileName.isNotEmpty ? qr.fileName : (share?.name ?? ''),
-        fileSize: qr.fileSize > 0 ? qr.fileSize : (share?.bytes ?? 0),
-        itemCount:
-            qr.itemCount > 0 ? qr.itemCount : (share?.itemCount ?? 0),
+        fileName: qr.fileName,
+        fileSize: qr.fileSize,
+        itemCount: qr.itemCount,
       );
     }
 
@@ -42,9 +38,9 @@ class QRPayloadDecoder {
         token: bt.token,
         sessionId: bt.publicId.isNotEmpty ? bt.publicId : bt.token,
         mode: bluetoothMode,
-        fileName: bt.fileName.isNotEmpty ? bt.fileName : (share?.name ?? ''),
-        fileSize: bt.fileSize > 0 ? bt.fileSize : (share?.bytes ?? 0),
-        itemCount: bt.itemCount > 0 ? bt.itemCount : (share?.itemCount ?? 0),
+        fileName: bt.fileName,
+        fileSize: bt.fileSize,
+        itemCount: bt.itemCount,
         senderName: bt.senderName.isNotEmpty ? bt.senderName : null,
       );
     }
@@ -63,16 +59,13 @@ class QRPayloadDecoder {
         ip: payload.ip,
         port: payload.port,
         token: payload.token,
-        fileName: payload.fileName.isNotEmpty
-            ? payload.fileName
-            : (share?.name ?? ''),
-        fileSize: payload.fileSize > 0 ? payload.fileSize : (share?.bytes ?? 0),
+        fileName: payload.fileName,
+        fileSize: payload.fileSize,
         checksum: payload.checksum,
         sessionId: payload.sessionId,
         mode: payload.mode,
         sdpOffer: payload.sdpOffer,
-        itemCount:
-            payload.itemCount > 0 ? payload.itemCount : (share?.itemCount ?? 0),
+        itemCount: payload.itemCount,
         // The whole reason the LAN transfer can be trusted — dropping it here
         // is what made every scan report the sender as "unencrypted".
         tlsFingerprint: payload.tlsFingerprint,

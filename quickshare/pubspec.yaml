@@ -70,8 +70,6 @@ dependencies:
   flutter_webrtc: ^0.12.4
   web_socket_channel: ^3.0.1
 
-  app_links: ^7.2.1
-
   # Cross-platform BLE peripheral mode for Android and Windows senders.
   universal_ble: ^2.1.1
   dbus: ^0.7.14

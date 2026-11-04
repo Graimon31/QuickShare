@@ -1,7 +1,4 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
-import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/localization/locale_controller.dart';
 import 'package:quickshare/core/network/hotspot_lifecycle_guard.dart';
@@ -10,48 +7,27 @@ import 'package:quickshare/core/theme/app_theme.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
 class DirectDropApp extends StatefulWidget {
-  /// Where share links come from. The system's, unless a test supplies its own.
-  final DeepLinkService? deepLinks;
-
-  const DirectDropApp({super.key, this.deepLinks});
+  const DirectDropApp({super.key});
 
   @override
   State<DirectDropApp> createState() => _DirectDropAppState();
 }
 
 class _DirectDropAppState extends State<DirectDropApp> {
-  late final DeepLinkService _deepLinks =
-      widget.deepLinks ?? DeepLinkService();
   // App-level rather than page-level: the hotspot outlives the screen that
   // raised it — the transfer moves on to the progress route while the network
   // stays up.
   final _hotspotGuard = HotspotLifecycleGuard();
-  StreamSubscription<ShareLinkContents>? _payloadSub;
 
   @override
   void initState() {
     super.initState();
-    // A share link opened from Finder/Mail/Messages routes straight into the
-    // receive flow, whether the app was already running or launched by it.
-    // The link carries the QR payload itself (`?p=`) and lands on its own
-    // screen, not on the one that takes digits.
-    _payloadSub = _deepLinks.sharePayloads.listen((share) {
-      final q = <String, String>{'p': share.qrPayload};
-      if (share.name != null) q['n'] = share.name!;
-      if (share.bytes != null) q['s'] = '${share.bytes}';
-      if (share.itemCount != null) q['c'] = '${share.itemCount}';
-      AppRouter.router
-          .go(Uri(path: '/receive/link', queryParameters: q).toString());
-    });
-    _deepLinks.init();
     _hotspotGuard.attach();
   }
 
   @override
   void dispose() {
-    _payloadSub?.cancel();
     _hotspotGuard.detach();
-    _deepLinks.dispose();
     super.dispose();
   }
 
