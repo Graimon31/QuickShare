@@ -79,9 +79,11 @@ void main() {
       final oldSession = await cache.sessionDirectory();
       await File(p.join(oldSession.path, 'old.bin')).writeAsString('12345');
 
-      // Far enough apart that the file system's clock, which ticks every
-      // ~16 ms on Windows, cannot give the two folders the same stamp.
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      // Far enough apart that the two folders cannot get the same stamp. On
+      // Windows 100 ms was not: CI saw equal stamps with that gap, so wait past
+      // a whole second there.
+      await Future<void>.delayed(
+          Duration(milliseconds: Platform.isWindows ? 1100 : 100));
 
       final freshSession = await cache.sessionDirectory();
       final freshFile = File(p.join(freshSession.path, 'fresh.bin'))..writeAsStringSync('12345');

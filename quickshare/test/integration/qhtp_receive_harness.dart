@@ -222,10 +222,30 @@ class QhtpHarness {
   }
 
   Future<void> dispose() async {
-    await _server?.stop();
+    // Forced, as every path in the sender that ends a session is: a client that
+    // gave up mid-file may still hold its socket, and a graceful close waits on
+    // it while the response keeps the source file open.
+    await _server?.stop(force: true);
     _server = null;
     for (final d in [source, target, state, outside]) {
-      if (d.existsSync()) d.deleteSync(recursive: true);
+      await _deleteOnceReleased(d);
+    }
+  }
+
+  /// Deletes [dir], giving the server a moment to let go of its files.
+  ///
+  /// A dropped socket cancels the response on a later turn of the event loop,
+  /// and Windows refuses to delete a file that is still open. A handle that is
+  /// never released still fails here, once the time is up.
+  static Future<void> _deleteOnceReleased(Directory dir) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (dir.existsSync()) {
+      try {
+        dir.deleteSync(recursive: true);
+      } on FileSystemException {
+        if (DateTime.now().isAfter(deadline)) rethrow;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
     }
   }
 }
