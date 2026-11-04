@@ -318,7 +318,12 @@ void main() {
 
     final args = await startedAdvertising([trip.path]);
     expect(args['sessionToken'], isNotEmpty);
-    expect(args['files'] as List, hasLength(2),
-        reason: 'the folder crosses as its files, structure kept');
+    // The folder crosses as its files, structure kept — over QHTP, after the
+    // rendezvous. The radio is not told about them: nothing here carries a
+    // file, so a path or a size handed to it could only be a way for the old
+    // byte road to come back.
+    for (final key in ['files', 'filePath', 'fileName', 'fileSize']) {
+      expect(args.containsKey(key), isFalse, reason: key);
+    }
   });
 }

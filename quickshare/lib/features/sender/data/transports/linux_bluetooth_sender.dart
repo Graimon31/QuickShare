@@ -5,9 +5,7 @@ import 'package:dbus/dbus.dart';
 
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
-import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 
-typedef LinuxBluetoothProgress = void Function(int sent, int total);
 /// [error] is English and technical; [code] is the same fact as a
 /// `FailureCode`, where this bridge decided it rather than caught it.
 typedef LinuxBluetoothStatus = void Function(String status,
@@ -57,10 +55,8 @@ class LinuxBluetoothSender {
   LinuxBluetoothPeerKey? _onPeerKey;
 
   Future<void> start(
-    List<FileMetadata> files,
     String token, {
     String publicId = '',
-    required LinuxBluetoothProgress onProgress,
     required LinuxBluetoothStatus onStatus,
     LinuxBluetoothApOffer? onApOffer,
     LinuxBluetoothPeerKey? onPeerKey,

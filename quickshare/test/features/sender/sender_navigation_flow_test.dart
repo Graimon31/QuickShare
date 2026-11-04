@@ -131,9 +131,12 @@ void main() {
           path: '/current',
           builder: (_, __) => child,
         ),
+        // Every way out of the sending flow lands on the home screen: the
+        // transport is chosen there now, so there is no longer a picker page
+        // of its own to go back to.
         GoRoute(
-          path: '/send',
-          builder: (_, __) => const Scaffold(body: Text('send_page')),
+          path: '/',
+          builder: (_, __) => const Scaffold(body: Text('home_page')),
         ),
         GoRoute(
           path: '/send/progress',
@@ -235,7 +238,7 @@ void main() {
       // dead session kept a spinner turning with no way forward and no way
       // to tell it apart from a slow one.
       expect(find.byType(TransferPhaseLoader), findsNothing);
-      expect(find.text('send_page'), findsOneWidget);
+      expect(find.text('home_page'), findsOneWidget);
     });
 
     testWidgets(

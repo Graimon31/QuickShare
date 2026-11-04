@@ -8,9 +8,28 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/core/platform/device_platform.dart';
+import 'package:quickshare/core/router/send_routes.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
+import 'package:quickshare/core/theme/app_motion.dart';
+import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
+import 'package:quickshare/features/sender/presentation/widgets/transport_choice.dart';
 import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
+
+/// Where on the home screen a file was dropped.
+enum HomeDropTarget { internet, airdrop }
+
+/// The transport a file dropped on [target] is sent over.
+///
+/// A drop has already chosen its file, so it skips the question the AirDrop
+/// card would ask and takes the local network, which is what dropping a file
+/// on the old Send card always did. Only the internet card has a mode of its
+/// own to give.
+@visibleForTesting
+TransportType dropModeFor(HomeDropTarget target) => switch (target) {
+      HomeDropTarget.internet => TransportType.internet,
+      HomeDropTarget.airdrop => TransportType.wifi,
+    };
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -22,6 +41,16 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage>
     with SingleTickerProviderStateMixin {
   late AnimationController _auroraController;
+
+  /// Whether the AirDrop card is showing its two ways to send.
+  bool _airdropOpen = false;
+
+  /// The transport whose preconditions are being decided, so a second tap
+  /// cannot start a second dialog on top of the first.
+  TransportType? _checking;
+
+  /// The AirDrop buttons, so they can be scrolled into view once open.
+  final GlobalKey _optionsKey = GlobalKey();
 
   @override
   void initState() {
@@ -44,11 +73,78 @@ class _HomePageState extends State<HomePage>
     super.dispose();
   }
 
+  void _toggleAirdrop() => setState(() => _airdropOpen = !_airdropOpen);
+
+  /// On a window or a phone too short to hold both buttons under the card,
+  /// opening AirDrop would leave the second one half off the screen. Scroll
+  /// just far enough to show them both — after the frame, because the height
+  /// they are measured against is only final once the layout has run.
+  void _revealOptions() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final options = _optionsKey.currentContext;
+      if (!mounted || options == null || !_airdropOpen) return;
+      final still = MediaQuery.of(context).disableAnimations;
+      Scrollable.ensureVisible(
+        options,
+        duration: still ? Duration.zero : AppMotion.expand,
+        curve: AppMotion.expandCurve,
+        alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+      );
+    });
+  }
+
+  /// Opens the file screen for [mode] — after checking that [mode] can run.
+  ///
+  /// The check belongs here, at the button, and not after the files are
+  /// chosen: with Bluetooth or Wi-Fi off, nobody should browse for a folder
+  /// only to be told the way they picked was never going to work. A refusal
+  /// has already told the person what is missing, and they stay on this
+  /// screen with the same choices in front of them.
+  Future<void> _openFiles(TransportType mode) async {
+    if (_checking != null) return;
+    setState(() => _checking = mode);
+    final bool allowed;
+    try {
+      allowed = await TransportPreconditions.ensure(context, mode);
+    } finally {
+      if (mounted) setState(() => _checking = null);
+    }
+    if (!allowed || !mounted) return;
+    context.push(SendRoutes.filesFor(mode));
+  }
+
+  void _onDrop(HomeDropTarget target, List<String> paths) {
+    if (paths.isEmpty) return;
+    // Home is outside the Sender ShellRoute. Pass the drop through
+    // navigation so FilePickerPage dispatches it where SenderBloc is
+    // provided; the file screen runs the transport check before it starts.
+    context.push(
+      SendRoutes.filesFor(dropModeFor(target)),
+      extra: {'qhtpPaths': paths},
+    );
+  }
+
+  Future<void> _openReceive() async {
+    final ready = await TransportPreconditions.ensureReceiver(context);
+    if (!ready || !mounted) return;
+    context.push(DevicePlatform.isDesktop ? '/receive/code' : '/receive');
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDesktop = DevicePlatform.isDesktop;
     final isIos = Platform.isIOS;
     final reduceMotion = MediaQuery.of(context).disableAnimations;
+    final l10n = AppLocalizations.of(context);
+    // Small screens trade some breathing room for height: two cards and a
+    // receive button have to share a 375 × 812 phone — or the 680 × 748
+    // window the macOS app opens in — with the title, and Receive must not be
+    // the thing that falls below the fold. Open AirDrop adds two buttons more
+    // and scrolls.
+    final size = MediaQuery.sizeOf(context);
+    final narrow = size.width < 480;
+    final tight = narrow || size.height < 800;
+    final bluetoothOffered = TransportType.bluetooth.offeredHere;
 
     return Scaffold(
       backgroundColor: AppColors.voidBg,
@@ -164,8 +260,9 @@ class _HomePageState extends State<HomePage>
                   ScrollConfiguration.of(context).copyWith(scrollbars: false),
               child: SingleChildScrollView(
                 clipBehavior: Clip.none,
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 32.0, vertical: 40.0),
+                padding: EdgeInsets.symmetric(
+                    horizontal: narrow ? 20.0 : 32.0,
+                    vertical: tight ? 28.0 : 40.0),
                 child: Center(
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 640),
@@ -198,7 +295,7 @@ class _HomePageState extends State<HomePage>
 
                         // Subtitle
                         Text(
-                          AppLocalizations.of(context).appTagline,
+                          l10n.appTagline,
                           style: GoogleFonts.inter(
                             fontSize: 16,
                             height: 1.5,
@@ -208,61 +305,117 @@ class _HomePageState extends State<HomePage>
                           textAlign: TextAlign.center,
                         ).animate().fadeIn(delay: 150.ms, duration: 400.ms),
 
-                        const SizedBox(height: 36),
+                        SizedBox(height: tight ? 26 : 36),
 
-                        // Card 1: Send File (Glassmorphism + Drag & Drop Target)
-                        _GlassCard(
-                          title: AppLocalizations.of(context).homeSendTitle,
-                          subtitle: AppLocalizations.of(context).homeSendSubtitle,
-                          icon: Icons.upload_rounded,
-                          badgeGradient: const RadialGradient(
-                            colors: [AppColors.accent, AppColors.secondaryDark],
-                            center: Alignment(-0.25, -0.25),
-                            radius: 0.9,
+                        // Way 1: over the internet. Opens the file screen at
+                        // once, and takes a dropped file with it.
+                        _DropZone(
+                          onFilesDropped: (paths) =>
+                              _onDrop(HomeDropTarget.internet, paths),
+                          builder: (context, dragOver) => _GlassCard(
+                            title: l10n.homeInternetTitle,
+                            subtitle: l10n.homeInternetSubtitle,
+                            icon: TransportType.internet.icon,
+                            badgeGradient: const RadialGradient(
+                              colors: [
+                                AppColors.accent,
+                                AppColors.secondaryDark
+                              ],
+                              center: Alignment(-0.25, -0.25),
+                              radius: 0.9,
+                            ),
+                            badgeGlowColor: AppColors.secondaryDark,
+                            compact: tight,
+                            dragOver: dragOver,
+                            busy: _checking == TransportType.internet,
+                            onTap: () => _openFiles(TransportType.internet),
                           ),
-                          badgeGlowColor: AppColors.secondaryDark,
-                          onTap: () => context.push('/send'),
-                          allowDragDrop: true,
-                          onFilesDropped: (paths) {
-                            if (paths.isNotEmpty) {
-                              // Home is outside the Sender ShellRoute. Pass
-                              // the drop through navigation so FilePickerPage
-                              // dispatches it where SenderBloc is provided.
-                              context
-                                  .push('/send', extra: {'qhtpPaths': paths});
-                            }
-                          },
                         )
                             .animate()
                             .fadeIn(delay: 250.ms, duration: 400.ms)
                             .slideY(begin: 0.08, end: 0),
 
-                        const SizedBox(height: 22),
+                        SizedBox(height: tight ? 16 : 22),
 
-                        // Card 2: Receive File (Glassmorphism)
-                        _GlassCard(
-                          title: AppLocalizations.of(context).homeReceiveTitle,
-                          subtitle: isDesktop
-                              ? AppLocalizations.of(context).homeReceiveSubtitleDesktop
-                              : AppLocalizations.of(context).homeReceiveSubtitleMobile,
-                          icon: Icons.download_rounded,
-                          badgeGradient: const RadialGradient(
-                            colors: [Color(0xFFE0F2FE), Color(0xFF0EA5E9)],
-                            center: Alignment(-0.25, -0.25),
-                            radius: 0.9,
+                        // Way 2: AirDrop. Not a transport itself — it opens
+                        // the two that are, right here, and a file dropped on
+                        // any part of it goes the local-network way.
+                        _DropZone(
+                          onFilesDropped: (paths) =>
+                              _onDrop(HomeDropTarget.airdrop, paths),
+                          builder: (context, dragOver) => Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _GlassCard(
+                                title: l10n.airdropName,
+                                subtitle: l10n.homeAirdropSubtitle,
+                                icon: Icons.wifi_tethering_rounded,
+                                badgeGradient: const RadialGradient(
+                                  colors: [
+                                    Color(0xFFE0F2FE),
+                                    Color(0xFF0EA5E9)
+                                  ],
+                                  center: Alignment(-0.25, -0.25),
+                                  radius: 0.9,
+                                ),
+                                badgeGlowColor: AppColors.primaryDeep,
+                                compact: tight,
+                                dragOver: dragOver,
+                                expanded: _airdropOpen,
+                                onTap: _toggleAirdrop,
+                              ),
+                              _Expandable(
+                                expanded: _airdropOpen,
+                                onOpened: _revealOptions,
+                                child: Padding(
+                                  key: _optionsKey,
+                                  padding: const EdgeInsets.only(top: 12),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      _OptionButton(
+                                        type: TransportType.wifi,
+                                        busy: _checking == TransportType.wifi,
+                                        onTap: () =>
+                                            _openFiles(TransportType.wifi),
+                                      ),
+                                      if (bluetoothOffered) ...[
+                                        const SizedBox(height: 10),
+                                        _OptionButton(
+                                          type: TransportType.bluetooth,
+                                          busy: _checking ==
+                                              TransportType.bluetooth,
+                                          onTap: () => _openFiles(
+                                              TransportType.bluetooth),
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                          badgeGlowColor: AppColors.primaryDeep,
-                          onTap: () async {
-                            final ready =
-                                await TransportPreconditions.ensureReceiver(
-                                    context);
-                            if (!ready || !context.mounted) return;
-                            context
-                                .push(isDesktop ? '/receive/code' : '/receive');
-                          },
                         )
                             .animate()
                             .fadeIn(delay: 380.ms, duration: 400.ms)
+                            .slideY(begin: 0.08, end: 0),
+
+                        SizedBox(height: tight ? 22 : 30),
+
+                        // Receiving is not a third way to send, so it is not
+                        // a third card. The sender's QR code or digits are
+                        // what choose the path, and this only opens the
+                        // place to enter them.
+                        _ReceiveButton(
+                          title: l10n.homeReceiveTitle,
+                          hint: isDesktop
+                              ? l10n.homeReceiveSubtitleDesktop
+                              : l10n.homeReceiveSubtitleMobile,
+                          onTap: _openReceive,
+                        )
+                            .animate()
+                            .fadeIn(delay: 500.ms, duration: 400.ms)
                             .slideY(begin: 0.08, end: 0),
                       ],
                     ),
@@ -272,7 +425,7 @@ class _HomePageState extends State<HomePage>
             ),
           ),
 
-          // Settings, out of the way of the two things this screen is for.
+          // Settings, out of the way of what this screen is for.
           //
           // Last in the Stack on purpose. A Stack hit-tests its children in
           // reverse, so whatever is declared after this takes the tap: with
@@ -320,16 +473,268 @@ class _HomePageState extends State<HomePage>
   }
 }
 
+
+/// Hover, press and keyboard-focus state, handed to whatever is drawn inside.
+typedef _Touch = ({bool hovered, bool pressed, bool focused});
+
+/// What every tappable thing on this screen shares: a mouse cursor, hover and
+/// press feedback, a focus node the keyboard can reach and activate with
+/// Enter or Space, and one screen-reader node that says what it is.
+///
+/// [expanded] is null for something that does not open anything. Otherwise it
+/// is the state a screen reader announces ("expanded", "collapsed") and
+/// follows the control as it changes.
+class _Interactive extends StatefulWidget {
+  final VoidCallback onTap;
+  final String label;
+  final bool? expanded;
+  final Widget Function(BuildContext context, _Touch touch) builder;
+
+  const _Interactive({
+    required this.onTap,
+    required this.label,
+    required this.builder,
+    this.expanded,
+  });
+
+  @override
+  State<_Interactive> createState() => _InteractiveState();
+}
+
+class _InteractiveState extends State<_Interactive> {
+  bool _hovered = false;
+  bool _pressed = false;
+  bool _focused = false;
+
+  void _activate() {
+    HapticFeedback.lightImpact();
+    widget.onTap();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      container: true,
+      button: true,
+      expanded: widget.expanded,
+      label: widget.label,
+      onTap: _activate,
+      // The explicit actions a screen reader offers for something that opens:
+      // "expand" while it is closed, "collapse" while it is open.
+      onExpand: widget.expanded == false ? _activate : null,
+      onCollapse: widget.expanded == true ? _activate : null,
+      excludeSemantics: true,
+      child: FocusableActionDetector(
+        onFocusChange: (focused) => setState(() => _focused = focused),
+        actions: {
+          ActivateIntent: CallbackAction<ActivateIntent>(
+            onInvoke: (_) {
+              _activate();
+              return null;
+            },
+          ),
+        },
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setState(() => _hovered = true),
+          onExit: (_) => setState(() => _hovered = false),
+          child: GestureDetector(
+            onTapDown: (_) => setState(() => _pressed = true),
+            onTapUp: (_) => setState(() => _pressed = false),
+            onTapCancel: () => setState(() => _pressed = false),
+            onTap: _activate,
+            child: widget.builder(
+              context,
+              (hovered: _hovered, pressed: _pressed, focused: _focused),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Takes files dragged in from the desktop's file manager.
+///
+/// Flutter's DragTarget handles in-app draggables. DropTarget adds the native
+/// Finder/Explorer/Linux file-manager pipeline for desktop users. [builder]
+/// is told whether something is being held over the zone, so the card inside
+/// can say "drop here".
+class _DropZone extends StatefulWidget {
+  final Widget Function(BuildContext context, bool dragOver) builder;
+  final void Function(List<String> paths) onFilesDropped;
+
+  const _DropZone({required this.builder, required this.onFilesDropped});
+
+  @override
+  State<_DropZone> createState() => _DropZoneState();
+}
+
+class _DropZoneState extends State<_DropZone> {
+  bool _dragOver = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final supportsNativeDrop =
+        Platform.isMacOS || Platform.isWindows || Platform.isLinux;
+
+    Widget content = widget.builder(context, _dragOver);
+    if (supportsNativeDrop) {
+      final inner = content;
+      content = DragTarget<String>(
+        onWillAcceptWithDetails: (_) {
+          setState(() => _dragOver = true);
+          return true;
+        },
+        onLeave: (_) => setState(() => _dragOver = false),
+        onAcceptWithDetails: (details) {
+          setState(() => _dragOver = false);
+          widget.onFilesDropped([details.data]);
+        },
+        builder: (context, candidateData, rejectedData) => inner,
+      );
+    }
+
+    return DropTarget(
+      onDragEntered: (_) => setState(() => _dragOver = true),
+      onDragExited: (_) => setState(() => _dragOver = false),
+      onDragDone: (details) {
+        setState(() => _dragOver = false);
+        final paths = details.files
+            .map((file) => file.path)
+            .where((path) => path.isNotEmpty)
+            .toList();
+        if (paths.isNotEmpty) widget.onFilesDropped(paths);
+      },
+      child: content,
+    );
+  }
+}
+
+/// A group of options that opens under the control that owns it.
+///
+/// Closed it is nothing at all — not hidden, absent, so neither a finger, the
+/// keyboard nor a screen reader can reach what is not there. Opening and
+/// closing animate in the screen's own motion (a fade and a short slide with
+/// the height), and with the system's "reduce motion" on they happen at once.
+class _Expandable extends StatefulWidget {
+  final bool expanded;
+  final Widget child;
+
+  /// Called when it has finished opening.
+  final VoidCallback? onOpened;
+
+  const _Expandable({
+    required this.expanded,
+    required this.child,
+    this.onOpened,
+  });
+
+  @override
+  State<_Expandable> createState() => _ExpandableState();
+}
+
+class _ExpandableState extends State<_Expandable>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    value: widget.expanded ? 1 : 0,
+  );
+  late final Animation<double> _curve = CurvedAnimation(
+    parent: _controller,
+    curve: AppMotion.expandCurve,
+    reverseCurve: AppMotion.collapseCurve,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addStatusListener((status) {
+      if (status == AnimationStatus.completed) widget.onOpened?.call();
+    });
+  }
+
+  @override
+  void didUpdateWidget(_Expandable oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.expanded == widget.expanded) return;
+    final still = MediaQuery.of(context).disableAnimations;
+    _controller
+      ..duration = still ? Duration.zero : AppMotion.expand
+      ..reverseDuration = still ? Duration.zero : AppMotion.collapse;
+    if (widget.expanded) {
+      _controller.forward();
+    } else {
+      _controller.reverse();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // While it is closing the options are still drawn, but they are already
+    // out of reach: a tap, a Tab or a screen reader must not land on something
+    // that is on its way out.
+    final reachable = widget.expanded;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        if (_controller.isDismissed) return const SizedBox.shrink();
+        return SizeTransition(
+          sizeFactor: _curve,
+          alignment: Alignment.topCenter,
+          child: FadeTransition(
+            opacity: _curve,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, -0.06),
+                end: Offset.zero,
+              ).animate(_curve),
+              child: child,
+            ),
+          ),
+        );
+      },
+      child: ExcludeSemantics(
+        excluding: !reachable,
+        child: ExcludeFocus(
+          excluding: !reachable,
+          child: IgnorePointer(
+            ignoring: !reachable,
+            child: widget.child,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Premium Glassmorphic Interactive Action Card
-class _GlassCard extends StatefulWidget {
+class _GlassCard extends StatelessWidget {
   final String title;
   final String subtitle;
   final IconData icon;
   final RadialGradient badgeGradient;
   final Color badgeGlowColor;
   final VoidCallback onTap;
-  final bool allowDragDrop;
-  final void Function(List<String> paths)? onFilesDropped;
+
+  /// Non-null for a card that opens something: it then draws a chevron that
+  /// turns with the state, and tells a screen reader which state it is in.
+  final bool? expanded;
+
+  /// Something is being dragged over the card.
+  final bool dragOver;
+
+  /// The transport behind this card is being checked.
+  final bool busy;
+
+  /// A small screen: the same card with less air around it.
+  final bool compact;
 
   const _GlassCard({
     required this.title,
@@ -338,239 +743,408 @@ class _GlassCard extends StatefulWidget {
     required this.badgeGradient,
     required this.badgeGlowColor,
     required this.onTap,
-    this.allowDragDrop = false,
-    this.onFilesDropped,
+    this.expanded,
+    this.dragOver = false,
+    this.busy = false,
+    this.compact = false,
   });
 
   @override
-  State<_GlassCard> createState() => _GlassCardState();
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    final still = MediaQuery.of(context).disableAnimations;
+
+    return _Interactive(
+      onTap: onTap,
+      label: '$title. $subtitle',
+      expanded: expanded,
+      builder: (context, touch) {
+        final lifted = touch.hovered || dragOver;
+        final scale = touch.pressed ? 0.98 : (lifted ? 1.02 : 1.0);
+        final translateY = lifted ? -3.0 : 0.0;
+
+        final borderColor = dragOver
+            ? AppColors.primary
+            : (touch.hovered
+                ? AppColors.secondary
+                : const Color.fromRGBO(255, 255, 255, 0.45));
+        final borderWidth = dragOver ? 2.2 : 1.5;
+        final badge = compact ? 60.0 : 72.0;
+
+        final Widget cardInner = Container(
+          width: double.infinity, // Full horizontal stretch inside its parent
+          decoration: BoxDecoration(
+            color: dragOver
+                ? const Color.fromRGBO(34, 211, 238, 0.18)
+                : const Color.fromRGBO(255, 255, 255, 0.13),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: borderColor, width: borderWidth),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.40),
+                blurRadius: 36,
+                offset: const Offset(0, 10),
+              ),
+              if (lifted)
+                BoxShadow(
+                  color: badgeGlowColor.withValues(alpha: 0.35),
+                  blurRadius: 28,
+                  spreadRadius: 2,
+                ),
+            ],
+          ),
+          child: Stack(
+            children: [
+              // Top Inset Glass Highlight Line
+              Positioned(
+                top: 0,
+                left: 20,
+                right: 20,
+                child: Container(
+                  height: 1.5,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(1),
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.white.withValues(alpha: 0.0),
+                        Colors.white.withValues(alpha: 0.50),
+                        Colors.white.withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              // Glassmorphic Content Padding & Centered Layout
+              Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: compact ? 20.0 : 32.0,
+                  vertical: compact ? 24.0 : 34.0,
+                ),
+                child: Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      // Circular Badge with Radial Gradient & Strong Glow
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 220),
+                        width: badge,
+                        height: badge,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          gradient: badgeGradient,
+                          boxShadow: [
+                            BoxShadow(
+                              color: badgeGlowColor
+                                  .withValues(alpha: lifted ? 0.90 : 0.70),
+                              blurRadius: lifted ? 32 : 24,
+                              spreadRadius: lifted ? 3 : 1,
+                            ),
+                          ],
+                        ),
+                        child: Center(
+                          child: Icon(
+                            icon,
+                            size: compact ? 32 : 38,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+
+                      SizedBox(height: compact ? 14 : 18),
+
+                      // Card Title (Centered)
+                      Text(
+                        title,
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.inter(
+                          fontSize: compact ? 22 : 24,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                          letterSpacing: -0.3,
+                        ),
+                      ),
+
+                      const SizedBox(height: 6),
+
+                      // Subtitle (Centered)
+                      Text(
+                        dragOver ? l10n.homeDropHere : subtitle,
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.inter(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w400,
+                          color: dragOver
+                              ? AppColors.primary
+                              : const Color.fromRGBO(255, 255, 255, 0.85),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              // What the card does next: a spinner while its transport is
+              // being checked, otherwise the chevron of a card that opens.
+              if (busy)
+                const Positioned(
+                  top: 16,
+                  right: 18,
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.2,
+                      color: Colors.white,
+                    ),
+                  ),
+                )
+              else if (expanded != null)
+                Positioned(
+                  top: 14,
+                  right: 16,
+                  child: AnimatedRotation(
+                    turns: expanded! ? 0.5 : 0,
+                    duration: still ? Duration.zero : AppMotion.expand,
+                    curve: AppMotion.expandCurve,
+                    child: Icon(
+                      Icons.expand_more_rounded,
+                      size: 26,
+                      color: Colors.white.withValues(alpha: 0.85),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+
+        final Widget cardContent = AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+          transform: Matrix4.identity()
+            ..translateByDouble(0.0, translateY, 0.0, 1.0)
+            ..scaleByDouble(scale, scale, scale, 1.0),
+          child: cardInner,
+        );
+
+        // iOS uses the opaque card treatment without a backdrop readback blur.
+        final Widget glassCard = ClipRRect(
+          borderRadius: BorderRadius.circular(24),
+          child: Platform.isIOS
+              ? cardContent
+              : BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
+                  child: cardContent,
+                ),
+        );
+
+        // The keyboard-focus ring is drawn over the card's own edge, so
+        // tabbing onto it does not nudge the layout by a pixel or two.
+        return Container(
+          foregroundDecoration: touch.focused
+              ? BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: AppColors.primary, width: 2),
+                )
+              : null,
+          child: glassCard,
+        );
+      },
+    );
+  }
 }
 
-class _GlassCardState extends State<_GlassCard> {
-  bool _isHovered = false;
-  bool _isPressed = false;
-  bool _isFocused = false;
-  bool _isDragOver = false;
+/// One of the ways AirDrop opens into: a glass row with the transport's name,
+/// one line on what it needs, and a way forward.
+class _OptionButton extends StatelessWidget {
+  final TransportType type;
+  final bool busy;
+  final VoidCallback onTap;
 
-  void _handleTap() {
-    HapticFeedback.lightImpact();
-    widget.onTap();
-  }
+  const _OptionButton({
+    required this.type,
+    required this.onTap,
+    this.busy = false,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final supportsNativeDrop =
-        Platform.isMacOS || Platform.isWindows || Platform.isLinux;
-    final scale = _isPressed ? 0.98 : (_isHovered || _isDragOver ? 1.02 : 1.0);
-    final translateY = _isHovered || _isDragOver ? -3.0 : 0.0;
+    final l10n = AppLocalizations.of(context);
+    final title = l10n.transportTitle(type);
+    final subtitle = l10n.transportSubtitle(type);
+    final gradient = type == TransportType.bluetooth
+        ? const LinearGradient(
+            colors: [AppColors.primary, AppColors.primaryDeep])
+        : const LinearGradient(
+            colors: [AppColors.secondary, AppColors.secondaryDark]);
 
-    final borderColor = _isDragOver
-        ? AppColors.primary
-        : (_isHovered
-            ? AppColors.secondary
-            : const Color.fromRGBO(255, 255, 255, 0.45));
-
-    final borderWidth = _isDragOver ? 2.2 : 1.5;
-
-    final Widget cardInner = Container(
-      width:
-          double.infinity, // Ensures full horizontal stretch inside container
-      decoration: BoxDecoration(
-        color: _isDragOver
-            ? const Color.fromRGBO(34, 211, 238, 0.18)
-            : const Color.fromRGBO(255, 255, 255, 0.13),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: borderColor, width: borderWidth),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.40),
-            blurRadius: 36,
-            offset: const Offset(0, 10),
-          ),
-          if (_isHovered || _isDragOver)
-            BoxShadow(
-              color: widget.badgeGlowColor.withValues(alpha: 0.35),
-              blurRadius: 28,
-              spreadRadius: 2,
+    return _Interactive(
+      onTap: onTap,
+      label: '$title. $subtitle',
+      builder: (context, touch) {
+        final Widget row = AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          decoration: BoxDecoration(
+            color: touch.pressed
+                ? const Color.fromRGBO(255, 255, 255, 0.07)
+                : (touch.hovered
+                    ? const Color.fromRGBO(255, 255, 255, 0.17)
+                    : const Color.fromRGBO(255, 255, 255, 0.11)),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: touch.focused
+                  ? AppColors.primary
+                  : (touch.hovered
+                      ? AppColors.secondary
+                      : AppColors.glassBorder),
+              width: touch.focused ? 2 : 1.2,
             ),
-        ],
-      ),
-      child: Stack(
-        children: [
-          // Top Inset Glass Highlight Line
-          Positioned(
-            top: 0,
-            left: 20,
-            right: 20,
-            child: Container(
-              height: 1.5,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(1),
-                gradient: LinearGradient(
-                  colors: [
-                    Colors.white.withValues(alpha: 0.0),
-                    Colors.white.withValues(alpha: 0.50),
-                    Colors.white.withValues(alpha: 0.0),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: gradient,
+                ),
+                child: Icon(type.icon, color: Colors.white, size: 24),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: GoogleFonts.inter(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: GoogleFonts.inter(
+                        fontSize: 13,
+                        height: 1.3,
+                        color: Colors.white.withValues(alpha: 0.78),
+                      ),
+                    ),
                   ],
                 ),
               ),
+              const SizedBox(width: 10),
+              if (busy)
+                const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.2,
+                    color: Colors.white,
+                  ),
+                )
+              else
+                Icon(
+                  Icons.chevron_right_rounded,
+                  color: Colors.white.withValues(alpha: 0.85),
+                ),
+            ],
+          ),
+        );
+
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Platform.isIOS
+              ? row
+              : BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                  child: row,
+                ),
+        );
+      },
+    );
+  }
+}
+
+/// Receiving, as an action of its own below the two ways to send.
+///
+/// Quieter than the cards on purpose: it is not a way to send, and it needs no
+/// choice of transport — the sender's QR code or digits decide the path.
+class _ReceiveButton extends StatelessWidget {
+  final String title;
+  final String hint;
+  final VoidCallback onTap;
+
+  const _ReceiveButton({
+    required this.title,
+    required this.hint,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return _Interactive(
+      onTap: onTap,
+      label: '$title. $hint',
+      builder: (context, touch) {
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          decoration: BoxDecoration(
+            color: touch.hovered
+                ? const Color.fromRGBO(255, 255, 255, 0.12)
+                : const Color.fromRGBO(255, 255, 255, 0.05),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: touch.focused
+                  ? AppColors.primary
+                  : (touch.hovered
+                      ? AppColors.secondary
+                      : AppColors.glassBorder),
+              width: touch.focused ? 2 : 1.2,
             ),
           ),
-
-          // Glassmorphic Content Padding & Centered Layout
-          Padding(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 32.0, vertical: 34.0),
-            child: Center(
-              child: Column(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
                 mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  // Circular Badge with Radial Gradient & Strong Glow
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 220),
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: widget.badgeGradient,
-                      boxShadow: [
-                        BoxShadow(
-                          color: widget.badgeGlowColor.withValues(
-                              alpha: _isHovered || _isDragOver ? 0.90 : 0.70),
-                          blurRadius: _isHovered || _isDragOver ? 32 : 24,
-                          spreadRadius: _isHovered || _isDragOver ? 3 : 1,
-                        ),
-                      ],
-                    ),
-                    child: Center(
-                      child: Icon(
-                        widget.icon,
-                        size: 38,
+                  const Icon(Icons.download_rounded,
+                      color: Colors.white, size: 22),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      title,
+                      textAlign: TextAlign.center,
+                      style: GoogleFonts.inter(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w600,
                         color: Colors.white,
                       ),
                     ),
                   ),
-
-                  const SizedBox(height: 18),
-
-                  // Card Title (Centered)
-                  Text(
-                    widget.title,
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.inter(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                      letterSpacing: -0.3,
-                    ),
-                  ),
-
-                  const SizedBox(height: 6),
-
-                  // Subtitle (Centered)
-                  Text(
-                    _isDragOver ? AppLocalizations.of(context).homeDropHere : widget.subtitle,
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.inter(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w400,
-                      color: _isDragOver
-                          ? AppColors.primary
-                          : const Color.fromRGBO(255, 255, 255, 0.85),
-                    ),
-                  ),
                 ],
               ),
-            ),
+              const SizedBox(height: 4),
+              Text(
+                hint,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(
+                  fontSize: 13,
+                  color: Colors.white.withValues(alpha: 0.78),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-    );
-
-    final Widget cardContent = AnimatedContainer(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-      transform: Matrix4.identity()
-        ..translateByDouble(0.0, translateY, 0.0, 1.0)
-        ..scaleByDouble(scale, scale, scale, 1.0),
-      child: cardInner,
-    );
-
-    // iOS uses the opaque card treatment without a backdrop readback blur.
-    final Widget glassCard = ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: Platform.isIOS
-          ? cardContent
-          : BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
-              child: cardContent,
-            ),
-    );
-
-    // Keyboard & Focus Outline detector
-    final Widget interactiveCard = FocusableActionDetector(
-      onFocusChange: (focused) => setState(() => _isFocused = focused),
-      actions: {
-        ActivateIntent:
-            CallbackAction<ActivateIntent>(onInvoke: (_) => _handleTap()),
+        );
       },
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) => setState(() => _isHovered = true),
-        onExit: (_) => setState(() => _isHovered = false),
-        child: GestureDetector(
-          onTapDown: (_) => setState(() => _isPressed = true),
-          onTapUp: (_) => setState(() => _isPressed = false),
-          onTapCancel: () => setState(() => _isPressed = false),
-          onTap: _handleTap,
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(26),
-              border: _isFocused
-                  ? Border.all(color: AppColors.primary, width: 2)
-                  : null,
-            ),
-            child: glassCard,
-          ),
-        ),
-      ),
     );
-
-    // Flutter's DragTarget handles in-app draggables. DropTarget adds the
-    // native Finder/Explorer/Linux file-manager pipeline for desktop users.
-    Widget dropContent = interactiveCard;
-    if (widget.allowDragDrop && supportsNativeDrop) {
-      dropContent = DragTarget<String>(
-        onWillAcceptWithDetails: (_) {
-          setState(() => _isDragOver = true);
-          return true;
-        },
-        onLeave: (_) => setState(() => _isDragOver = false),
-        onAcceptWithDetails: (details) {
-          setState(() => _isDragOver = false);
-          widget.onFilesDropped?.call([details.data]);
-        },
-        builder: (context, candidateData, rejectedData) => interactiveCard,
-      );
-    }
-
-    if (widget.allowDragDrop) {
-      return DropTarget(
-        onDragEntered: (_) => setState(() => _isDragOver = true),
-        onDragExited: (_) => setState(() => _isDragOver = false),
-        onDragDone: (details) {
-          setState(() => _isDragOver = false);
-          final paths = details.files
-              .map((file) => file.path)
-              .where((path) => path.isNotEmpty)
-              .toList();
-          if (paths.isNotEmpty) widget.onFilesDropped?.call(paths);
-        },
-        child: dropContent,
-      );
-    }
-
-    return dropContent;
   }
 }

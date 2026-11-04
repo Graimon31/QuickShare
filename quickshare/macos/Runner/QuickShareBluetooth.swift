@@ -2,28 +2,28 @@ import Cocoa
 import FlutterMacOS
 import CoreBluetooth
 
-/// Native CoreBluetooth bridge for QuickShare's Bluetooth transport.
+/// Native CoreBluetooth bridge for QuickShare's Bluetooth rendezvous.
 ///
-/// nearby_connections (used on Android/iOS) has no macOS implementation at
-/// all, so this is a from-scratch GATT-based file transfer:
+///   Sender   = CBPeripheralManager, advertises a custom service and, once a
+///              receiver has subscribed and written `START:<token>`, tells
+///              Dart so; Dart then negotiates a Wi-Fi link with it over the
+///              metadata characteristic.
+///   Receiver = CBCentralManager, scans for that service, connects,
+///              subscribes, writes CAPS / HELLO / `START:<token>`, and hands
+///              the sender's frames to Dart.
 ///
-///   Sender   = CBPeripheralManager, advertises a custom service and streams
-///              the file as notifications once a receiver subscribes and
-///              signals it is ready.
-///   Receiver = CBCentralManager, scans for that service, connects, and
-///              reassembles the file from notifications in arrival order.
+/// **No file crosses this bridge.** Since protocol generation 4 the bytes
+/// travel over a Wi-Fi link the two devices raise between them, and the owner's
+/// decision is that a file does not travel over plain Bluetooth at all. What
+/// used to push and receive them — a notification pump on the sender, a
+/// partial-file writer on the receiver — was unreachable, and is gone.
 ///
-/// GATT layout (see `ServiceIDs` below):
-///   - control  (write, central -> peripheral): "START" begins the transfer.
-///   - metadata (notify, peripheral -> central): one JSON blob {name,size,mime}.
-///   - data     (notify, peripheral -> central): raw file bytes, chunked to
-///              whatever `maximumUpdateValueLength` allows once negotiated.
-///
-/// There is no explicit "chunk N of M" framing: BLE notifications on a single
-/// characteristic arrive in order over one ATT connection, so the receiver
-/// just concatenates bytes and finalizes once `received >= size` from the
-/// metadata message — the same pattern already used by the HTTP and WebRTC
-/// transports elsewhere in this app.
+/// GATT layout (see `BTServiceIDs` below):
+///   - control  (write, central -> peripheral): CAPS, HELLO, KEX, AP, START.
+///   - metadata (notify, peripheral -> central): the `link` and `serve` frames.
+///   - data     (notify, peripheral -> central): subscribed to, and nothing is
+///              ever sent on it. The receiver's subscription is how the sender
+///              learns it is fully connected.
 /// The control-characteristic vocabulary, mirrored from
 /// `lib/core/transfer/ble_control_protocol.dart`. See that file for why a
 /// receiver announces itself before it starts a transfer.
@@ -36,8 +36,8 @@ enum BTControl {
 
     static func capabilities() -> String { "CAPS:\(generation)" }
 
-    /// Written by a receiver that is present but not asking for anything yet,
-    /// so a sender showing a list of devices has something to put in it.
+    /// Written by a receiver ahead of its START, to say what it calls itself.
+    /// The sender reads the name only to tell an Apple receiver from the rest.
     /// Mirrors BleControlProtocol.hello in Dart.
     static let helloPrefix = "HELLO:"
 
@@ -120,21 +120,6 @@ enum BTControl {
         + "over Bluetooth. Update it, or send over Wi-Fi."
 }
 
-/// One file inside a Bluetooth session.
-///
-/// `relativePath` is the path the file keeps on the far side, root folder
-/// included — `Trip/Day 1/IMG_0042.HEIC`. It is what lets a folder cross this
-/// channel as a folder: before it, the bridge could advertise exactly one
-/// object of a known size, so a folder had to be zipped into one first and
-/// arrived as an archive to unpack.
-struct BTSenderItem {
-    let path: String
-    let name: String
-    let relativePath: String
-    let size: Int
-    let mime: String
-}
-
 enum BTServiceIDs {
     static let service = CBUUID(string: "E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B10")
     static let control = CBUUID(string: "E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11")
@@ -150,32 +135,14 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     private var controlChar: CBMutableCharacteristic?
     private var metadataChar: CBMutableCharacteristic?
     private var dataChar: CBMutableCharacteristic?
-    private var sendFileHandle: FileHandle?
-
-    /// The session, in send order, and where the pump has got to inside it.
-    private var sendItems: [BTSenderItem] = []
-    private var sendItemIndex = 0
-    private var sendItemBytesSent = 0
-
-    /// Counted across the whole session, so a folder of forty photos fills one
-    /// progress ring rather than forty.
-    private var sendTotalBytes: Int = 0
-    private var sendBytesSent: Int = 0
-
-    /// The metadata frame for the file about to be sent, still waiting for
-    /// room in the notification queue. Its bytes must not start before it
-    /// lands, or the receiver files them under the previous file.
-    private var pendingMetadataJSON: Data?
     private var subscribedToData = false
     private var subscribedToMetadata = false
-    private var subscribedCentral: CBCentral?
     private var transferStarted = false
     private var sendSessionToken: String?
 
     /// What the receiver said it can take, from its `CAPS:` write. Nil means
-    /// it never sent one — a build that stops at the first file of a session.
+    /// it never sent one.
     private var sendPeerGeneration: Int?
-    private let sendChunkQueueLabel = DispatchQueue(label: "quickshare.ble.send")
 
     // MARK: Central (receiver) state
     private var centralManager: CBCentralManager?
@@ -184,33 +151,15 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     private var remoteControlChar: CBCharacteristic?
     private var remoteMetadataChar: CBCharacteristic?
     private var remoteDataChar: CBCharacteristic?
-    private var receiveFileHandle: FileHandle?
-
-    /// The destination directory, which stays the destination directory.
-    /// It used to be overwritten with the finished file's path, which a
-    /// session of more than one file cannot survive.
-    private var receiveDirectory: String?
-    private var receiveTargetPath: String?
-
-    /// Session totals — every file the sender announced, and every byte of
-    /// them that has landed.
-    private var receiveTotalBytes: Int = 0
-    private var receiveBytesReceived: Int = 0
-
-    /// The file currently open, and where the session is in its list.
-    private var receiveFileTotalBytes: Int = 0
-    private var receiveFileBytes: Int = 0
-    private var receiveItemIndex = 0
-    private var receiveItemCount = 1
-    private var receivedPaths: [String] = []
-    private var receiveFileName = "received_file"
     private var metadataSubscribed = false
     private var dataSubscribed = false
     private var expectedSessionToken: String?
     private var expectedPublicId: String?
     private var centralConnectTimeoutTimer: Timer?
-    private var senderAsCentral = false
-    private var scanningForReceivers = false
+
+    /// A sender that is pushing a file over this channel is an older build.
+    /// Said once: its file is thousands of notifications.
+    private var reportedStaleSender = false
 
     static func register(with registrar: FlutterPluginRegistrar) {
         let instance = QuickShareBluetoothPlugin()
@@ -249,13 +198,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
                 result(FlutterError(code: "BAD_ARGS", message: "arguments required", details: nil))
                 return
             }
-            let items = Self.senderItems(from: args)
-            guard !items.isEmpty else {
-                result(FlutterError(code: "BAD_ARGS", message: "files or filePath/fileName/fileSize required", details: nil))
-                return
-            }
-            startAdvertising(items: items,
-                             sessionToken: args["sessionToken"] as? String,
+            startAdvertising(sessionToken: args["sessionToken"] as? String,
                              publicId: args["publicId"] as? String)
             result(nil)
 
@@ -272,12 +215,6 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
                   let data = try? JSONSerialization.data(withJSONObject: frame)
             else {
                 result(FlutterError(code: "BAD_ARGS", message: "frame required", details: nil))
-                return
-            }
-            if senderAsCentral, let metadata = remoteMetadataChar, let peripheral = targetPeripheral {
-                let type: CBCharacteristicWriteType = metadata.properties.contains(.write) ? .withResponse : .withoutResponse
-                peripheral.writeValue(data, for: metadata, type: type)
-                result(nil)
                 return
             }
             guard let metadata = metadataChar, let manager = peripheralManager else {
@@ -313,8 +250,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         case "startScanning":
             let scanArgs = call.arguments as? [String: Any]
             startScanning(sessionToken: scanArgs?["sessionToken"] as? String,
-                          publicId: scanArgs?["publicId"] as? String,
-                          forReceivers: scanArgs?["forReceivers"] as? Bool ?? false)
+                          publicId: scanArgs?["publicId"] as? String)
             result(nil)
 
         case "stopScanning":
@@ -328,12 +264,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
                 result(FlutterError(code: "BAD_ARGS", message: "deviceId required", details: nil))
                 return
             }
-            let targetDir = args["targetDir"] as? String ?? NSTemporaryDirectory()
-            if let token = args["sessionToken"] as? String, !token.isEmpty {
-                expectedSessionToken = token
-            }
-            senderAsCentral = args["asSender"] as? Bool ?? false
-            connect(deviceId: deviceId, targetDir: targetDir)
+            connect(deviceId: deviceId)
             result(nil)
 
         case "cancelTransfer":
@@ -347,61 +278,14 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
 
     // MARK: - Sender (Peripheral)
 
-    /// Reads the session out of the method-channel arguments.
-    ///
-    /// `files` is what Dart sends now. The single-file keys beside it are what
-    /// every earlier build sent, and they are still read so a mismatched pair
-    /// of binaries degrades to the one-file session it used to be rather than
-    /// failing outright.
-    private static func senderItems(from args: [String: Any]) -> [BTSenderItem] {
-        if let raw = args["files"] as? [[String: Any]], !raw.isEmpty {
-            return raw.compactMap { entry in
-                guard let path = entry["filePath"] as? String,
-                      let name = entry["fileName"] as? String,
-                      let size = entry["fileSize"] as? Int else { return nil }
-                return BTSenderItem(
-                    path: path,
-                    name: name,
-                    relativePath: entry["relativePath"] as? String ?? name,
-                    size: max(size, 0),
-                    mime: entry["mimeType"] as? String ?? "application/octet-stream"
-                )
-            }
-        }
-        guard let path = args["filePath"] as? String,
-              let name = args["fileName"] as? String,
-              let size = args["fileSize"] as? Int else { return [] }
-        return [BTSenderItem(
-            path: path,
-            name: name,
-            relativePath: name,
-            size: max(size, 0),
-            mime: args["mimeType"] as? String ?? "application/octet-stream"
-        )]
-    }
-
-    private func startAdvertising(items: [BTSenderItem],
-                                  sessionToken: String?,
-                                  publicId: String? = nil) {
+    private func startAdvertising(sessionToken: String?, publicId: String? = nil) {
         stopAdvertising()
-        sendItems = items
-        sendItemIndex = 0
-        sendItemBytesSent = 0
-        sendTotalBytes = items.reduce(0) { $0 + $1.size }
-        sendBytesSent = 0
         transferStarted = false
         sendSessionToken = sessionToken
         subscribedToData = false
         subscribedToMetadata = false
-        pendingMetadataJSON = nil
         sendPeerGeneration = nil
-        sendFileHandle = nil
 
-        // The file is not opened here any more. It was, so an unreadable one
-        // was reported while the sender still had their own screen up — but
-        // since generation 4 no file crosses this characteristic at all, and
-        // holding a handle open for the length of an advertisement bought
-        // nothing.
         let control = CBMutableCharacteristic(
             type: BTServiceIDs.control,
             properties: [.write, .writeWithoutResponse],
@@ -448,59 +332,18 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     private func stopAdvertising() {
         peripheralManager?.stopAdvertising()
         peripheralManager = nil
-        sendFileHandle?.closeFile()
-        sendFileHandle = nil
         controlChar = nil
         metadataChar = nil
         dataChar = nil
-        pendingMetadataJSON = nil
         subscribedToData = false
         subscribedToMetadata = false
-        sendItems = []
-        sendItemIndex = 0
-        sendItemBytesSent = 0
         transferStarted = false
         sendSessionToken = nil
         sendPeerGeneration = nil
     }
 
-    /// Opens the file at [sendItemIndex] and queues its metadata frame.
-    ///
-    /// Returns false, having reported the failure, when the file cannot be
-    /// read.
-    @discardableResult
-    private func openCurrentSendItem() -> Bool {
-        guard sendItemIndex < sendItems.count else { return false }
-        let item = sendItems[sendItemIndex]
-        guard let handle = FileHandle(forReadingAtPath: item.path) else {
-            emit(["type": "senderFailed", "error": "Could not open file for reading: \(item.path)"])
-            return false
-        }
-        sendFileHandle = handle
-        sendItemBytesSent = 0
-        let metaJSON: [String: Any] = [
-            "name": item.name,
-            // The relative path the receiver rebuilds the folder from.
-            "path": item.relativePath,
-            "size": item.size,
-            "mime": item.mime,
-            "index": sendItemIndex,
-            "count": sendItems.count,
-            "sessionBytes": sendTotalBytes,
-        ]
-        pendingMetadataJSON = try? JSONSerialization.data(withJSONObject: metaJSON)
-        return true
-    }
+    // MARK: - Receiver (Central)
 
-    /// Sends as much of the session as the current notification queue allows,
-    /// stopping (and relying on `peripheralManagerIsReady(toUpdateSubscribers:)`
-    /// to resume) as soon as `updateValue` reports backpressure.
-    ///
-    /// One loop for the whole list rather than one per file: each item's
-    /// metadata goes out, then its bytes, then the next item's metadata. Any
-    /// `updateValue` can refuse for want of room, which is why the pending
-    /// metadata and the file offset are state rather than locals — this
-    /// method has to be able to pick up exactly where it stopped.
     /// Writes one control command to the sender this device is connected to.
     private var pendingControlWrites: [String] = []
 
@@ -520,87 +363,10 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         result(nil)
     }
 
-    /// True once the far side has said it understands the direct link, which
-    /// is every peer this build will transfer with.
-    ///
-    /// Gates the file pump. Since generation 4 the file never crosses this
-    /// characteristic — the rendezvous does — and the two share a queue: a
-    /// negotiation frame that came back BUSY is retried by the caller, while
-    /// `peripheralManagerIsReady` would meanwhile push file bytes into the
-    /// same channel. The receiver writes whatever arrives there straight to a
-    /// partial and renames it with none of QHTP's checks, so this is not only
-    /// a wasted radio.
-    private var sendUsesDirectLink: Bool {
-        (sendPeerGeneration ?? 1) >= BTControl.generation
-    }
-
-    private func pumpSendQueue() {
-        guard let generation = sendPeerGeneration,
-              generation < BTControl.generation else { return }
-        guard let manager = peripheralManager,
-              let dataChar = dataChar,
-              let metaChar = metadataChar else { return }
-
-        // On macOS, negotiated MTU is exposed per-subscriber on CBCentral, not
-        // on CBPeripheralManager (that shortcut only exists on iOS). Fall back
-        // to a conservative default if we somehow don't have a central yet.
-        let mtu = subscribedCentral?.maximumUpdateValueLength ?? 182
-        let chunkSize = max(mtu - 3, 20)
-
-        while sendItemIndex < sendItems.count {
-            if let pending = pendingMetadataJSON {
-                if !manager.updateValue(pending, for: metaChar, onSubscribedCentrals: nil) {
-                    return
-                }
-                pendingMetadataJSON = nil
-            }
-
-            let item = sendItems[sendItemIndex]
-            guard let handle = sendFileHandle else { return }
-
-            while sendItemBytesSent < item.size {
-                let chunk = handle.readData(ofLength: chunkSize)
-                if chunk.isEmpty { break }
-
-                let ok = manager.updateValue(chunk, for: dataChar, onSubscribedCentrals: nil)
-                if !ok {
-                    // Queue is full; rewind so this chunk is resent once ready.
-                    handle.seek(toFileOffset: UInt64(sendItemBytesSent))
-                    return
-                }
-
-                sendItemBytesSent += chunk.count
-                sendBytesSent += chunk.count
-                emit(["type": "senderProgress", "sent": sendBytesSent, "total": sendTotalBytes])
-            }
-
-            guard sendItemBytesSent >= item.size else {
-                handle.closeFile()
-                sendFileHandle = nil
-                emit(["type": "senderFailed", "error": "\(item.name) ended after \(sendItemBytesSent) of \(item.size) bytes"])
-                return
-            }
-
-            handle.closeFile()
-            sendFileHandle = nil
-            sendItemIndex += 1
-            if sendItemIndex < sendItems.count {
-                guard openCurrentSendItem() else { return }
-            }
-        }
-
-        emit(["type": "senderCompleted"])
-    }
-
-    // MARK: - Receiver (Central)
-
-    private func startScanning(sessionToken: String? = nil, publicId: String? = nil,
-                               forReceivers: Bool = false) {
+    private func startScanning(sessionToken: String? = nil, publicId: String? = nil) {
         discovered.removeAll()
         expectedSessionToken = sessionToken
         expectedPublicId = publicId
-        scanningForReceivers = forReceivers
-        senderAsCentral = forReceivers
         let manager = centralManager ?? CBCentralManager(delegate: self, queue: nil)
         centralManager = manager
         let options: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: true]
@@ -618,30 +384,21 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         pendingStartScan = false
     }
 
-    private func connect(deviceId: String, targetDir: String) {
+    private func connect(deviceId: String) {
         guard let peripheral = discovered[deviceId] else {
             emit(["type": "receiverFailed", "error": "Device no longer available"])
             return
         }
         centralManager?.stopScan()
         targetPeripheral = peripheral
-        receiveDirectory = targetDir
-        receiveTargetPath = nil
-        receiveTotalBytes = 0
-        receiveBytesReceived = 0
-        receiveFileTotalBytes = 0
-        receiveFileBytes = 0
-        receiveItemIndex = 0
-        receiveItemCount = 1
-        receivedPaths = []
         remoteControlChar = nil
         remoteMetadataChar = nil
         remoteDataChar = nil
         metadataSubscribed = false
         dataSubscribed = false
+        reportedStaleSender = false
         pendingControlWrites.removeAll()
         peripheral.delegate = self
-        emit(["type": "connecting"])
 
         centralConnectTimeoutTimer?.invalidate()
         centralConnectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
@@ -667,8 +424,6 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         if let p = targetPeripheral {
             centralManager?.cancelPeripheralConnection(p)
         }
-        receiveFileHandle?.closeFile()
-        receiveFileHandle = nil
         targetPeripheral = nil
         remoteControlChar = nil
         remoteMetadataChar = nil
@@ -679,61 +434,16 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         discovered.removeAll()
     }
 
-    private func uniquePath(_ path: String) -> String {
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: path) { return path }
-        let url = URL(fileURLWithPath: path)
-        let ext = url.pathExtension
-        let stem = url.deletingPathExtension().lastPathComponent
-        let dir = url.deletingLastPathComponent()
-        var counter = 1
-        var candidate = path
-        while fm.fileExists(atPath: candidate) {
-            let suffix = ext.isEmpty ? "\(stem) (\(counter))" : "\(stem) (\(counter)).\(ext)"
-            candidate = dir.appendingPathComponent(suffix).path
-            counter += 1
-        }
-        return candidate
-    }
-
-    /// Where a file announced as [relative] is written, under [directory].
-    ///
-    /// Every segment came off the wire, so every segment is put through the
-    /// same filename cleaner as a flat name, and `.`/`..` are dropped rather
-    /// than resolved — a sender cannot name its way out of the destination.
-    /// The containment check afterwards is deliberate belt and braces.
-    private func resolveReceivePath(_ relative: String, in directory: String) -> String? {
-        let segments = relative
-            .replacingOccurrences(of: "\\", with: "/")
-            .split(separator: "/")
-            .map(String.init)
-            .filter { $0 != "." && $0 != ".." && !$0.isEmpty }
-            .map(sanitizeFileName)
-
-        let root = URL(fileURLWithPath: directory).standardizedFileURL
-        var url = root
-        for segment in segments.isEmpty ? ["received_file"] : segments {
-            url.appendPathComponent(segment)
-        }
-        let resolved = url.standardizedFileURL
-        guard resolved.path.hasPrefix(root.path + "/") else { return nil }
-        return resolved.path
-    }
-
-    /// Flushes and records whatever file is open, exactly once.
-    private func sealCurrentReceiveFile() {
-        receiveFileHandle?.closeFile()
-        receiveFileHandle = nil
-        if let path = receiveTargetPath, !receivedPaths.contains(path) {
-            receivedPaths.append(path)
-        }
-    }
-
-    private func sanitizeFileName(_ name: String) -> String {
-        let base = (name as NSString).lastPathComponent
-        let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters)
-        let cleaned = base.components(separatedBy: invalid).joined(separator: "_").trimmingCharacters(in: .whitespaces)
-        return cleaned.isEmpty ? "received_file" : cleaned
+    /// A sender that writes a file's metadata or bytes to this channel is a
+    /// build from before the direct link. It is told so, once, in words the
+    /// person can act on; nothing it sends is written anywhere.
+    private func refuseStaleSender() {
+        guard !reportedStaleSender else { return }
+        reportedStaleSender = true
+        emit(["type": "receiverFailed",
+              "error": "The sending device is on an older version that sends files over Bluetooth itself. "
+                  + "This version receives them over a direct Wi-Fi link only. Update the sending device.",
+              "code": "senderTooOldForDirectLink"])
     }
 }
 
@@ -767,7 +477,6 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
     }
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
-        subscribedCentral = central
         if characteristic.uuid == BTServiceIDs.metadata {
             subscribedToMetadata = true
         }
@@ -795,7 +504,7 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
             }
 
             // Always ahead of START, so it is on record before the decision
-            // about what this session may send is taken.
+            // about what this session may do is taken.
             if let command, let generation = BTControl.parseCapabilities(command) {
                 sendPeerGeneration = generation
                 peripheral.respond(to: request, withResult: .success)
@@ -850,16 +559,15 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
         guard !transferStarted, metadataChar != nil else { return }
 
         // Generation 4 is where the bytes left this radio. A peer from this
-        // generation on gets the Wi-Fi link negotiated over this channel
-        // instead of the file over it — Dart runs that from the receiverReady
-        // event. A peer below it gets told to update rather than sent the
-        // file slowly.
+        // generation on gets the Wi-Fi link negotiated over this channel —
+        // Dart runs that from the receiverReady event. A peer below it gets
+        // told to update rather than sent anything.
         let peerGen = sendPeerGeneration ?? BTControl.generation
         if peerGen >= BTControl.generation {
             transferStarted = true
             emit(["type": "receiverReady"])
         } else {
-            guard subscribedToData, pendingMetadataJSON != nil else { return }
+            guard subscribedToData else { return }
             transferStarted = true
             // The error text is English, for the log; the code is what the
             // Dart side translates for the screen.
@@ -867,10 +575,6 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
                   "error": BTControl.directLinkRequiredMessage,
                   "code": "receiverTooOldForDirectLink"])
         }
-    }
-
-    public func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
-        pumpSendQueue()
     }
 }
 
@@ -888,11 +592,15 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         let advertisedName = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? "Unknown device"
-        // What the sender advertises is the session's public identifier, derived
-        // from the code and carrying nothing secret. Earlier builds advertised the
-        // first eight characters of the token instead, so that match stays as the
-        // fallback — dropping it would make this build unable to see them.
-        if !scanningForReceivers, advertisedName.hasPrefix("QuickShare-") {
+        // What a sender advertises is the session's public identifier, derived
+        // from the code and carrying nothing secret. A device with no
+        // `QuickShare-` name at all — a Windows PC or an Android phone, which
+        // cannot carry one beside the service UUID — is accepted: the scan is
+        // already filtered to our service, and the START token is what
+        // authenticates. Earlier builds advertised the first eight characters
+        // of the token instead, so that match stays as the fallback —
+        // dropping it would make this build unable to see them.
+        if advertisedName.hasPrefix("QuickShare-") {
             if let expectedPublicId, !expectedPublicId.isEmpty {
                 if !advertisedName.contains(expectedPublicId) { return }
             } else if let expectedSessionToken,
@@ -936,14 +644,10 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
         dataSubscribed = false
         pendingControlWrites.removeAll()
         discovered.removeAll()
-        receiveFileHandle?.closeFile()
-        receiveFileHandle = nil
 
+        // Whether this matters is Dart's call: before the serve frame it ends
+        // the session, after it nothing is waiting on the radio.
         emit(["type": "receiverDisconnected"])
-
-        if receiveBytesReceived < receiveTotalBytes || receiveTotalBytes == 0 {
-            emit(["type": "receiverFailed", "error": "Sender disconnected before the transfer finished"])
-        }
     }
 }
 
@@ -1011,7 +715,7 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
 
             // Say what this build can take, before START rather than after. A
             // sender that reaches START without having seen this knows the far
-            // side is old and refuses to half-deliver a folder to it.
+            // side is old and refuses it with the update it needs.
             //
             // Senders up to v1.0.10 answer this with success or an ATT error
             // depending on their platform, and then carry on waiting for
@@ -1023,10 +727,8 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
 
             // Who this is, ahead of START. The sender reads the name only to
             // tell an Apple receiver from the rest; it is never listed.
-            if !senderAsCentral {
-                let myName = Host.current().localizedName ?? "Mac"
-                peripheral.writeValue(Data(BTControl.hello(myName).utf8), for: controlChar, type: writeType)
-            }
+            let myName = Host.current().localizedName ?? "Mac"
+            peripheral.writeValue(Data(BTControl.hello(myName).utf8), for: controlChar, type: writeType)
 
             // Flush any control commands buffered while characteristics were resolving
             for cmd in pendingControlWrites {
@@ -1037,9 +739,6 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
 
             guard let token = expectedSessionToken, !token.isEmpty else { return }
             peripheral.writeValue(Data("START:\(token)".utf8), for: controlChar, type: writeType)
-            if senderAsCentral {
-                emit(["type": "receiverReady"])
-            }
         }
     }
 
@@ -1070,76 +769,16 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
                     return
                 }
             }
-            guard
-                let json = try? JSONSerialization.jsonObject(with: value) as? [String: Any],
-                let name = json["name"] as? String,
-                let size = json["size"] as? Int
-            else {
-                emit(["type": "receiverFailed", "error": "Malformed metadata from sender"])
-                return
-            }
-
-            // A metadata frame is this channel's only end-of-file marker:
-            // whatever is open belongs to the item before this one.
-            sealCurrentReceiveFile()
-
-            receiveFileName = sanitizeFileName(name)
-            receiveFileTotalBytes = size
-            receiveFileBytes = 0
-            receiveItemIndex = json["index"] as? Int ?? 0
-            // A sender that says nothing is a sender with one file, which is
-            // what every build before folders could carry.
-            receiveItemCount = json["count"] as? Int ?? 1
-            if receiveItemIndex <= 0 {
-                receiveBytesReceived = 0
-                receivedPaths = []
-                receiveTotalBytes = json["sessionBytes"] as? Int ?? size
-            }
-
-            let dir = receiveDirectory ?? NSTemporaryDirectory()
-            let relative = json["path"] as? String ?? name
-            guard let target = resolveReceivePath(relative, in: dir) else {
-                emit(["type": "receiverFailed", "error": "Path traversal detected in \"\(relative)\""])
-                return
-            }
-            do {
-                // The folder the sender kept has to exist before its first
-                // file can go into it, and directories are created as their
-                // contents arrive.
-                try FileManager.default.createDirectory(
-                    atPath: (target as NSString).deletingLastPathComponent,
-                    withIntermediateDirectories: true
-                )
-            } catch {
-                emit(["type": "receiverFailed", "error": "Cannot create destination directory: \(error.localizedDescription)"])
-                return
-            }
-            let path = uniquePath(target)
-            FileManager.default.createFile(atPath: path, contents: nil)
-            receiveFileHandle = FileHandle(forWritingAtPath: path)
-            receiveTargetPath = path
-
-            emit(["type": "metadataReceived", "name": receiveFileName, "size": receiveTotalBytes])
+            // Anything else on this characteristic is the first frame of a file
+            // from a sender that predates the direct link — or half a frame,
+            // cut by a connection that carries too little.
+            refuseStaleSender()
             return
         }
 
-        if characteristic.uuid == BTServiceIDs.data {
-            receiveFileHandle?.write(value)
-            receiveFileBytes += value.count
-            receiveBytesReceived += value.count
-            emit(["type": "receiverProgress", "received": receiveBytesReceived, "total": receiveTotalBytes])
-
-            if receiveFileTotalBytes > 0, receiveFileBytes >= receiveFileTotalBytes {
-                sealCurrentReceiveFile()
-                // The last item the sender announced, with all of its bytes
-                // in: that is the session, and nothing further is coming.
-                if receiveItemIndex >= receiveItemCount - 1 {
-                    emit(["type": "receiverCompleted", "path": receivedPaths.first ?? receiveTargetPath ?? ""])
-                    if let p = targetPeripheral {
-                        centralManager?.cancelPeripheralConnection(p)
-                    }
-                }
-            }
+        if characteristic.uuid == BTServiceIDs.data, !value.isEmpty {
+            // Nothing is sent here any more. Bytes are an older sender.
+            refuseStaleSender()
         }
     }
 }

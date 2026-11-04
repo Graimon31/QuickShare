@@ -1,7 +1,7 @@
 {
   "@@locale": "en",
   "appName": "DirectDrop",
-  "appTagline": "Share files instantly over Wi-Fi, Bluetooth,\nor by link over the internet",
+  "appTagline": "Share files instantly\nover the internet or directly",
   "commonCancel": "Cancel",
   "commonClear": "Clear",
   "commonSave": "Save",
@@ -11,8 +11,22 @@
   "commonSettings": "Settings",
   "commonChange": "Change",
   "commonOk": "OK",
-  "homeSendTitle": "Send File",
-  "homeSendSubtitle": "Select and share a file",
+  "homeInternetTitle": "Over the internet",
+  "homeInternetSubtitle": "Works from any network",
+  "homeAirdropTitle": "AirDrop",
+  "homeAirdropSubtitle": "For devices close to you",
+  "homeLocalNetworkTitle": "Local network transfer",
+  "homeLocalNetworkSubtitle": "Both devices on the same network",
+  "homeAirdropAltTitle": "{airdrop} alternative",
+  "@homeAirdropAltTitle": {
+    "description": "The name of the Bluetooth-started direct Wi-Fi transfer. {airdrop} is homeAirdropTitle, so renaming the AirDrop label is one edit per language.",
+    "placeholders": {
+      "airdrop": {
+        "type": "String"
+      }
+    }
+  },
+  "homeAirdropAltSubtitle": "To a phone close by, no shared network needed",
   "homeReceiveTitle": "Receive File",
   "homeReceiveSubtitleDesktop": "Enter the code from the sender",
   "homeReceiveSubtitleMobile": "Scan a QR code to download",
@@ -20,17 +34,9 @@
   "homeSettingsTooltip": "Settings",
   "errorOops": "Oops!",
   "errorGoHome": "Go Home",
-  "pickerTitle": "Send File or Folder",
   "pickerIndexing": "Indexing selection…",
   "pickerStartingSession": "Starting a secure peer-to-peer session",
-  "pickerStepMethod": "1. Select Transfer Method",
-  "pickerMethodWifiTitle": "Wi-Fi / Local Network",
-  "pickerMethodWifiSubtitle": "Fast transfer over local Wi-Fi / LAN",
-  "pickerMethodBluetoothTitle": "Bluetooth",
-  "pickerMethodBluetoothSubtitle": "To a phone that scans your QR code",
-  "pickerMethodInternetTitle": "Internet Link",
-  "pickerMethodInternetSubtitle": "Share link via WebRTC signaling server",
-  "pickerStepWhat": "2. Choose What to Share",
+  "pickerStepWhat": "Choose What to Share",
   "pickerPhotosVideos": "Photos & Videos",
   "pickerSelectFile": "Select File",
   "pickerSelectFolder": "Select Folder",
@@ -191,6 +197,14 @@
   "qrDisplayScanOrEnterCode": "Scan the QR or enter the code",
   "offerCodeChangesIn": "Code and QR change in {time}",
   "@offerCodeChangesIn": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "offerQrChangesIn": "QR code changes in {time}",
+  "@offerQrChangesIn": {
     "placeholders": {
       "time": {
         "type": "String"
@@ -428,6 +442,11 @@
   "errorTransferFailedUnexpectedly": "The transfer stopped before it finished, and the connection did not say why. Try again, and if it keeps happening put both devices on the same network.",
   "errorBluetoothStartFailed": "Could not start sharing over Bluetooth.",
   "errorBluetoothTransferFailed": "The Bluetooth transfer stopped before it finished.",
+  "errorSenderTooOldForDirectLink": "The sending device is on an older version that sends files over Bluetooth itself, which this version no longer receives. Update DirectDrop on the sending device and scan its new code.",
+  "errorBluetoothOff": "Bluetooth is turned off. Turn it on and try again.",
+  "errorBluetoothPermissionDenied": "DirectDrop needs permission to find nearby devices before it can make this device visible over Bluetooth. Allow it in Settings and try again.",
+  "errorBluetoothSendUnsupported": "This device's Bluetooth cannot make itself visible to other devices, so it cannot send over Bluetooth. Use Wi-Fi or the internet instead.",
+  "errorBluetoothAdvertiseFailed": "Bluetooth did not start making this device visible. Switch Bluetooth off and on, then try again.",
   "errorInternetStartFailed": "Could not start the transfer over the internet.",
   "errorNothingSelected": "Nothing is selected to send.",
   "errorSelectionUnreadable": "Could not read what you selected.",

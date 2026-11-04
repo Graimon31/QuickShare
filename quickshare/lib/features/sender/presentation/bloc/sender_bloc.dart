@@ -13,6 +13,7 @@ import 'package:quickshare/features/sender/data/transports/webrtc_transfer_trans
 import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
 import 'package:quickshare/features/sender/data/indexer/transfer_selection.dart';
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
+import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
@@ -1201,8 +1202,13 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       await _activeBluetoothTransport?.stopSharing();
       _activeBluetoothTransport = null;
       _subscribeToWifiProgress();
+      // A radio that said why it could not advertise carries a code of its
+      // own — off, refused, unsupported — and the person is told that rather
+      // than "could not start".
       emit(SenderError('Failed to start Bluetooth sharing: $e',
-          code: FailureCode.bluetoothStartFailed));
+          code: e is BluetoothRadioException
+              ? e.code
+              : FailureCode.bluetoothStartFailed));
     }
   }
 

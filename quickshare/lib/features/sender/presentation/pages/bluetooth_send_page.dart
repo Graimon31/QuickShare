@@ -4,13 +4,12 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-import 'package:quickshare/core/deep_link/deep_link_service.dart';
+import 'package:quickshare/core/router/send_routes.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/features/sender/presentation/widgets/offer_lifecycle_guard.dart';
-import 'package:quickshare/shared/widgets/copy_value_row.dart';
 import 'package:quickshare/shared/widgets/offer_countdown.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
@@ -40,7 +39,7 @@ class BluetoothSendPage extends StatelessWidget {
             icon: const Icon(Icons.arrow_back),
             onPressed: () {
               context.read<SenderBloc>().add(CancelSending());
-              context.go('/send');
+              context.go(SendRoutes.home);
             },
           ),
         ),
@@ -49,7 +48,7 @@ class BluetoothSendPage extends StatelessWidget {
             if (state is Transferring) {
               context.go('/send/progress');
             } else if (state is SenderInitial) {
-              context.go('/send');
+              context.go(SendRoutes.home);
             } else if (state is SenderError) {
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                   content: Text(
@@ -57,7 +56,7 @@ class BluetoothSendPage extends StatelessWidget {
                         code: state.code, fallback: state.message),
                     style: const TextStyle(color: Colors.white),
                   )));
-              context.go('/send');
+              context.go(SendRoutes.home);
             }
           },
           builder: (context, state) {
@@ -70,13 +69,6 @@ class BluetoothSendPage extends StatelessWidget {
                 ),
               );
             }
-
-            final shareLink = DeepLinkService.buildPayloadLink(
-              state.qrData,
-              name: state.session.fileMetadata.name,
-              bytes: state.session.fileMetadata.size,
-              itemCount: state.itemCount,
-            );
 
             // Scrollable rather than centered: on a small screen a centered
             // column pushes the cancel button below the fold, unreachable.
@@ -107,6 +99,10 @@ class BluetoothSendPage extends StatelessWidget {
                                   borderRadius: BorderRadius.circular(20),
                                 ),
                                 child: QrImageView(
+                                  // Keyed by what it encodes, so a QR that
+                                  // changes under a new token is a new widget
+                                  // and not the old one repainted.
+                                  key: ValueKey(state.qrData),
                                   data: state.qrData,
                                   version: QrVersions.auto,
                                   size: 220,
@@ -157,36 +153,17 @@ class BluetoothSendPage extends StatelessWidget {
                                 ),
                             textAlign: TextAlign.center,
                           ).animate().fadeIn(delay: 400.ms),
-                          const SizedBox(height: 16),
-                          // Digits rather than a link. The two devices are in
-                          // the same room — that is what Bluetooth means here
-                          // — so the thing to hand over is something a person
-                          // can read out, not a URL that needs a messenger
-                          // open on both ends to travel.
-                          if (state.code != null)
-                            CopyValueRow(
-                              icon: Icons.pin_rounded,
-                              label: l10n.codeLabel,
-                              value: state.code!.display,
-                              copiedMessage: l10n.qrDisplayLinkCopied,
-                              copyTooltip: l10n.commonCopy,
-                            )
-                          else
-                            CopyValueRow(
-                              icon: Icons.link,
-                              label: l10n.qrDisplayShareLinkLabel,
-                              value: shareLink,
-                              copiedMessage: l10n.qrDisplayLinkCopied,
-                              copyTooltip: l10n.commonCopy,
-                            ),
                           const SizedBox(height: 12),
+                          // The QR is all there is to change: the digits that
+                          // used to ride with it are not shown here.
                           if (state.expiresAt != null)
-                            OfferCountdown(expiresAt: state.expiresAt!),
+                            OfferCountdown(
+                                expiresAt: state.expiresAt!, showsCode: false),
                           const SizedBox(height: 24),
                           OutlinedButton.icon(
                             onPressed: () {
                               context.read<SenderBloc>().add(CancelSending());
-                              context.go('/send');
+                              context.go(SendRoutes.home);
                             },
                             icon: const Icon(Icons.close),
                             label: Text(l10n.commonCancel),

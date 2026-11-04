@@ -135,7 +135,10 @@ void main() {
       test('in $code they do not promise to find or list devices', () async {
         final l10n = await AppLocalizations.delegate.load(Locale(code));
         final shown = {
-          'pickerMethodBluetoothSubtitle': l10n.pickerMethodBluetoothSubtitle,
+          // What the home screen says under the Bluetooth-started option, and
+          // the title the file screen wears when it was chosen.
+          'homeAirdropAltSubtitle': l10n.homeAirdropAltSubtitle,
+          'homeAirdropAltTitle': l10n.homeAirdropAltTitle(l10n.homeAirdropTitle),
           'btSendPreparingDetail': l10n.btSendPreparingDetail,
           'btSendScanPrompt': l10n.btSendScanPrompt,
           'btSendAutoConnectNote': l10n.btSendAutoConnectNote,
@@ -154,8 +157,7 @@ void main() {
         final computer = code == 'en' ? 'computer' : 'компьютер';
         expect(note, contains(phone));
         expect(note, contains(computer));
-        expect(l10n.pickerMethodBluetoothSubtitle.toLowerCase(),
-            contains(phone));
+        expect(l10n.homeAirdropAltSubtitle.toLowerCase(), contains(phone));
       });
     }
   });

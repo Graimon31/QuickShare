@@ -13,7 +13,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get appTagline =>
-      'Share files instantly over Wi-Fi, Bluetooth,\nor by link over the internet';
+      'Share files instantly\nover the internet or directly';
 
   @override
   String get commonCancel => 'Cancel';
@@ -43,10 +43,31 @@ class AppLocalizationsEn extends AppLocalizations {
   String get commonOk => 'OK';
 
   @override
-  String get homeSendTitle => 'Send File';
+  String get homeInternetTitle => 'Over the internet';
 
   @override
-  String get homeSendSubtitle => 'Select and share a file';
+  String get homeInternetSubtitle => 'Works from any network';
+
+  @override
+  String get homeAirdropTitle => 'AirDrop';
+
+  @override
+  String get homeAirdropSubtitle => 'For devices close to you';
+
+  @override
+  String get homeLocalNetworkTitle => 'Local network transfer';
+
+  @override
+  String get homeLocalNetworkSubtitle => 'Both devices on the same network';
+
+  @override
+  String homeAirdropAltTitle(String airdrop) {
+    return '$airdrop alternative';
+  }
+
+  @override
+  String get homeAirdropAltSubtitle =>
+      'To a phone close by, no shared network needed';
 
   @override
   String get homeReceiveTitle => 'Receive File';
@@ -70,39 +91,13 @@ class AppLocalizationsEn extends AppLocalizations {
   String get errorGoHome => 'Go Home';
 
   @override
-  String get pickerTitle => 'Send File or Folder';
-
-  @override
   String get pickerIndexing => 'Indexing selection…';
 
   @override
   String get pickerStartingSession => 'Starting a secure peer-to-peer session';
 
   @override
-  String get pickerStepMethod => '1. Select Transfer Method';
-
-  @override
-  String get pickerMethodWifiTitle => 'Wi-Fi / Local Network';
-
-  @override
-  String get pickerMethodWifiSubtitle => 'Fast transfer over local Wi-Fi / LAN';
-
-  @override
-  String get pickerMethodBluetoothTitle => 'Bluetooth';
-
-  @override
-  String get pickerMethodBluetoothSubtitle =>
-      'To a phone that scans your QR code';
-
-  @override
-  String get pickerMethodInternetTitle => 'Internet Link';
-
-  @override
-  String get pickerMethodInternetSubtitle =>
-      'Share link via WebRTC signaling server';
-
-  @override
-  String get pickerStepWhat => '2. Choose What to Share';
+  String get pickerStepWhat => 'Choose What to Share';
 
   @override
   String get pickerPhotosVideos => 'Photos & Videos';
@@ -382,6 +377,11 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String offerCodeChangesIn(String time) {
     return 'Code and QR change in $time';
+  }
+
+  @override
+  String offerQrChangesIn(String time) {
+    return 'QR code changes in $time';
   }
 
   @override
@@ -862,6 +862,26 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get errorBluetoothTransferFailed =>
       'The Bluetooth transfer stopped before it finished.';
+
+  @override
+  String get errorSenderTooOldForDirectLink =>
+      'The sending device is on an older version that sends files over Bluetooth itself, which this version no longer receives. Update DirectDrop on the sending device and scan its new code.';
+
+  @override
+  String get errorBluetoothOff =>
+      'Bluetooth is turned off. Turn it on and try again.';
+
+  @override
+  String get errorBluetoothPermissionDenied =>
+      'DirectDrop needs permission to find nearby devices before it can make this device visible over Bluetooth. Allow it in Settings and try again.';
+
+  @override
+  String get errorBluetoothSendUnsupported =>
+      'This device\'s Bluetooth cannot make itself visible to other devices, so it cannot send over Bluetooth. Use Wi-Fi or the internet instead.';
+
+  @override
+  String get errorBluetoothAdvertiseFailed =>
+      'Bluetooth did not start making this device visible. Switch Bluetooth off and on, then try again.';
 
   @override
   String get errorInternetStartFailed =>

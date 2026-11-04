@@ -5,7 +5,9 @@
 // selected. Only clicking a different radio button ran the check, so dropping
 // a file with Wi-Fi off built a session and a QR code for a network that was
 // not there. `_startSend` is the funnel now; this pins that the gate refuses
-// a transport that cannot run.
+// a transport that cannot run. (The radio list has since been replaced by
+// the home screen's buttons, which run the gate too: see
+// `home_send_choices_test.dart` and `file_picker_mode_test.dart`.)
 //
 // DD-15 — a radio check that threw was let through, "so the transport can
 // report the real error". But the point of the gate is that the session does

@@ -28,7 +28,13 @@ void main() {
   // that goes stale — not a hand-maintained duplicate of app_router.dart.
   const senderAndReceiverRoutes = [
     '/',
+    // The file screen is reached with a transport; without one it is sent
+    // home (still a real page — see send_routes_test.dart and
+    // home_send_choices_test.dart for what that does).
     '/send',
+    '/send?mode=wifi',
+    '/send?mode=bluetooth',
+    '/send?mode=internet',
     '/send/qr',
     '/send/fallback',
     '/send/local-network',

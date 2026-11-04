@@ -17,6 +17,7 @@ import 'package:mocktail/mocktail.dart';
 
 import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/storage/folder_picker.dart';
+import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/features/sender/presentation/pages/file_picker_page.dart';
 import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
@@ -115,7 +116,7 @@ void main() {
       supportedLocales: AppLocalizations.supportedLocales,
       home: BlocProvider<SenderBloc>.value(
         value: bloc,
-        child: const FilePickerPage(),
+        child: const FilePickerPage(mode: TransportType.wifi),
       ),
     ));
     // Not pumpAndSettle: the phase loader shimmers forever by design, so a

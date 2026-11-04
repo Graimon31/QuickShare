@@ -39,6 +39,22 @@ class FailureCode {
   /// A Bluetooth session that was advertising, and then failed.
   static const bluetoothTransferFailed = 'bluetoothTransferFailed';
 
+  /// The Bluetooth radio is switched off, so there is nothing to advertise
+  /// with. Carried by [BluetoothRadioException].
+  static const bluetoothOff = 'bluetoothOff';
+
+  /// The person said no to the Nearby devices permission, which an Android
+  /// phone needs before it can make itself visible to another device.
+  static const bluetoothPermissionDenied = 'bluetoothPermissionDenied';
+
+  /// This device's Bluetooth cannot act as the sending end at all: the
+  /// platform says peripheral mode is unsupported, or the adapter cannot do it.
+  static const bluetoothSendUnsupported = 'bluetoothSendUnsupported';
+
+  /// The platform accepted the request to advertise and then did not start,
+  /// or never said whether it had. The reason it gave rides in the message.
+  static const bluetoothAdvertiseFailed = 'bluetoothAdvertiseFailed';
+
   /// The WebRTC session never got as far as an offer.
   static const internetStartFailed = 'internetStartFailed';
 
@@ -67,6 +83,11 @@ class FailureCode {
   /// The receiver is an older build that writes a `START` with no session
   /// token. See `BleControlProtocol.staleReceiverMessage`.
   static const receiverTooOldToPair = 'receiverTooOldToPair';
+
+  /// The sender is an older build that moves files over Bluetooth itself,
+  /// which this build no longer receives. The mirror image of
+  /// [receiverTooOldForDirectLink]: the same fix, on the other device.
+  static const senderTooOldForDirectLink = 'senderTooOldForDirectLink';
 
   /// The Wi-Fi radio is off, and the direct link the Bluetooth rendezvous
   /// hands the transfer to is a Wi-Fi link.

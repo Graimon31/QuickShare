@@ -107,7 +107,7 @@ abstract class AppLocalizations {
   /// No description provided for @appTagline.
   ///
   /// In en, this message translates to:
-  /// **'Share files instantly over Wi-Fi, Bluetooth,\nor by link over the internet'**
+  /// **'Share files instantly\nover the internet or directly'**
   String get appTagline;
 
   /// No description provided for @commonCancel.
@@ -164,17 +164,53 @@ abstract class AppLocalizations {
   /// **'OK'**
   String get commonOk;
 
-  /// No description provided for @homeSendTitle.
+  /// No description provided for @homeInternetTitle.
   ///
   /// In en, this message translates to:
-  /// **'Send File'**
-  String get homeSendTitle;
+  /// **'Over the internet'**
+  String get homeInternetTitle;
 
-  /// No description provided for @homeSendSubtitle.
+  /// No description provided for @homeInternetSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Select and share a file'**
-  String get homeSendSubtitle;
+  /// **'Works from any network'**
+  String get homeInternetSubtitle;
+
+  /// No description provided for @homeAirdropTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'AirDrop'**
+  String get homeAirdropTitle;
+
+  /// No description provided for @homeAirdropSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'For devices close to you'**
+  String get homeAirdropSubtitle;
+
+  /// No description provided for @homeLocalNetworkTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Local network transfer'**
+  String get homeLocalNetworkTitle;
+
+  /// No description provided for @homeLocalNetworkSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Both devices on the same network'**
+  String get homeLocalNetworkSubtitle;
+
+  /// The name of the Bluetooth-started direct Wi-Fi transfer. {airdrop} is homeAirdropTitle, so renaming the AirDrop label is one edit per language.
+  ///
+  /// In en, this message translates to:
+  /// **'{airdrop} alternative'**
+  String homeAirdropAltTitle(String airdrop);
+
+  /// No description provided for @homeAirdropAltSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'To a phone close by, no shared network needed'**
+  String get homeAirdropAltSubtitle;
 
   /// No description provided for @homeReceiveTitle.
   ///
@@ -218,12 +254,6 @@ abstract class AppLocalizations {
   /// **'Go Home'**
   String get errorGoHome;
 
-  /// No description provided for @pickerTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Send File or Folder'**
-  String get pickerTitle;
-
   /// No description provided for @pickerIndexing.
   ///
   /// In en, this message translates to:
@@ -236,52 +266,10 @@ abstract class AppLocalizations {
   /// **'Starting a secure peer-to-peer session'**
   String get pickerStartingSession;
 
-  /// No description provided for @pickerStepMethod.
-  ///
-  /// In en, this message translates to:
-  /// **'1. Select Transfer Method'**
-  String get pickerStepMethod;
-
-  /// No description provided for @pickerMethodWifiTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Wi-Fi / Local Network'**
-  String get pickerMethodWifiTitle;
-
-  /// No description provided for @pickerMethodWifiSubtitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Fast transfer over local Wi-Fi / LAN'**
-  String get pickerMethodWifiSubtitle;
-
-  /// No description provided for @pickerMethodBluetoothTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Bluetooth'**
-  String get pickerMethodBluetoothTitle;
-
-  /// No description provided for @pickerMethodBluetoothSubtitle.
-  ///
-  /// In en, this message translates to:
-  /// **'To a phone that scans your QR code'**
-  String get pickerMethodBluetoothSubtitle;
-
-  /// No description provided for @pickerMethodInternetTitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Internet Link'**
-  String get pickerMethodInternetTitle;
-
-  /// No description provided for @pickerMethodInternetSubtitle.
-  ///
-  /// In en, this message translates to:
-  /// **'Share link via WebRTC signaling server'**
-  String get pickerMethodInternetSubtitle;
-
   /// No description provided for @pickerStepWhat.
   ///
   /// In en, this message translates to:
-  /// **'2. Choose What to Share'**
+  /// **'Choose What to Share'**
   String get pickerStepWhat;
 
   /// No description provided for @pickerPhotosVideos.
@@ -739,6 +727,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Code and QR change in {time}'**
   String offerCodeChangesIn(String time);
+
+  /// No description provided for @offerQrChangesIn.
+  ///
+  /// In en, this message translates to:
+  /// **'QR code changes in {time}'**
+  String offerQrChangesIn(String time);
 
   /// No description provided for @qrDisplayShareLinkToReceive.
   ///
@@ -1562,6 +1556,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'The Bluetooth transfer stopped before it finished.'**
   String get errorBluetoothTransferFailed;
+
+  /// No description provided for @errorSenderTooOldForDirectLink.
+  ///
+  /// In en, this message translates to:
+  /// **'The sending device is on an older version that sends files over Bluetooth itself, which this version no longer receives. Update DirectDrop on the sending device and scan its new code.'**
+  String get errorSenderTooOldForDirectLink;
+
+  /// No description provided for @errorBluetoothOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Bluetooth is turned off. Turn it on and try again.'**
+  String get errorBluetoothOff;
+
+  /// No description provided for @errorBluetoothPermissionDenied.
+  ///
+  /// In en, this message translates to:
+  /// **'DirectDrop needs permission to find nearby devices before it can make this device visible over Bluetooth. Allow it in Settings and try again.'**
+  String get errorBluetoothPermissionDenied;
+
+  /// No description provided for @errorBluetoothSendUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'This device\'s Bluetooth cannot make itself visible to other devices, so it cannot send over Bluetooth. Use Wi-Fi or the internet instead.'**
+  String get errorBluetoothSendUnsupported;
+
+  /// No description provided for @errorBluetoothAdvertiseFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Bluetooth did not start making this device visible. Switch Bluetooth off and on, then try again.'**
+  String get errorBluetoothAdvertiseFailed;
 
   /// No description provided for @errorInternetStartFailed.
   ///

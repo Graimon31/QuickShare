@@ -13,10 +13,17 @@ class AppMotion {
   static const scanSuccess = Duration(milliseconds: 360);
   static const shimmer = Duration(milliseconds: 1000);
   static const progressTween = Duration(milliseconds: 450);
+
+  /// A group of options opening under the control that owns them. Closing is
+  /// quicker than opening, the way a page leaves faster than it arrives.
+  static const expand = Duration(milliseconds: 280);
+  static const collapse = Duration(milliseconds: 200);
   static const pageCurve = Curves.fastOutSlowIn;
   static const pageReverseCurve = pageCurve;
   static const scanCurve = Curves.easeInOutSine;
   static const progressCurve = Curves.easeOutCubic;
+  static const expandCurve = Curves.easeOutCubic;
+  static const collapseCurve = Curves.easeInCubic;
 
   static const pullSpring = SpringDescription(
     mass: 1,

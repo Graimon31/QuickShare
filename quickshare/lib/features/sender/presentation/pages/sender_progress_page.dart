@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:quickshare/core/router/send_routes.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
@@ -48,7 +49,7 @@ class SenderProgressPage extends StatelessWidget {
         if (state is Transferring) {
           _showCancelDialog(context);
         } else {
-          context.go('/send');
+          context.go(SendRoutes.home);
         }
       },
       child: Scaffold(
@@ -62,7 +63,7 @@ class SenderProgressPage extends StatelessWidget {
               if (state is Transferring) {
                 _showCancelDialog(context);
               } else {
-                context.go('/send');
+                context.go(SendRoutes.home);
               }
             },
           ),
@@ -70,7 +71,7 @@ class SenderProgressPage extends StatelessWidget {
         body: BlocConsumer<SenderBloc, SenderState>(
           listener: (context, state) {
             if (state is SenderInitial) {
-              context.go('/send');
+              context.go(SendRoutes.home);
             }
           },
           builder: (context, state) {
@@ -106,7 +107,7 @@ class SenderProgressPage extends StatelessWidget {
                       FilledButton(
                         onPressed: () {
                           context.read<SenderBloc>().add(CancelSending());
-                          context.go('/send');
+                          context.go(SendRoutes.home);
                         },
                         child: Text(l10n.senderProgressSendAnother),
                       ).animate().fadeIn(delay: 600.ms),

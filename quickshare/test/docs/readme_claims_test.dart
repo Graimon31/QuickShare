@@ -15,11 +15,21 @@
 //
 // What this cannot check is whether the sentences around those facts are
 // true. That is the reviewer's job; this only keeps the numbers honest.
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:fake_async/fake_async.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:universal_ble/universal_ble.dart';
 
 import 'package:quickshare/core/constants/app_constants.dart';
+import 'package:quickshare/core/errors/exceptions.dart';
+import 'package:quickshare/core/transfer/ble_gatt.dart';
+import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
+import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
+
+import '../support/fake_ble.dart';
 
 /// The rows of the first table under the `### Configuration` heading, as
 /// `(first cell, second cell)`, cells trimmed.
@@ -247,6 +257,153 @@ void main() {
       // scan; the README has to say so rather than imply a list or a code.
       expect(readme, contains('A computer cannot receive over Bluetooth'));
       expect(readme, contains('joined by the QR code and by nothing else'));
+    });
+  });
+
+
+  group('Bluetooth, per sender', () {
+    final manifest = readFileOrFail('android/app/src/main/AndroidManifest.xml');
+    // The README wraps its lines; a sentence is read across them, and across
+    // a Windows checkout's line endings.
+    final flat = readme.replaceAll(RegExp(r'\s+'), ' ');
+
+    tearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      UniversalBlePeripheral.setInstance(UniversalBlePeripheralUnsupported());
+    });
+
+    const file = FileMetadata(
+        name: 'a', path: '/tmp/a', size: 1, mimeType: 'application/octet-stream');
+
+    for (final platform in [TargetPlatform.android, TargetPlatform.windows]) {
+      test('${platform.name} advertises the service UUID only, as the README '
+          'says', () async {
+        debugDefaultTargetPlatformOverride = platform;
+        final radio = FakeBlePeripheral();
+        UniversalBlePeripheral.setInstance(radio);
+        UniversalBle.setInstance(FakeBleCentral());
+        final transport = BluetoothTransferTransport();
+        await transport.initialize();
+        await transport.startSharing(file, 'tok', publicId: 'ABCD1234');
+
+        final advert = radio.advertised.single;
+        expect(advert.services.map(BleUuidParser.string),
+            [BleUuidParser.string(BleGatt.service)]);
+        expect(advert.localName, isNull);
+        expect(readme, contains('| Android | `universal_ble` peripheral mode | **The service UUID only** |'));
+        expect(readme,
+            contains('| Windows | `universal_ble` peripheral mode (`GattServiceProvider`) | **The service UUID only** |'));
+      });
+    }
+
+    test('the packet arithmetic the README gives is the arithmetic in the code',
+        () {
+      // "The flags take three, a 128-bit service UUID takes 18, and the name
+      // would take 21 more", in a packet of 31.
+      expect(BleAdvertisement.legacyPacketLimit, 31);
+      expect(BleAdvertisement.legacyPrimaryPacketBytes(), 3);
+      expect(BleAdvertisement.legacyPrimaryPacketBytes(serviceUuids128: 1), 3 + 18);
+      expect(
+          BleAdvertisement.legacyPrimaryPacketBytes(
+                  localName: BleAdvertisement.nameFor('ABCD1234')) -
+              3,
+          21);
+      expect(
+          BleAdvertisement.legacyPrimaryPacketBytes(
+              serviceUuids128: 1,
+              localName: BleAdvertisement.nameFor('ABCD1234')),
+          greaterThan(31));
+      expect(flat, contains('holds 31 bytes'));
+      expect(flat, contains('takes 18'));
+      expect(flat, contains('would take 21 more'));
+    });
+
+    test('the README says a sender gives up after ten seconds, and it does',
+        () {
+      expect(flat, contains('within ten seconds'));
+      final results = <String>[];
+      fakeAsync((async) {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        final radio = FakeBlePeripheral()..afterStart = null;
+        UniversalBlePeripheral.setInstance(radio);
+        UniversalBle.setInstance(FakeBleCentral());
+        final transport = BluetoothTransferTransport();
+        transport.initialize().then((_) => transport
+            .startSharing(file, 'tok', publicId: 'ABCD1234')
+            .then<void>((_) => results.add('started'),
+                onError: (Object e) =>
+                    results.add(e is BluetoothRadioException ? 'error' : '$e')));
+        async.elapse(const Duration(seconds: 9));
+        expect(results, isEmpty, reason: 'gave up early');
+        async.elapse(const Duration(seconds: 2));
+        expect(results, ['error'], reason: 'did not give up at ten seconds');
+      });
+    });
+
+    test('the permission the README names is declared', () {
+      expect(readme, contains('`BLUETOOTH_ADVERTISE`'));
+      expect(manifest, contains('android.permission.BLUETOOTH_ADVERTISE'));
+      expect(manifest, contains('android.permission.BLUETOOTH_CONNECT'));
+    });
+
+    test('the README does not claim what has not been run on devices', () {
+      // The Android and Windows senders are complete in code and tested on a
+      // simulated radio. The sentence below is what keeps that said; when the
+      // two-device check has been done, change the README and this together.
+      expect(flat, contains('have not been run between two real devices'));
+      expect(readme, contains('Bluetooth only finds the other device'));
+      for (final claim in const [
+        'Bluetooth works on every platform',
+        'tested on Android and Windows',
+        'verified on a Pixel',
+        'transfers files over Bluetooth',
+      ]) {
+        expect(readme, isNot(contains(claim)), reason: claim);
+      }
+    });
+
+    test('no file bytes cross Bluetooth, and the README says so', () {
+      expect(flat, contains('**no file ever crosses it**'));
+    });
+  });
+
+  group('the home screen', () {
+    // The README names the home screen's controls by the words on them, read
+    // from the English ARB file so a rename there is noticed here.
+    final arb = jsonDecode(readFileOrFail('lib/l10n/app_en.arb'))
+        as Map<String, dynamic>;
+    final airdrop = arb['homeAirdropTitle'] as String;
+    final labels = {
+      'homeInternetTitle': arb['homeInternetTitle'] as String,
+      'homeAirdropTitle': airdrop,
+      'homeLocalNetworkTitle': arb['homeLocalNetworkTitle'] as String,
+      'homeAirdropAltTitle': (arb['homeAirdropAltTitle'] as String)
+          .replaceAll('{airdrop}', airdrop),
+      'homeReceiveTitle': arb['homeReceiveTitle'] as String,
+    };
+
+    for (final e in labels.entries) {
+      test('the README names "${e.value}" (${e.key})', () {
+        expect(readme, contains('**${e.value}**'), reason: e.key);
+      });
+    }
+
+    test('the README does not describe a Send File card that is gone', () {
+      expect(readme, isNot(contains('Send File')));
+      expect(readme, isNot(contains('Select Transfer Method')));
+      expect(arb.containsKey('homeSendTitle'), isFalse,
+          reason: 'the string for the removed card is still in the ARB file');
+    });
+
+    test('the README says where the transport is chosen, what an address '
+        'without one does, and where a drop goes', () {
+      final flat = readme.replaceAll(RegExp(r'\s+'), ' ');
+      expect(flat, contains('chosen on the home screen'));
+      expect(flat, contains('`/send?mode=internet`'));
+      expect(flat, contains('goes back to the home screen'));
+      expect(flat, contains('**Over the internet** card, which sends it over '
+          'the internet'));
+      expect(flat, contains('which send it over the local network'));
     });
   });
 

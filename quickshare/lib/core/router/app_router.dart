@@ -5,6 +5,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/platform/device_platform.dart';
+import 'package:quickshare/core/router/send_routes.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/core/theme/app_motion.dart';
@@ -96,7 +97,11 @@ class AppRouter {
         },
         routes: [
           GoRoute(
-            path: '/send',
+            path: SendRoutes.files,
+            // The transport is chosen on the home screen and arrives as
+            // `?mode=`. An address without a usable one has no business here
+            // and goes home, where the choice is made.
+            redirect: (context, state) => SendRoutes.guard(state.uri),
             pageBuilder: (context, state) {
               final extra = state.extra;
               final paths = extra is Map
@@ -104,7 +109,14 @@ class AppRouter {
                   : null;
               return _qsPage(
                 state,
-                FilePickerPage(qhtpPaths: paths),
+                FilePickerPage(
+                  qhtpPaths: paths,
+                  // Null for the pages below `/send` (`/send/qr` and the
+                  // rest), whose addresses carry none; the screen keeps the
+                  // transport it already has.
+                  mode: SendRoutes.parseMode(
+                      state.uri.queryParameters[SendRoutes.modeParam]),
+                ),
                 sharedAxis: false,
               );
             },
@@ -125,8 +137,10 @@ class AppRouter {
                     sessionBytes: extra?['sessionBytes'] as int?,
                     limitBytes: extra?['limitBytes'] as int?,
                     noPathCode: extra?['noPathCode'] as String?,
-                    onBack: () => context.go('/send'),
-                    onUseLocalNetwork: () => context.go('/send'),
+                    // Both buttons say "pick another method", and the method
+                    // is picked on the home screen.
+                    onBack: () => context.go(SendRoutes.home),
+                    onUseLocalNetwork: () => context.go(SendRoutes.home),
                     // iOS cannot raise a hotspot from inside an app, so the
                     // button is simply absent there rather than failing when
                     // tapped.
@@ -141,8 +155,8 @@ class AppRouter {
               ),
               GoRoute(
                 path: 'local-network',
-                builder: (context, state) =>
-                    LocalNetworkPage(onCancel: () => context.go('/send')),
+                builder: (context, state) => LocalNetworkPage(
+                    onCancel: () => context.go(SendRoutes.home)),
               ),
               GoRoute(
                 path: 'qr',

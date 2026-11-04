@@ -2,9 +2,12 @@
 // last — and nothing about other devices.
 //
 // A desktop sender still shows its own QR for a phone to scan, and the code
-// for a desktop to type. Both screens carry a countdown to the next change,
-// and tell the bloc when the app comes back to the foreground so that a code
-// that expired while the machine slept is replaced at once.
+// for a desktop to type. The Bluetooth screen shows the QR alone: nothing can
+// be typed into a Bluetooth session. Every screen carries a countdown to the
+// next change, and tells the bloc when the app comes back to the foreground
+// so that a code that expired while the machine slept is replaced at once.
+import 'dart:async';
+
 import 'package:bloc_test/bloc_test.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -21,6 +24,7 @@ import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 import 'package:quickshare/features/sender/presentation/pages/bluetooth_send_page.dart';
 import 'package:quickshare/features/sender/presentation/pages/qr_display_page.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
+import 'package:quickshare/shared/widgets/copy_value_row.dart';
 import 'package:quickshare/shared/widgets/offer_countdown.dart';
 
 class _MockSenderBloc extends MockBloc<SenderEvent, SenderState>
@@ -217,7 +221,13 @@ void main() {
   });
 
   group('the Bluetooth offer', () {
-    testWidgets('shows its code with the same countdown', (tester) async {
+    testWidgets('shows the QR with a countdown, and no digits', (tester) async {
+      // The digits used to be here for a receiver to type. Bluetooth is joined
+      // by scanning and by nothing else — the screen that took the digits is
+      // gone, and `code_receive_page` looks for local-network senders only —
+      // so a row of digits on this screen is a promise with nowhere to keep
+      // it. The other offer screens, which a computer can type a code into,
+      // still show theirs; their tests are above.
       showing(BluetoothAdvertising(
         _session(),
         qrData: 'BT-QR',
@@ -227,9 +237,49 @@ void main() {
       ));
       await _mount(tester, bloc, const BluetoothSendPage());
 
-      expect(find.text(code.display), findsOneWidget);
+      expect(find.byType(QrImageView), findsOneWidget);
+      expect(find.text(code.display), findsNothing,
+          reason: 'there is nowhere to type it');
+      expect(find.textContaining(code.code), findsNothing);
+      expect(find.byType(CopyValueRow), findsNothing,
+          reason: 'neither the digits nor a link to copy');
       expect(find.byType(OfferCountdown), findsOneWidget);
-      expect(find.textContaining('Code and QR change in'), findsOneWidget);
+      expect(find.textContaining('QR code changes in'), findsOneWidget);
+      expect(find.textContaining('Code and QR change in'), findsNothing,
+          reason: 'there is no code on this screen to change');
+      await tester.pumpWidget(const SizedBox());
+    });
+
+    testWidgets('the QR it shows is the one the bloc holds, and follows it '
+        'when the bloc changes it', (tester) async {
+      final first = BluetoothAdvertising(
+        _session(),
+        qrData: 'BT-QR-FIRST',
+        code: code,
+        expiresAt: DateTime.now().add(const Duration(minutes: 3)),
+      );
+      final second = BluetoothAdvertising(
+        _session(),
+        qrData: 'BT-QR-SECOND',
+        code: const SessionCode('1122334455'),
+        expiresAt: DateTime.now().add(const Duration(minutes: 5)),
+      );
+      final changes = StreamController<SenderState>();
+      bloc = _MockSenderBloc();
+      whenListen(bloc, changes.stream, initialState: first);
+      await _mount(tester, bloc, const BluetoothSendPage());
+
+      // The page keys the QR by what it encodes, so the one on screen can be
+      // told from the one before it.
+      expect(find.byKey(const ValueKey('BT-QR-FIRST')), findsOneWidget);
+
+      changes.add(second);
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.byKey(const ValueKey('BT-QR-SECOND')), findsOneWidget,
+          reason: 'the QR on screen must change with the token behind it');
+      expect(find.byKey(const ValueKey('BT-QR-FIRST')), findsNothing);
+      await changes.close();
       await tester.pumpWidget(const SizedBox());
     });
 

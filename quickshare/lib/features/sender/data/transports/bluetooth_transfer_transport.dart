@@ -5,9 +5,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:universal_ble/universal_ble.dart';
 
+import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/core/transfer/ble_gatt.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/transports/transfer_transport.dart';
@@ -15,40 +18,47 @@ import 'linux_bluetooth_sender.dart';
 
 /// BLE sender shared by the desktop and mobile builds.
 ///
-/// Apple builds keep using the tested CoreBluetooth bridge in the Runner
-/// targets. Android and Windows use universal_ble's GATT peripheral API, but
-/// expose the same service, characteristics, START:<token> command, metadata
-/// and raw data stream. That means an iPhone or Mac can receive from either
-/// of those platforms without a second transfer protocol.
+/// Apple builds use the CoreBluetooth bridge in the Runner targets, Linux the
+/// BlueZ one. Android and Windows use universal_ble's GATT peripheral API and
+/// expose the same service, characteristics, `START:<token>` command and link
+/// frames, so an iPhone can receive from either of them with no second
+/// protocol.
 ///
 /// ## Generation 4: the rendezvous, not the road
 ///
-/// Since protocol generation 4 no bytes cross this channel. Once a receiver
-/// that scanned this session's QR says what it is (CAPS) and asks (START), the
+/// No file crosses this channel, and none ever will: the owner's decision is
+/// that a file does not travel over plain Bluetooth. Once a receiver that
+/// scanned this session's QR says what it is (CAPS) and asks (START), the
 /// session negotiates a direct Wi-Fi link over the control and metadata
-/// characteristics — see `DirectLinkCoordinator` — and the file crosses
-/// that link at Wi-Fi speed. What remains here is the radio's part of that
+/// characteristics — see `DirectLinkCoordinator` — and the file crosses that
+/// link at Wi-Fi speed. What remains here is the radio's part of that
 /// negotiation: the advertisement, the writes, and [sendLinkFrame].
 class BluetoothTransferTransport implements TransferTransport {
+  /// [advertisingTimeout] is how long to wait for the platform to say it is
+  /// advertising before saying so out loud. A platform that accepts the
+  /// request and then never answers would otherwise leave the person looking
+  /// at a spinner until the app is killed.
+  BluetoothTransferTransport({
+    Duration advertisingTimeout = const Duration(seconds: 10),
+  }) : _advertisingTimeout = advertisingTimeout;
+
   static const _method = MethodChannel('quickshare/bluetooth');
   static const _events = EventChannel('quickshare/bluetooth/events');
 
-  static const _controlUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
-  static const _metadataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
-  static const _dataUuid = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13';
+  final Duration _advertisingTimeout;
 
-  /// The peripheral local name to advertise over BLE.
+  /// The peripheral local name Apple and Linux senders advertise.
   ///
   /// Carries [SessionCode.publicId] and never the authorization token or its
   /// prefix. That is not the same as safe: the identifier is forty bits of a
   /// hash over a 33-bit space, so anyone in radio range can search it for the
   /// code, which derives the token. The LAN announcement stopped carrying it
   /// for that reason; this one still does, and needs the same treatment as the
-  /// transfer it belongs to (see `SessionCode.discoveryHint`).
+  /// transfer it belongs to (see `SessionCode.discoveryHint`). Android and
+  /// Windows senders do not advertise a name — see [_startUniversalSession].
   static String bleAdvertisedName({String publicId = ''}) =>
-      'QuickShare-${publicId.isNotEmpty ? publicId : 'directdrop'}';
+      BleAdvertisement.nameFor(publicId);
 
-  final _progressController = StreamController<double>.broadcast();
   final _statusController = StreamController<TransferStatus>.broadcast();
   final _universalSubscriptions = <StreamSubscription<dynamic>>[];
 
@@ -63,12 +73,8 @@ class BluetoothTransferTransport implements TransferTransport {
   /// What the receiver said it can take, from its `CAPS:` write.
   ///
   /// Null means it never sent one, which is what every build up to v1.0.10
-  /// does — and those finish at the first file and disconnect, so a list must
-  /// not be sent to them.
+  /// does — and those cannot take the direct link at all.
   int? _universalPeerGeneration;
-
-  /// Bytes across the whole session, so progress does not restart per file.
-  int _totalBytes = 0;
 
   /// Fires when a generation-4 receiver is connected and the session may
   /// start — the direct-link negotiation begins from here.
@@ -134,11 +140,79 @@ class BluetoothTransferTransport implements TransferTransport {
       await _linuxSender?.notifyLinkFrame(frame);
       return;
     }
+    await _notifyUniversal(frame);
+  }
+
+  /// One frame as one notification on the metadata characteristic.
+  ///
+  /// A notification carries at most the negotiated ATT payload and the
+  /// platforms cut a longer one to it without saying so, which reaches the
+  /// receiver as half a JSON document. So the limit is asked for, and a frame
+  /// that cannot fit is shrunk where it can be and refused where it cannot.
+  Future<void> _notifyUniversal(Map<String, Object?> frame) async {
+    final clientId = _universalClientId;
+    var bytes = Uint8List.fromList(utf8.encode(jsonEncode(frame)));
+
+    int? limit;
+    if (clientId != null) {
+      try {
+        limit = await UniversalBlePeripheral.getMaximumNotifyLength(clientId);
+      } catch (_) {
+        // Unknown is not small: send, and let the receiver be the judge.
+      }
+      // Android only knows a limit once the central has negotiated one. A
+      // central that never did — Android before 14 that did not ask — is on
+      // the 23-byte default, which holds 20 bytes of a frame; the plugin
+      // reports that as "unknown".
+      if (limit == null && defaultTargetPlatform == TargetPlatform.android) {
+        limit = 20;
+      }
+    }
+    if (limit != null && limit > 0 && bytes.length > limit) {
+      final smaller = _withoutOptionalFields(frame, limit);
+      if (smaller == null) {
+        final message = 'A ${bytes.length}-byte frame does not fit in a '
+            'Bluetooth notification of $limit bytes, and the receiver cannot '
+            'read a frame that has been cut.';
+        AppLogger.error(message, tag: 'BT_SENDER');
+        throw BluetoothRadioException(
+            message, FailureCode.bluetoothTransferFailed);
+      }
+      AppLogger.warning(
+          'Frame of ${bytes.length} bytes sent as ${smaller.length}: the '
+          'notification holds $limit and the dropped fields are optional.',
+          tag: 'BT_SENDER');
+      bytes = smaller;
+    }
+
     await UniversalBlePeripheral.updateCharacteristicValue(
-      characteristicId: _metadataUuid,
-      value: Uint8List.fromList(utf8.encode(jsonEncode(frame))),
-      deviceId: _universalClientId,
+      characteristicId: BleGatt.metadata,
+      value: bytes,
+      // Windows' GattLocalCharacteristic notifies every subscribed client and
+      // universal_ble answers "does not support targeting a specific device"
+      // to any call that names one. There is one receiver per session anyway.
+      deviceId:
+          defaultTargetPlatform == TargetPlatform.windows ? null : clientId,
     );
+  }
+
+  /// The serve frame without the fields a receiver does not need to start.
+  ///
+  /// File name, size, count, sender name and LAN address are all optional on
+  /// the far side — the QR it scanned carries the first four and the QHTP
+  /// manifest the rest. Dropped one at a time, least useful first, until the
+  /// frame fits. Null when there is nothing optional to drop.
+  static Uint8List? _withoutOptionalFields(
+      Map<String, Object?> frame, int limit) {
+    final serve = frame['serve'];
+    if (serve is! Map) return null;
+    final kept = Map<String, Object?>.from(serve);
+    for (final key in const ['lip', 'sn', 'fn', 'fs', 'ic']) {
+      kept.remove(key);
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode({'serve': kept})));
+      if (bytes.length <= limit) return bytes;
+    }
+    return null;
   }
 
   /// Why the last failure happened, in words meant for the person sending.
@@ -162,8 +236,10 @@ class BluetoothTransferTransport implements TransferTransport {
 
   bool get _usesLinuxBridge => defaultTargetPlatform == TargetPlatform.linux;
 
+  /// Nothing reports progress from here: no byte crosses this radio. The
+  /// transfer's progress is the QHTP server's, which the bloc listens to.
   @override
-  Stream<double> get progressStream => _progressController.stream;
+  Stream<double> get progressStream => const Stream<double>.empty();
 
   @override
   Stream<TransferStatus> get statusStream => _statusController.stream;
@@ -188,7 +264,7 @@ class BluetoothTransferTransport implements TransferTransport {
     // stopSharing().
     _universalSubscriptions.add(
       UniversalBlePeripheral.characteristicSubscriptionStream.listen((event) {
-        if (event.characteristicId.toLowerCase() != _dataUuid.toLowerCase() ||
+        if (!BleUuidParser.compareStrings(event.characteristicId, BleGatt.data) ||
             !event.isSubscribed ||
             _universalSessionToken == null) {
           return;
@@ -202,7 +278,7 @@ class BluetoothTransferTransport implements TransferTransport {
 
     UniversalBlePeripheral.setWriteRequestHandlers(
       (deviceId, characteristicId, offset, value) {
-        if (characteristicId.toLowerCase() == _controlUuid.toLowerCase() &&
+        if (BleUuidParser.compareStrings(characteristicId, BleGatt.control) &&
             value != null &&
             _universalSessionToken != null) {
           final command = utf8.decode(value, allowMalformed: true);
@@ -211,6 +287,13 @@ class BluetoothTransferTransport implements TransferTransport {
           final generation = BleControlProtocol.parseCapabilities(command);
           if (generation != null) {
             _universalPeerGeneration = generation;
+          } else if (BleControlProtocol.parseHello(command)
+              case final name?) {
+            // Written by an Apple receiver ahead of its START. Display text
+            // from the far side, read only to tell an Apple device from the
+            // rest.
+            _universalClientId ??= deviceId;
+            _receiverName = name;
           } else if (BleControlProtocol.parseKeyExchange(command)
               case final key?) {
             _universalClientId ??= deviceId;
@@ -247,11 +330,13 @@ class BluetoothTransferTransport implements TransferTransport {
 
   /// What the receiver on the radio calls itself, when it said.
   ///
-  /// The Apple bridge reports the name a connected receiver writes ahead of its
-  /// START. It is display text from the far side, read by the sender only to
-  /// tell whether that device is an Apple one (see `_beginBluetoothDirectLink`),
-  /// and is never shown as a choice: nothing is listed and nothing is picked.
-  /// Null until a receiver has said, and on platforms whose receivers do not.
+  /// The Apple bridge and the universal one both report the name a connected
+  /// receiver writes ahead of its START. It is display text from the far side,
+  /// read by the sender only to tell whether that device is an Apple one (see
+  /// `_beginBluetoothDirectLink`), and is never shown as a choice: nothing is
+  /// listed and nothing is picked. Null until a receiver has said, and for
+  /// receivers that do not — which is every Android one, and nothing depends
+  /// on it being set.
   String? get receiverName => _receiverName;
   String? _receiverName;
 
@@ -282,16 +367,6 @@ class BluetoothTransferTransport implements TransferTransport {
         final key = map['key'] as String?;
         if (key != null && key.isNotEmpty) _rememberPeerKey(key);
         break;
-      case 'senderProgress':
-        final sent = map['sent'] as int;
-        if (_totalBytes > 0) {
-          _progressController.add(sent / _totalBytes);
-        }
-        break;
-      case 'senderCompleted':
-        _progressController.add(1.0);
-        _statusController.add(TransferStatus.completed);
-        break;
       case 'senderFailed':
         final error = map['error'] as String?;
         debugPrint('Bluetooth send failed: $error');
@@ -304,26 +379,28 @@ class BluetoothTransferTransport implements TransferTransport {
     }
   }
 
-  /// Advertises [files] — or just [file] when a caller has only one.
+  /// Advertises the session over BLE, and waits until the platform says it is
+  /// on the air. Not part of [TransferTransport]: this transport's UX is a QR
+  /// code a receiver scans, not a shareable link.
   ///
-  /// [file] still names the session for the screens that show it. The list is
-  /// what actually goes out, and it is the whole reason a folder no longer
-  /// has to be flattened into an archive to travel over Bluetooth.
-  /// Advertises the session over BLE. Not part of [TransferTransport]: this
-  /// transport's UX is device discovery, not a shareable code.
-  /// [publicId] is what goes out over the air, when there is one.
+  /// [file] names the session for the screens that show it. [files] is the
+  /// whole selection and is not sent anywhere: since generation 4 the receiver
+  /// learns what it is getting from the QHTP manifest on the Wi-Fi link, and
+  /// a folder no longer has to be described to a radio that cannot carry it.
   ///
-  /// Derived from the session's digits, so a receiver who was read the code
-  /// can pick this device out of several without the code itself being
-  /// broadcast. It can be reversed by searching the ten billion codes, so this
-  /// is a locator and not a secret. Advertising a slice of [token] instead — which is
-  /// what happens when this is absent, and what every earlier build did — puts
+  /// [publicId] is what goes out over the air on Apple and Linux, when there
+  /// is one. Derived from the session's digits, so a receiver who scanned the
+  /// QR can pick this device out of several. It can be reversed by searching
+  /// the ten billion codes, so it is a locator and not a secret. Advertising a
+  /// slice of [token] instead — which is what every earlier build did — puts
   /// the first eight characters of the session's secret in a packet anyone in
-  /// radio range can read.
+  /// radio range can read. Android and Windows do not advertise it at all.
+  ///
+  /// Throws [BluetoothRadioException] on Android and Windows when the radio
+  /// cannot advertise, with a code the screen can say in the person's own
+  /// language. Never completes without the platform's answer.
   Future<String> startSharing(FileMetadata file, String token,
       {List<FileMetadata>? files, String publicId = ''}) async {
-    final session = (files == null || files.isEmpty) ? [file] : files;
-    _totalBytes = session.fold<int>(0, (sum, f) => sum + f.size);
     lastFailureReason = null;
     lastFailureCode = null;
     _receiverName = null;
@@ -334,20 +411,6 @@ class BluetoothTransferTransport implements TransferTransport {
         // iPhone-as-central to Mac-as-peripheral is the pairing that works.
         // This device does not scan: it has nothing to look for.
         await _method.invokeMethod('startAdvertising', {
-          'files': [
-            for (final f in session)
-              {
-                'filePath': f.path,
-                'fileName': f.name,
-                'relativePath': f.relPath,
-                'fileSize': f.size,
-                'mimeType': f.mimeType,
-              },
-          ],
-          'filePath': file.path,
-          'fileName': file.name,
-          'fileSize': file.size,
-          'mimeType': file.mimeType,
           'sessionToken': token,
           if (publicId.isNotEmpty) 'publicId': publicId,
         });
@@ -363,12 +426,8 @@ class BluetoothTransferTransport implements TransferTransport {
     if (_usesLinuxBridge) {
       _linuxSender = LinuxBluetoothSender();
       await _linuxSender!.start(
-        session,
         token,
         publicId: publicId,
-        onProgress: (sent, total) {
-          if (total > 0) _progressController.add(sent / total);
-        },
         onStatus: (status, [error, code]) {
           switch (status) {
             case 'advertising':
@@ -381,10 +440,6 @@ class BluetoothTransferTransport implements TransferTransport {
               // A generation-4 receiver is connected; the direct-link
               // negotiation begins from here.
               _receiverReadyController.add(null);
-              break;
-            case 'completed':
-              _progressController.add(1.0);
-              _statusController.add(TransferStatus.completed);
               break;
             case 'failed':
               debugPrint('Bluetooth Linux sender failed: $error');
@@ -404,17 +459,268 @@ class BluetoothTransferTransport implements TransferTransport {
     return file.name;
   }
 
-  /// Readies the session for a receiver that comes to this device.
+  /// Makes this Android phone or Windows PC findable, and answerable.
   ///
-  /// Records the token START must carry and resets what the last session left
-  /// behind. This device does not scan: a receiver finds it from the QR.
+  /// ## What is on the air, and why not more
+  ///
+  /// The service UUID, in the primary packet, and no local name.
+  ///
+  /// A legacy advertising packet holds 31 bytes. Three go to the flags, a
+  /// 128-bit service UUID takes 18, and `QuickShare-` plus the eight-character
+  /// identifier would take 21 more — 42 in all, which Android refuses with
+  /// `ADVERTISE_FAILED_DATA_TOO_LARGE`. That is what the first version of this
+  /// code asked for, and it could not have started on a phone. The plugin can
+  /// move the UUID to the scan response and keep the name in the primary
+  /// packet, but both receivers scan with the UUID as the filter, and a
+  /// filter that has to look inside a scan response is one more way for the
+  /// device not to be found; the UUID stays where every scan stack looks for
+  /// it. Setting a name also renames the phone's own Bluetooth name for as
+  /// long as the advertisement lasts, which a killed app would leave behind.
+  ///
+  /// Windows cannot set a name at all (`GattServiceProvider` does not take
+  /// one), so it was never going to carry a locator.
+  ///
+  /// What the receivers do with an advertisement that has no `QuickShare-`
+  /// name is accept it: the service UUID is the proof that it is a DirectDrop
+  /// sender, and the `START:<token>` write after the connection is what proves
+  /// it is the one the QR named (see [BleAdvertisement.accepts]). As a side
+  /// effect this sender does not broadcast the locator that can be searched
+  /// for the session's code.
   Future<void> _startUniversalSession(String token) async {
-    await UniversalBle.requestPermissions(withAndroidFineLocation: false);
-    _universalSessionToken = token;
+    _universalSessionToken = null;
     _lastPeerKey = null;
-    _universalPeerGeneration = 4;
     _universalClientId = null;
+    _universalDataSubscribed = false;
+    _universalStartReceived = false;
+    _universalTransferStarted = false;
+    // Nothing is assumed about the receiver: a build that never says what it
+    // can take (everything before v1.0.10) is refused at START rather than
+    // trusted with a directive it cannot read.
+    _universalPeerGeneration = null;
+
+    try {
+      await UniversalBle.requestPermissions(withAndroidFineLocation: false);
+    } catch (e) {
+      throw BluetoothRadioException(
+          'Bluetooth permission was refused: $e',
+          FailureCode.bluetoothPermissionDenied);
+    }
+
+    final capabilities = await UniversalBlePeripheral.getCapabilities();
+    if (!capabilities.supportsPeripheralMode) {
+      throw const BluetoothRadioException(
+          'This device\'s Bluetooth cannot act as the sending end '
+          '(peripheral mode is not supported).',
+          FailureCode.bluetoothSendUnsupported);
+    }
+    final readiness = await UniversalBlePeripheral.getAvailabilityState();
+    switch (readiness) {
+      case PeripheralReadinessState.ready:
+        break;
+      case PeripheralReadinessState.bluetoothOff:
+        throw const BluetoothRadioException(
+            'Bluetooth is turned off.', FailureCode.bluetoothOff);
+      case PeripheralReadinessState.unauthorized:
+        throw const BluetoothRadioException(
+            'Bluetooth is not authorized for this app.',
+            FailureCode.bluetoothPermissionDenied);
+      case PeripheralReadinessState.unsupported:
+        throw const BluetoothRadioException(
+            'This device\'s Bluetooth cannot act as the sending end.',
+            FailureCode.bluetoothSendUnsupported);
+      case PeripheralReadinessState.unknown:
+        throw const BluetoothRadioException(
+            'Bluetooth is not ready: the platform could not say what state '
+            'it is in.',
+            FailureCode.bluetoothAdvertiseFailed);
+    }
+
+    // Before anything is on the air, so a receiver that connects the instant
+    // it sees the advertisement is already answered.
+    _universalSessionToken = token;
+    try {
+      await _ensureUniversalService();
+      await _advertiseAndWait();
+    } catch (_) {
+      // A half-started advertiser answers "already started" to the next try.
+      try {
+        await UniversalBlePeripheral.stopAdvertising();
+      } catch (_) {}
+      _universalSessionToken = null;
+      rethrow;
+    }
     _statusController.add(TransferStatus.serving);
+  }
+
+  /// Registers the GATT service, once for the life of the process.
+  ///
+  /// Not once per session: universal_ble's Android side caches the
+  /// characteristic objects it builds by UUID, keeps the first of each, and
+  /// does not clear that cache on `clearServices()`. A service added a second
+  /// time is a service whose characteristics `updateCharacteristicValue`
+  /// resolves to the first one's objects — notifications through handles the
+  /// server no longer owns, which is a negotiation frame that goes nowhere on
+  /// the second code of a session, the first rotation. A service that stays
+  /// registered and an advertisement that comes and goes has none of that.
+  Future<void> _ensureUniversalService() async {
+    var known = const <String>[];
+    try {
+      known = await UniversalBlePeripheral.getServices();
+    } catch (_) {}
+    if (known.any((s) => BleUuidParser.compareStrings(s, BleGatt.service))) {
+      return;
+    }
+
+    final cccd = BlePeripheralDescriptor(uuid: BleGatt.cccd);
+    try {
+      await UniversalBlePeripheral.addService(
+        BlePeripheralService(
+          uuid: BleGatt.service,
+          primary: true,
+          characteristics: [
+            BlePeripheralCharacteristic(
+              uuid: BleGatt.control,
+              properties: [
+                CharacteristicProperty.write,
+                CharacteristicProperty.writeWithoutResponse,
+              ],
+              permissions: [PeripheralAttributePermission.writeable],
+            ),
+            BlePeripheralCharacteristic(
+              uuid: BleGatt.metadata,
+              properties: [CharacteristicProperty.notify],
+              descriptors: [cccd],
+              permissions: [PeripheralAttributePermission.readable],
+            ),
+            BlePeripheralCharacteristic(
+              uuid: BleGatt.data,
+              properties: [CharacteristicProperty.notify],
+              descriptors: [BlePeripheralDescriptor(uuid: BleGatt.cccd)],
+              permissions: [PeripheralAttributePermission.readable],
+            ),
+          ],
+        ),
+      );
+    } on PlatformException catch (e) {
+      throw _serviceRefused(e);
+    }
+  }
+
+  /// What the platform's refusal to register the service means for the person.
+  static BluetoothRadioException _serviceRefused(PlatformException e) {
+    final said = e.message ?? e.code;
+    final lower = said.toLowerCase();
+    // Windows: GattServiceProvider.CreateAsync says why in its BluetoothError.
+    if (lower.contains('notsupported')) {
+      return BluetoothRadioException(
+          'This adapter cannot act as the sending end: $said',
+          FailureCode.bluetoothSendUnsupported);
+    }
+    if (lower.contains('radionotavailable') ||
+        lower.contains('disabledbyuser') ||
+        lower.contains('disabledbypolicy')) {
+      return BluetoothRadioException(
+          'Bluetooth is turned off: $said', FailureCode.bluetoothOff);
+    }
+    return BluetoothRadioException(
+        'Bluetooth could not register the sending service: $said',
+        FailureCode.bluetoothAdvertiseFailed);
+  }
+
+  /// Asks the platform to advertise and returns when it says it is doing so.
+  ///
+  /// The plugin's `startAdvertising` returns as soon as the request is made.
+  /// Whether the advertisement started arrives later, on
+  /// `advertisingStateStream` — Android's "data too large" and "too many
+  /// advertisers" among them — so a caller that only awaited the call would
+  /// report success for an advertisement that never existed.
+  Future<void> _advertiseAndWait() async {
+    final answered = Completer<void>();
+    // The answer can land while this method is awaiting something else, with
+    // nobody yet listening to the future. An error with no listener is
+    // reported as unhandled, even though the code below will read it.
+    answered.future.then<void>((_) {}, onError: (Object _) {});
+    final subscription =
+        UniversalBlePeripheral.advertisingStateStream.listen((event) {
+      if (answered.isCompleted) return;
+      switch (event.state) {
+        case PeripheralAdvertisingState.advertising:
+          answered.complete();
+        case PeripheralAdvertisingState.error:
+          answered.completeError(BluetoothRadioException(
+              'Bluetooth advertising failed: '
+              '${event.error ?? 'the platform gave no reason'}',
+              FailureCode.bluetoothAdvertiseFailed));
+        case PeripheralAdvertisingState.idle:
+        case PeripheralAdvertisingState.starting:
+        case PeripheralAdvertisingState.stopping:
+          break;
+      }
+    });
+    try {
+      try {
+        await UniversalBlePeripheral.startAdvertising(
+          services: [BleGatt.service],
+          // See _startUniversalSession: a name does not fit, and cannot be
+          // set at all on Windows.
+          localName: null,
+          platformConfig: PeripheralPlatformConfig(
+            android: PeripheralAndroidOptions(
+              addServicesInScanResponse: false,
+              addManufacturerDataInScanResponse: false,
+            ),
+          ),
+        );
+      } on PlatformException catch (e) {
+        throw _advertiseRefused(e);
+      } on BluetoothRadioException {
+        rethrow;
+      } catch (e) {
+        throw _advertiseRefused(PlatformException(code: 'failed', message: '$e'));
+      }
+
+      // The answer may already be in: ask once rather than wait for an event
+      // that came before the listener's turn.
+      if (await _isAdvertising()) return;
+
+      await answered.future.timeout(_advertisingTimeout, onTimeout: () async {
+        if (await _isAdvertising()) return;
+        throw BluetoothRadioException(
+            'Bluetooth did not report that advertising had started within '
+            '${_advertisingTimeout.inSeconds} seconds.',
+            FailureCode.bluetoothAdvertiseFailed);
+      });
+    } finally {
+      // Not awaited: letting go of a listener is not something a start-up
+      // should be able to wait on.
+      unawaited(subscription.cancel());
+    }
+  }
+
+  Future<bool> _isAdvertising() async {
+    try {
+      return await UniversalBlePeripheral.getAdvertisingState() ==
+          PeripheralAdvertisingState.advertising;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static BluetoothRadioException _advertiseRefused(PlatformException e) {
+    final said = e.message ?? e.code;
+    if (e.code == 'bluetooth-advertise-permission-denied') {
+      return const BluetoothRadioException(
+          'Bluetooth advertise permission was refused.',
+          FailureCode.bluetoothPermissionDenied);
+    }
+    if (said.toLowerCase().contains('not enabled') ||
+        said.toLowerCase().contains('bluetooth is off')) {
+      return BluetoothRadioException(
+          'Bluetooth is turned off: $said', FailureCode.bluetoothOff);
+    }
+    return BluetoothRadioException(
+        'Bluetooth refused to start advertising: $said',
+        FailureCode.bluetoothAdvertiseFailed);
   }
 
   /// The session is fully dressed — subscribed and asked for — so it begins.
@@ -457,8 +763,8 @@ class BluetoothTransferTransport implements TransferTransport {
       _linuxSender = null;
     } else {
       try {
+        // The service stays registered; see _ensureUniversalService.
         await UniversalBlePeripheral.stopAdvertising();
-        await UniversalBlePeripheral.clearServices();
       } catch (_) {
         // best effort
       }

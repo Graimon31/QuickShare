@@ -1,7 +1,7 @@
 {
   "@@locale": "ru",
   "appName": "DirectDrop",
-  "appTagline": "Мгновенно делитесь файлами по Wi-Fi, Bluetooth\nили по ссылке через интернет",
+  "appTagline": "Мгновенно делитесь файлами\nчерез интернет или напрямую",
   "commonCancel": "Отмена",
   "commonClear": "Очистить",
   "commonSave": "Сохранить",
@@ -11,8 +11,14 @@
   "commonSettings": "Настройки",
   "commonChange": "Изменить",
   "commonOk": "ОК",
-  "homeSendTitle": "Отправить файл",
-  "homeSendSubtitle": "Выберите файл и поделитесь им",
+  "homeInternetTitle": "Через интернет",
+  "homeInternetSubtitle": "Работает из любой сети",
+  "homeAirdropTitle": "AirDrop",
+  "homeAirdropSubtitle": "Для устройств поблизости",
+  "homeLocalNetworkTitle": "Передача по локальной сети",
+  "homeLocalNetworkSubtitle": "Оба устройства в одной сети",
+  "homeAirdropAltTitle": "Аналог {airdrop}",
+  "homeAirdropAltSubtitle": "На телефон поблизости, общая сеть не нужна",
   "homeReceiveTitle": "Получить файл",
   "homeReceiveSubtitleDesktop": "Введите код отправителя",
   "homeReceiveSubtitleMobile": "Отсканируйте QR-код",
@@ -20,17 +26,9 @@
   "homeSettingsTooltip": "Настройки",
   "errorOops": "Ой!",
   "errorGoHome": "На главную",
-  "pickerTitle": "Отправка файла или папки",
   "pickerIndexing": "Индексируем выбранное…",
   "pickerStartingSession": "Запуск защищённого прямого соединения",
-  "pickerStepMethod": "1. Выберите способ передачи",
-  "pickerMethodWifiTitle": "Wi-Fi / Локальная сеть",
-  "pickerMethodWifiSubtitle": "Быстрая передача по локальной сети",
-  "pickerMethodBluetoothTitle": "Bluetooth",
-  "pickerMethodBluetoothSubtitle": "На телефон, который сканирует ваш QR-код",
-  "pickerMethodInternetTitle": "Ссылка через интернет",
-  "pickerMethodInternetSubtitle": "Ссылка через сигнальный сервер WebRTC",
-  "pickerStepWhat": "2. Что отправить",
+  "pickerStepWhat": "Что отправить",
   "pickerPhotosVideos": "Фото и видео",
   "pickerSelectFile": "Выбрать файл",
   "pickerSelectFolder": "Выбрать папку",
@@ -118,6 +116,14 @@
   "qrDisplayScanOrEnterCode": "Отсканируйте QR или введите код",
   "offerCodeChangesIn": "Код и QR сменятся через {time}",
   "@offerCodeChangesIn": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "offerQrChangesIn": "QR-код сменится через {time}",
+  "@offerQrChangesIn": {
     "placeholders": {
       "time": {
         "type": "String"
@@ -261,6 +267,11 @@
   "errorTransferFailedUnexpectedly": "Передача оборвалась, и соединение не сообщило почему. Попробуйте ещё раз, а если повторяется — подключите оба устройства к одной сети.",
   "errorBluetoothStartFailed": "Не удалось начать передачу по Bluetooth.",
   "errorBluetoothTransferFailed": "Передача по Bluetooth оборвалась.",
+  "errorSenderTooOldForDirectLink": "На отправляющем устройстве старая версия, которая передаёт файлы по самому Bluetooth, а эта версия так больше не принимает. Обновите DirectDrop на отправляющем устройстве и отсканируйте его новый код.",
+  "errorBluetoothOff": "Bluetooth выключен. Включите его и попробуйте ещё раз.",
+  "errorBluetoothPermissionDenied": "DirectDrop нужно разрешение на поиск устройств поблизости, чтобы стать видимым по Bluetooth. Разрешите его в настройках и попробуйте ещё раз.",
+  "errorBluetoothSendUnsupported": "Bluetooth этого устройства не умеет показываться другим устройствам, поэтому отправить по Bluetooth отсюда нельзя. Используйте Wi-Fi или интернет.",
+  "errorBluetoothAdvertiseFailed": "Bluetooth не начал делать это устройство видимым. Выключите и снова включите Bluetooth, затем попробуйте ещё раз.",
   "errorInternetStartFailed": "Не удалось начать передачу через интернет.",
   "errorNothingSelected": "Не выбрано ни одного файла или папки.",
   "errorSelectionUnreadable": "Не удалось прочитать выбранное.",

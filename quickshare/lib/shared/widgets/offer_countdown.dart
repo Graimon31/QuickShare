@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 
-/// How long the code and QR on screen have left, as `M:SS`.
+/// How long the code and QR on screen have left, as `M:SS` — or, where the
+/// screen shows a QR and no code ([showsCode] false), the QR alone.
 ///
 /// Read off the wall clock on every tick rather than counted down: a screen
 /// that was asleep, or a frame that ran long, must not drift from the deadline
@@ -17,7 +18,12 @@ class OfferCountdown extends StatefulWidget {
   /// The clock to read. `DateTime.now` unless a test supplies one.
   final DateTime Function()? now;
 
-  const OfferCountdown({super.key, required this.expiresAt, this.now});
+  /// Whether a code is on screen beside the QR. Saying "code and QR change"
+  /// over a screen with no code is saying something that is not there.
+  final bool showsCode;
+
+  const OfferCountdown(
+      {super.key, required this.expiresAt, this.now, this.showsCode = true});
 
   @override
   State<OfferCountdown> createState() => _OfferCountdownState();
@@ -52,8 +58,11 @@ class _OfferCountdownState extends State<OfferCountdown> {
     final now = (widget.now ?? DateTime.now)();
     var left = widget.expiresAt.difference(now);
     if (left.isNegative) left = Duration.zero;
+    final l10n = AppLocalizations.of(context);
     return Text(
-      AppLocalizations.of(context).offerCodeChangesIn(_format(left)),
+      widget.showsCode
+          ? l10n.offerCodeChangesIn(_format(left))
+          : l10n.offerQrChangesIn(_format(left)),
       textAlign: TextAlign.center,
       style: const TextStyle(
         fontSize: 14,

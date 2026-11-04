@@ -15,25 +15,35 @@ import 'package:quickshare/core/theme/app_colors.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/utils/byte_format.dart';
 import 'package:quickshare/features/sender/presentation/pages/media_picker_page.dart';
+import 'package:quickshare/features/sender/presentation/widgets/transport_choice.dart';
 import 'package:quickshare/features/sender/presentation/widgets/transport_preconditions.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
+/// Where files are chosen, for a transport that was already chosen on the
+/// home screen.
+///
+/// The screen used to start with a list of transports to pick from. That
+/// question is asked on the home screen now and arrives in the address
+/// (`/send?mode=internet`, see `SendRoutes`), so what is left here is only
+/// what to send.
 class FilePickerPage extends StatefulWidget {
   final List<String>? qhtpPaths;
 
-  const FilePickerPage({super.key, this.qhtpPaths});
+  /// The transport this screen sends over. Null only when a page is built
+  /// without one — a route never does, because the address is checked before
+  /// it gets here — and then it is the local network.
+  final TransportType? mode;
+
+  const FilePickerPage({super.key, this.qhtpPaths, this.mode});
 
   @override
   State<FilePickerPage> createState() => _FilePickerPageState();
 }
 
 class _FilePickerPageState extends State<FilePickerPage> {
-  TransportType _selectedMode = TransportType.wifi;
+  late TransportType _mode = widget.mode ?? TransportType.wifi;
 
-  /// True while a mode's preconditions are being decided, so the controls
-  /// cannot be clicked into a half-finished change.
-  bool _modeChangeInFlight = false;
   bool _selectionInFlight = false;
 
   @override
@@ -50,28 +60,55 @@ class _FilePickerPageState extends State<FilePickerPage> {
     }
   }
 
-  /// Starts a session for [paths] over the selected transport — after
+  @override
+  void didUpdateWidget(FilePickerPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The pages under `/send` (the QR code, the progress screen) are pushed on
+    // top of this one, and the router rebuilds it with an address that has no
+    // `mode` in it. That must not change what this screen sends over; only an
+    // address that actually names a transport does.
+    final next = widget.mode;
+    if (next != null && next != _mode) _mode = next;
+  }
+
+  /// Starts a session for [paths] over this screen's transport — after
   /// checking that transport can actually run.
   ///
-  /// Every route into a transfer passes through here. Picking a *different*
-  /// mode from the radio list runs [TransportPreconditions.ensure] too, but
-  /// three of the four ways to choose files never touch that list: a
-  /// drag-and-drop, and the file and media pickers once a mode is already
-  /// selected. Those reached `StartQhtpSend` with `TransportType.wifi` and no
-  /// check at all, so dropping a file with Wi-Fi off built a session and a QR
-  /// code for a network that was not there.
+  /// Every route into a transfer passes through here, and it is the one that
+  /// cannot be skipped: a drag-and-drop arrives with its files already
+  /// chosen, and the radio can be switched off while the system file dialog is
+  /// open. Before this check existed, dropping a file with Wi-Fi off built a
+  /// session and a QR code for a network that was not there.
+  ///
+  /// The pickers run the same check *before* they open ([_transportReady]),
+  /// so in the ordinary case nobody browses for files a transport was never
+  /// going to be able to send.
   Future<void> _startSend(List<String> paths) async {
     if (!mounted) return;
-    final allowed =
-        await TransportPreconditions.ensure(context, _selectedMode);
-    if (!mounted) return;
-    if (!allowed) {
-      // The gate has already told the person what is missing. Release the
-      // guard so they can try again once they have fixed it.
-      setState(() => _selectionInFlight = false);
+    if (!await _transportReady()) {
+      if (mounted) {
+        // The gate has already told the person what is missing. Release the
+        // guard so they can try again once they have fixed it.
+        setState(() => _selectionInFlight = false);
+      }
       return;
     }
-    context.read<SenderBloc>().add(StartQhtpSend(paths, mode: _selectedMode));
+    if (!mounted) return;
+    context.read<SenderBloc>().add(StartQhtpSend(paths, mode: _mode));
+  }
+
+  /// True when this screen's transport can run right now. Otherwise the person
+  /// has been told what is missing and nothing should be started.
+  ///
+  /// Wi-Fi needs a live local network, Bluetooth a powered radio (and, where
+  /// the direct link is Apple's, the Wi-Fi radio awake), the internet any
+  /// connection at all — see [TransportPreconditions.ensure].
+  Future<bool> _transportReady() async {
+    final allowed = await TransportPreconditions.ensure(context, _mode);
+    if (!allowed) {
+      AppLogger.info('${_mode.name} is not usable here', tag: 'SENDER');
+    }
+    return allowed && mounted;
   }
 
   /// Everything sendable, in one trip: files and folders, mixed, however
@@ -99,6 +136,11 @@ class _FilePickerPageState extends State<FilePickerPage> {
   Future<void> _pickItems() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
+    if (!await _transportReady()) {
+      if (mounted) setState(() => _selectionInFlight = false);
+      return;
+    }
+    if (!mounted) return;
     final paths = await const FolderPicker()
         .pickItems(dialogTitle: AppLocalizations.of(context).pickerSendFiles);
 
@@ -117,6 +159,11 @@ class _FilePickerPageState extends State<FilePickerPage> {
   Future<void> _pickMedia() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
+    if (!await _transportReady()) {
+      if (mounted) setState(() => _selectionInFlight = false);
+      return;
+    }
+    if (!mounted) return;
 
     final entries = await Navigator.of(context).push<List<MediaEntry>>(
       MaterialPageRoute(builder: (_) => const MediaPickerPage()),
@@ -130,45 +177,6 @@ class _FilePickerPageState extends State<FilePickerPage> {
         entries.map((e) => e.file.path).toList(growable: false));
   }
 
-  /// Picking a mode is gated on what the mode needs: Wi-Fi on a live local
-  /// network, Bluetooth on a powered radio, Internet on any connection at
-  /// all. Without that, selecting the mode already creates a session that
-  /// cannot work.
-  ///
-  /// Picking Bluetooth is additionally the moment to ask about Wi-Fi, not
-  /// the moment the files are already chosen: the direct link is what makes
-  /// this mode fast, and it needs the Wi-Fi radio awake — not a network, just
-  /// the radio.
-  ///
-  /// A refusal leaves the previous mode selected, which is only safe as long
-  /// as it is obvious. It was not: the check behind it can take a moment, and
-  /// while it ran the radio button stayed where it was with nothing on screen
-  /// to say why. Somebody who picked Bluetooth, changed their mind, clicked
-  /// "local network" and saw nothing move went on to choose files believing
-  /// the change had taken — and sent them over Bluetooth.
-  ///
-  /// So the refusal is recorded, and the selection is marked as busy while it
-  /// is decided, which is what stops a second click landing in the middle of
-  /// the first one's dialog.
-  Future<void> _selectMode(TransportType type) async {
-    if (_selectionInFlight || _modeChangeInFlight) return;
-    setState(() => _modeChangeInFlight = true);
-    final bool allowed;
-    try {
-      allowed = await TransportPreconditions.ensure(context, type);
-    } finally {
-      if (mounted) setState(() => _modeChangeInFlight = false);
-    }
-    if (!mounted) return;
-    if (!allowed) {
-      AppLogger.info(
-          'Staying on ${_selectedMode.name}: ${type.name} is not usable here',
-          tag: 'SENDER');
-      return;
-    }
-    setState(() => _selectedMode = type);
-  }
-
   /// Folders, on the platforms that cannot browse for both at once.
   ///
   /// Windows and Linux only. `IFileOpenDialog` picks files *or* folders per
@@ -179,6 +187,11 @@ class _FilePickerPageState extends State<FilePickerPage> {
   Future<void> _pickFolder() async {
     if (_selectionInFlight) return;
     setState(() => _selectionInFlight = true);
+    if (!await _transportReady()) {
+      if (mounted) setState(() => _selectionInFlight = false);
+      return;
+    }
+    if (!mounted) return;
     final folders = await const FolderPicker()
         .pick(dialogTitle: AppLocalizations.of(context).pickerSelectFolder);
     if (folders.isNotEmpty) {
@@ -195,8 +208,14 @@ class _FilePickerPageState extends State<FilePickerPage> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
+        // The way this screen sends, so it is plain which one the home screen
+        // opened. Two lines are allowed: "Передача по локальной сети" does not
+        // fit one at a phone's width with larger text.
+        toolbarHeight: 64,
         title: Text(
-          AppLocalizations.of(context).pickerTitle,
+          AppLocalizations.of(context).transportTitle(_mode),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
           style: GoogleFonts.inter(
             color: Colors.white,
             fontWeight: FontWeight.w600,
@@ -216,8 +235,8 @@ class _FilePickerPageState extends State<FilePickerPage> {
           // survives the whole trip and is still holding whatever it held
           // when the session started. Popping back therefore revealed a page
           // that believed a selection was still in flight, and every button
-          // on it — both pickers and all three mode tiles — returned at its
-          // first line. The screen looked alive and answered nothing.
+          // on it — every picker it has, and the mode tiles it had then —
+          // returned at its first line. The screen looked alive and answered nothing.
           //
           // Leaving the QR screen cancels the session, so the bloc says when
           // that is over. Anything other than a session being set up means
@@ -229,7 +248,7 @@ class _FilePickerPageState extends State<FilePickerPage> {
           if (state is FileSelected) {
             // As soon as file is chosen, automatically start sending with chosen transport mode
             context.read<SenderBloc>().add(
-                  StartSendingWithTransport(state.file, _selectedMode),
+                  StartSendingWithTransport(state.file, _mode),
                 );
           } else if (state is QRReady) {
             context.go('/send/qr');
@@ -282,70 +301,6 @@ class _FilePickerPageState extends State<FilePickerPage> {
                     mainAxisAlignment: MainAxisAlignment.center,
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      // Mode selector header
-                      Text(
-                        AppLocalizations.of(context).pickerStepMethod,
-                        style: GoogleFonts.inter(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white.withValues(alpha: 0.90),
-                        ),
-                      ),
-
-                      const SizedBox(height: 12),
-
-                      // Mode choices: Wi-Fi, Bluetooth, Internet.
-                      // RadioGroup owns the selection now; the individual
-                      // Radio widgets no longer carry groupValue/onChanged.
-                      RadioGroup<TransportType>(
-                        groupValue: _selectedMode,
-                        onChanged: (val) {
-                          if (val != null) _selectMode(val);
-                        },
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _buildModeTile(
-                              type: TransportType.wifi,
-                              title: AppLocalizations.of(context)
-                                  .pickerMethodWifiTitle,
-                              subtitle: AppLocalizations.of(context)
-                                  .pickerMethodWifiSubtitle,
-                              icon: Icons.wifi_rounded,
-                            ),
-                            const SizedBox(height: 10),
-                            if (defaultTargetPlatform == TargetPlatform.macOS ||
-                                defaultTargetPlatform == TargetPlatform.iOS ||
-                                defaultTargetPlatform ==
-                                    TargetPlatform.android ||
-                                defaultTargetPlatform ==
-                                    TargetPlatform.windows ||
-                                defaultTargetPlatform ==
-                                    TargetPlatform.linux) ...[
-                              _buildModeTile(
-                                type: TransportType.bluetooth,
-                                title: AppLocalizations.of(context)
-                                    .pickerMethodBluetoothTitle,
-                                subtitle: AppLocalizations.of(context)
-                                    .pickerMethodBluetoothSubtitle,
-                                icon: Icons.bluetooth_rounded,
-                              ),
-                              const SizedBox(height: 10),
-                            ],
-                            _buildModeTile(
-                              type: TransportType.internet,
-                              title: AppLocalizations.of(context)
-                                  .pickerMethodInternetTitle,
-                              subtitle: AppLocalizations.of(context)
-                                  .pickerMethodInternetSubtitle,
-                              icon: Icons.language_rounded,
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      const SizedBox(height: 28),
-
                       Text(
                         AppLocalizations.of(context).pickerStepWhat,
                         style: GoogleFonts.inter(
@@ -545,80 +500,6 @@ class _FilePickerPageState extends State<FilePickerPage> {
                     ),
                   ),
                 ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildModeTile({
-    required TransportType type,
-    required String title,
-    required String subtitle,
-    required IconData icon,
-  }) {
-    final isSelected = _selectedMode == type;
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-        child: InkWell(
-          onTap: () => _selectMode(type),
-          borderRadius: BorderRadius.circular(16),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(
-              color: isSelected
-                  ? const Color.fromRGBO(34, 211, 238, 0.15)
-                  : const Color.fromRGBO(255, 255, 255, 0.06),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: isSelected
-                    ? AppColors.primary
-                    : const Color.fromRGBO(255, 255, 255, 0.20),
-                width: isSelected ? 1.8 : 1,
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  icon,
-                  color: isSelected
-                      ? AppColors.primary
-                      : Colors.white.withValues(alpha: 0.70),
-                  size: 24,
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: GoogleFonts.inter(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        subtitle,
-                        style: GoogleFonts.inter(
-                          fontSize: 13,
-                          color: Colors.white.withValues(alpha: 0.65),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Radio<TransportType>(
-                  value: type,
-                  activeColor: AppColors.primary,
-                ),
               ],
             ),
           ),

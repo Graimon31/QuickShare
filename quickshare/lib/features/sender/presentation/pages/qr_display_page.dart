@@ -7,6 +7,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:quickshare/core/router/send_routes.dart';
 import 'package:quickshare/core/deep_link/deep_link_service.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/theme/app_colors.dart';
@@ -55,7 +56,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
             icon: const Icon(Icons.arrow_back, color: Colors.white),
             onPressed: () {
               context.read<SenderBloc>().add(CancelSending());
-              context.go('/send');
+              context.go(SendRoutes.home);
             },
           ),
         ),
@@ -64,7 +65,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
             if (state is Transferring) {
               context.go('/send/progress');
             } else if (state is SenderInitial) {
-              context.go('/send');
+              context.go(SendRoutes.home);
             } else if (state is InviteApprovalRequested) {
               _showApprovalDialog(context, state);
             } else if (state is SenderError) {
@@ -85,7 +86,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                 ),
                 behavior: SnackBarBehavior.floating,
               ));
-              context.go('/send');
+              context.go(SendRoutes.home);
             }
           },
           builder: (context, state) {
@@ -305,7 +306,7 @@ class _QRDisplayPageState extends State<QRDisplayPage> {
                         OutlinedButton.icon(
                           onPressed: () {
                             context.read<SenderBloc>().add(CancelSending());
-                            context.go('/send');
+                            context.go(SendRoutes.home);
                           },
                           icon: const Icon(Icons.close,
                               size: 18, color: AppColors.error),

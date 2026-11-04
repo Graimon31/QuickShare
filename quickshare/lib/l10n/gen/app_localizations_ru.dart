@@ -13,7 +13,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get appTagline =>
-      'Мгновенно делитесь файлами по Wi-Fi, Bluetooth\nили по ссылке через интернет';
+      'Мгновенно делитесь файлами\nчерез интернет или напрямую';
 
   @override
   String get commonCancel => 'Отмена';
@@ -43,10 +43,31 @@ class AppLocalizationsRu extends AppLocalizations {
   String get commonOk => 'ОК';
 
   @override
-  String get homeSendTitle => 'Отправить файл';
+  String get homeInternetTitle => 'Через интернет';
 
   @override
-  String get homeSendSubtitle => 'Выберите файл и поделитесь им';
+  String get homeInternetSubtitle => 'Работает из любой сети';
+
+  @override
+  String get homeAirdropTitle => 'AirDrop';
+
+  @override
+  String get homeAirdropSubtitle => 'Для устройств поблизости';
+
+  @override
+  String get homeLocalNetworkTitle => 'Передача по локальной сети';
+
+  @override
+  String get homeLocalNetworkSubtitle => 'Оба устройства в одной сети';
+
+  @override
+  String homeAirdropAltTitle(String airdrop) {
+    return 'Аналог $airdrop';
+  }
+
+  @override
+  String get homeAirdropAltSubtitle =>
+      'На телефон поблизости, общая сеть не нужна';
 
   @override
   String get homeReceiveTitle => 'Получить файл';
@@ -70,39 +91,13 @@ class AppLocalizationsRu extends AppLocalizations {
   String get errorGoHome => 'На главную';
 
   @override
-  String get pickerTitle => 'Отправка файла или папки';
-
-  @override
   String get pickerIndexing => 'Индексируем выбранное…';
 
   @override
   String get pickerStartingSession => 'Запуск защищённого прямого соединения';
 
   @override
-  String get pickerStepMethod => '1. Выберите способ передачи';
-
-  @override
-  String get pickerMethodWifiTitle => 'Wi-Fi / Локальная сеть';
-
-  @override
-  String get pickerMethodWifiSubtitle => 'Быстрая передача по локальной сети';
-
-  @override
-  String get pickerMethodBluetoothTitle => 'Bluetooth';
-
-  @override
-  String get pickerMethodBluetoothSubtitle =>
-      'На телефон, который сканирует ваш QR-код';
-
-  @override
-  String get pickerMethodInternetTitle => 'Ссылка через интернет';
-
-  @override
-  String get pickerMethodInternetSubtitle =>
-      'Ссылка через сигнальный сервер WebRTC';
-
-  @override
-  String get pickerStepWhat => '2. Что отправить';
+  String get pickerStepWhat => 'Что отправить';
 
   @override
   String get pickerPhotosVideos => 'Фото и видео';
@@ -386,6 +381,11 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String offerCodeChangesIn(String time) {
     return 'Код и QR сменятся через $time';
+  }
+
+  @override
+  String offerQrChangesIn(String time) {
+    return 'QR-код сменится через $time';
   }
 
   @override
@@ -870,6 +870,26 @@ class AppLocalizationsRu extends AppLocalizations {
   @override
   String get errorBluetoothTransferFailed =>
       'Передача по Bluetooth оборвалась.';
+
+  @override
+  String get errorSenderTooOldForDirectLink =>
+      'На отправляющем устройстве старая версия, которая передаёт файлы по самому Bluetooth, а эта версия так больше не принимает. Обновите DirectDrop на отправляющем устройстве и отсканируйте его новый код.';
+
+  @override
+  String get errorBluetoothOff =>
+      'Bluetooth выключен. Включите его и попробуйте ещё раз.';
+
+  @override
+  String get errorBluetoothPermissionDenied =>
+      'DirectDrop нужно разрешение на поиск устройств поблизости, чтобы стать видимым по Bluetooth. Разрешите его в настройках и попробуйте ещё раз.';
+
+  @override
+  String get errorBluetoothSendUnsupported =>
+      'Bluetooth этого устройства не умеет показываться другим устройствам, поэтому отправить по Bluetooth отсюда нельзя. Используйте Wi-Fi или интернет.';
+
+  @override
+  String get errorBluetoothAdvertiseFailed =>
+      'Bluetooth не начал делать это устройство видимым. Выключите и снова включите Bluetooth, затем попробуйте ещё раз.';
 
   @override
   String get errorInternetStartFailed =>

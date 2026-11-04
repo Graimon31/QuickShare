@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 
+import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
@@ -24,15 +25,21 @@ import 'package:quickshare/shared/models/qr_payload.dart';
 class _FakeBleReceiver implements BleReceiver {
   final _devicesController = StreamController<BluetoothDevice>();
   final _serveController = StreamController<LinkServeInfo>();
+  final _failureController = StreamController<BleReceiverFailure>();
+
+  /// What `connect` does. Completing at once is a handshake that went well.
+  Future<void> Function() onConnect = () async {};
+
+  /// The devices the session connected to.
+  final List<String> connected = [];
 
   void emitDevice(BluetoothDevice device) => _devicesController.add(device);
   void emitServe(LinkServeInfo serve) => _serveController.add(serve);
+  void emitFailure(String message, String code) =>
+      _failureController.add(BleReceiverFailure(message, code));
 
   @override
   Stream<BluetoothDevice> get devices => _devicesController.stream;
-
-  @override
-  Stream<BluetoothReceiveProgress> get progressStream => const Stream.empty();
 
   @override
   Stream<DirectLinkDirective> get linkDirectives => const Stream.empty();
@@ -41,16 +48,19 @@ class _FakeBleReceiver implements BleReceiver {
   Stream<LinkServeInfo> get serveInfos => _serveController.stream;
 
   @override
+  Stream<BleReceiverFailure> get failures => _failureController.stream;
+
+  @override
   Future<void> startScanning({String? sessionToken, String? publicId}) async {}
 
   @override
   Future<void> stopScanning() async {}
 
   @override
-  Future<String> connect(String deviceId, {String? token, String? targetDir}) =>
-      // The legacy in-band path never lands in these tests; the serve frame
-      // is what carries the session.
-      Completer<String>().future;
+  Future<void> connect(String deviceId, {String? token}) {
+    connected.add(deviceId);
+    return onConnect();
+  }
 
   @override
   Future<void> sendApOffer(String sealed) async {}
@@ -101,6 +111,12 @@ class _FakeDriver implements DirectLinkDriver {
 
   @override
   Future<void> stopHosting() async {}
+}
+
+/// A device whose Wi-Fi is off: the negotiation ends at once, with a reason.
+class _WifiOffDriver extends _FakeDriver {
+  @override
+  Future<bool> ensureWifiReady() async => false;
 }
 
 class _FakeNetworkInfo extends NetworkInfoService {
@@ -245,5 +261,156 @@ void main() {
     await session.cancel();
 
     expect(transport.cancels, 1);
+  });
+
+  group('what the radio and the negotiation can say', () {
+    BluetoothReceiverSession sessionWith(
+      _FakeBleReceiver transport, {
+      DirectLinkDriver? driver,
+      Duration handshake = const Duration(seconds: 20),
+      Either<Failure, QhtpReceiveResult>? download,
+    }) =>
+        BluetoothReceiverSession(
+          transport: transport,
+          driver: driver ?? _FakeDriver(),
+          networkInfo: _FakeNetworkInfo(),
+          hotspotService: _FakeHotspot(),
+          qhtpReceiver: _FakeQhtpReceiver(
+              download ?? const Left(NetworkFailure('never reached'))),
+          handshakeBudget: handshake,
+        );
+
+    Future<BluetoothReceiverSessionResult> runOn(
+            BluetoothReceiverSession session) async =>
+        session.run(
+          token: 'token',
+          publicId: 'public',
+          destination: await cacheDestination(),
+          onProgress: (_, __, ___) {},
+          onVerifying: () {},
+        );
+
+    const sender = BluetoothDevice(id: 'd1', name: 'Sender');
+    const serve = LinkServeInfo(
+        ip: '127.0.0.1', port: 9, token: 'token', tlsFingerprint: 'ff');
+
+    test('a link that cannot be built ends the session with the reason, not '
+        'a spinner', () async {
+      // The negotiation used to end in a log line when it found no way to
+      // join the sender, and the screen waited for a serve frame that could
+      // not come.
+      final transport = _FakeBleReceiver();
+      final running =
+          runOn(sessionWith(transport, driver: _WifiOffDriver()));
+      transport.emitDevice(sender);
+
+      await expectLater(
+        running.timeout(const Duration(seconds: 5)),
+        throwsA(isA<FileException>()
+            .having((e) => e.code, 'code', FailureCode.linkWifiOff)),
+      );
+    });
+
+    test('a sender that is still pushing a file over Bluetooth is told to '
+        'update, not received from', () async {
+      final transport = _FakeBleReceiver();
+      final running = runOn(sessionWith(transport));
+      transport.emitDevice(sender);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      transport.emitFailure('older sender', FailureCode.senderTooOldForDirectLink);
+
+      await expectLater(
+        running.timeout(const Duration(seconds: 5)),
+        throwsA(isA<FileException>().having(
+            (e) => e.code, 'code', FailureCode.senderTooOldForDirectLink)),
+      );
+    });
+
+    test('the radio dropping before the serve frame ends the session', () async {
+      final transport = _FakeBleReceiver();
+      final running = runOn(sessionWith(transport));
+      transport.emitDevice(sender);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      transport.emitFailure('dropped', FailureCode.linkPeerLost);
+
+      await expectLater(
+        running.timeout(const Duration(seconds: 5)),
+        throwsA(isA<FileException>()
+            .having((e) => e.code, 'code', FailureCode.linkPeerLost)),
+      );
+    });
+
+    test('and after the serve frame it is nothing: the file crosses Wi-Fi',
+        () async {
+      final dest = await cacheDestination();
+      File(p.join(dest.path, 'a.bin')).writeAsStringSync('12345');
+      final transport = _FakeBleReceiver();
+      final session = sessionWith(transport,
+          download: Right(QhtpReceiveResult(
+              preferredResultPath: dest.path, displayName: 'a.bin')));
+      final running = session.run(
+        token: 'token',
+        publicId: 'public',
+        destination: dest,
+        onProgress: (_, __, ___) {},
+        onVerifying: () {},
+      );
+      transport.emitDevice(sender);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      transport.emitServe(serve);
+      transport.emitFailure('dropped', FailureCode.linkPeerLost);
+
+      final result = await running.timeout(const Duration(seconds: 5));
+      expect(result.items, hasLength(1));
+    });
+
+    test('a handshake that never finishes ends in an error', () async {
+      final transport = _FakeBleReceiver()
+        ..onConnect = () => Completer<void>().future;
+      final running = runOn(
+          sessionWith(transport, handshake: const Duration(milliseconds: 100)));
+      transport.emitDevice(sender);
+
+      await expectLater(
+        running.timeout(const Duration(seconds: 5)),
+        throwsA(isA<FileException>()
+            .having((e) => e.code, 'code', FailureCode.linkPeerLost)),
+      );
+      expect(transport.cancels, greaterThanOrEqualTo(1),
+          reason: 'the half-open connection is let go');
+    });
+
+    test('a connect that fails ends the session with the failure', () async {
+      final transport = _FakeBleReceiver()
+        ..onConnect = () async => throw Exception('Failed to connect');
+      final running = runOn(sessionWith(transport));
+      transport.emitDevice(sender);
+
+      await expectLater(
+        running.timeout(const Duration(seconds: 5)),
+        throwsA(isA<Exception>().having(
+            (e) => e.toString(), 'message', contains('Failed to connect'))),
+      );
+    });
+
+    test('two senders in range are not two connections', () async {
+      final transport = _FakeBleReceiver();
+      final running = runOn(sessionWith(transport));
+      transport.emitDevice(sender);
+      transport.emitDevice(const BluetoothDevice(id: 'd2', name: 'Other'));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+
+      expect(transport.connected, ['d1']);
+
+      await expectLater(
+          (() async {
+            transport.emitFailure('end it', FailureCode.linkPeerLost);
+            await running;
+          })(),
+          throwsA(isA<Exception>()));
+    });
   });
 }

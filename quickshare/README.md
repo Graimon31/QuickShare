@@ -39,7 +39,7 @@ Release builds live on the
 | **QHTP over Wi-Fi/LAN** | Both devices on one network | Bounded by Dart's TLS stack, not the link: 72 MB/s receiving over loopback in `benchmark/README.md` (2021 M1 Pro); a real link is slower |
 | **Serverless WebRTC** | Different networks, over the internet | Depends on the path; 27 MB/s over loopback (`docs/specs/2026-09-23-performance-review.md`). A relayed route is the slowest |
 | **Direct Wi-Fi link** | No shared network: one device raises a hotspot, or two Apple devices use Apple's peer-to-peer Wi-Fi | The same QHTP protocol over whatever link comes up; not benchmarked |
-| **Bluetooth LE** | No network at all; the receiver scans the sender's QR code, so it is a phone | Bluetooth only finds the other device and sets up a direct Wi-Fi link; the file crosses that link, not Bluetooth |
+| **Bluetooth LE** | No network at all; the receiver scans the sender's QR code, so it is a phone. Sends from macOS, iOS, Android, Windows and Linux (see [Bluetooth](#bluetooth) for what has been tried on devices) | Bluetooth only finds the other device and sets up a direct Wi-Fi link; the file crosses that link, not Bluetooth |
 
 Folders are transferred whole, with their structure. A transfer over QHTP —
 local network, hotspot, peer-to-peer link, and a Bluetooth-started link — resumes
@@ -48,6 +48,34 @@ starts again. QHTP verifies each file before it is published under its real
 name (byte count always, SHA-256 when a digest is available), and the WebRTC
 receiver checks the byte count of each item. See
 [On the receiving disk](#on-the-receiving-disk).
+
+### The home screen
+
+Two ways to send, and receiving as an action of its own:
+
+- **Over the internet** opens the file screen for the serverless WebRTC
+  transfer. It works from any network.
+- **AirDrop** is not a transport. Tapping it opens two buttons under it, and
+  tapping it again closes them. **Local network transfer** is QHTP over
+  Wi-Fi/LAN: both devices must be on the same network. **AirDrop alternative**
+  is the Bluetooth-started direct Wi-Fi link (see [Bluetooth](#bluetooth)): it
+  needs no shared network, and the receiving end is a phone. Nothing here
+  speaks Apple's AirDrop protocol; the name says what kind of transfer to
+  expect (device to device, close together), not what it is compatible with.
+- **Receive File** sits below both and chooses no transport: the sender's QR
+  code or ten digits decide the path, so it opens the digit entry on a computer
+  and the scanner on a phone.
+
+The way to send is therefore chosen on the home screen, and the file screen
+(`/send?mode=internet`, `wifi` or `bluetooth`) only asks what to send. A
+transport that cannot run (Bluetooth off, no local network, no connection at
+all) is refused at its button, before any file has been chosen. The file screen
+checks again before its file dialog opens and before any session is started,
+which is the only check a dropped file gets. An
+address without a recognisable `mode` goes back to the home screen. On a
+computer a file can be dropped on the **Over the internet** card, which sends
+it over the internet, or on the **AirDrop** card and its buttons, which send it
+over the local network.
 
 ---
 
@@ -196,22 +224,77 @@ from `127.0.0.1` and the transfer cannot tell what carried it.
 
 ### Bluetooth
 
-Bluetooth is the rendezvous and nothing more. The sender shows a QR code and
-advertises; the receiver scans the code, connects to the sender it names, and
-over a GATT service the two agree which of them raises a Wi-Fi network (the sender if it can, otherwise the receiver; two Apple devices
+Bluetooth is the rendezvous and nothing more, and **no file ever crosses it**:
+the decision is that a file does not travel over plain Bluetooth at all. The
+sender shows a QR code and advertises; the receiver scans the code, connects to
+the sender it names, and over a GATT service the two agree which of them raises
+a Wi-Fi network (the sender if it can, otherwise the receiver; two Apple devices
 use the peer-to-peer link above). The receiver then pulls the files from the
 sender over ordinary QHTP/HTTPS on that network. A sender running this version
 puts no file bytes on Bluetooth and refuses a receiver too old to build the
-link, telling the person to update it. With Wi-Fi switched off the session stops
-with "Wi-Fi is turned off. The transfer builds a direct Wi-Fi link between the
-devices, so it cannot start without it."
+link, telling the person to update it; a receiver running this version does the
+same to an older sender that still pushes bytes, and writes nothing it sends.
+With Wi-Fi switched off the session stops with "Wi-Fi is turned off. The
+transfer builds a direct Wi-Fi link between the devices, so it cannot start
+without it."
 
 **Bluetooth is joined by the QR code and by nothing else, which makes the
 receiver a phone.** Neither side lists devices: a receiver does not advertise
 itself to be picked, and a sender does not scan for or show the devices around
 it. Scanning needs a camera, so a phone receives over Bluetooth and a computer
 does not. A computer receives with the code on the local network or over the
-internet link, and it can still *send* over Bluetooth to a phone.
+internet link, and it can still *send* over Bluetooth to a phone. The Bluetooth
+screen shows the QR and nothing to type: there is nowhere to type a code into a
+Bluetooth session.
+
+#### What each sender puts on the air
+
+| Sender | Implementation | Advertised |
+|---|---|---|
+| macOS, iOS | CoreBluetooth bridge (Swift) | Service UUID and the name `QuickShare-` plus the session's eight-character identifier |
+| Linux | BlueZ over D-Bus | The same |
+| Android | `universal_ble` peripheral mode | **The service UUID only** |
+| Windows | `universal_ble` peripheral mode (`GattServiceProvider`) | **The service UUID only** |
+
+Android and Windows advertise no name. A legacy Bluetooth packet holds 31 bytes;
+the flags take three, a 128-bit service UUID takes 18, and the name would take
+21 more, which Android refuses with `ADVERTISE_FAILED_DATA_TOO_LARGE`. The
+plugin can move the UUID into the scan response so that the name fits, but both
+receivers scan with the UUID as the filter, and a filter that has to look inside
+a scan response is one more way not to be found; setting a name also renames the
+phone's own Bluetooth name while the advertisement lasts. Windows cannot set a
+name at all. A receiver accepts a sender with no `QuickShare-` name, because the
+service UUID shows it is a DirectDrop sender and the `START:<token>` write after
+the connection is what shows it is the one the QR named; a sender that does
+advertise a `QuickShare-` name has to carry the scanned session's identifier.
+With two Android or Windows senders in range, a receiver connects to whichever
+it hears first — and the one it was not meant for refuses the wrong token. The
+Android and Windows senders register their GATT service once per process and
+only start and stop the advertisement, because `universal_ble` on Android keeps
+the first characteristic objects it builds and never drops them.
+
+A sender that asks the platform to advertise waits for the platform to say it
+is advertising, and reports Bluetooth being off, a refused permission, an adapter
+that cannot act as a sender, or the platform's own reason for a failed
+advertisement — and not answering within ten seconds — as an error on the
+sender's screen.
+
+Android needs the Bluetooth permission (`BLUETOOTH_ADVERTISE` on Android 12 and
+later, declared in `AndroidManifest.xml`); Windows needs an adapter that
+supports the peripheral role, which not every adapter does.
+
+**What has and has not been tried.** The Apple senders are the path that has
+been used on devices. The Android and Windows senders are complete in code and
+tested against a simulated radio (`test/features/sender/ble_sender_*`), which
+checks what is asked of the platform and how the sender answers, and does not
+prove that a particular phone or adapter will advertise it or that an iPhone
+will find it. They have not been run between two real devices. Two things in
+particular wait for that: whether the hosting directive an Android or Windows
+sender writes (about 220 bytes) fits in one notification to an iPhone, which
+negotiates a 182-byte payload — a frame that does not fit is refused with an
+error, and the optional fields of the serve frame are dropped to make it fit,
+but the directive cannot be shrunk — and whether a given receiver finds an
+advertisement that carries no name.
 
 ---
 
@@ -386,7 +469,9 @@ limit and is bounded only by the protocol (100 GB per file, 500 GB per session,
   Update the sending device." An older receiver connects without TLS and cannot
   talk to a current sender.
 - **Bluetooth-started transfers need protocol generation 4 on both ends**; an
-  older receiver is told to update instead of being sent anything.
+  older receiver is told to update instead of being sent anything, and an older
+  sender that still pushes a file over Bluetooth is refused by a receiver of this
+  version, which says so and writes none of it.
 - **An older build that advertises itself to be picked is not listed by this
   version.** Nothing lists devices any more; scan the sender's QR instead.
 
@@ -419,7 +504,8 @@ discover them.
    token, the hotspot passphrase and the identifiers below all derive from the
    ten-digit code by unsalted hashes, and the code has about 33 bits. Three of
    them are broadcast to anyone in radio range where the matching transport is
-   used: the Bluetooth advertised name (`QuickShare-` plus eight characters),
+   used: the Bluetooth advertised name (`QuickShare-` plus eight characters; on
+   Apple and Linux senders — Android and Windows senders advertise no name),
    the Bonjour name of an Apple peer-to-peer link (`dd-` plus 16 hex digits of
    the session token) and the hotspot SSID where it is requested from the code
    (`DirectDrop-` plus six characters; Android may name its own network instead).
@@ -433,7 +519,7 @@ discover them.
    one byte of the code's hash. It carries no device name, address, fingerprint
    or token, and it disappears with the offer, but its existence is not hidden.
 3. **Bluetooth frames are not encrypted.** Nothing at the Bluetooth layer
-   encrypts or bonds them. The `START:<token>` write, the link frame (which
+   encrypts or bonds them, on any sender — Android and Windows included. The `START:<token>` write, the link frame (which
    includes the ten digits of the code) and the serve frame (token, certificate
    fingerprint, file name and size) cross as plain text; only the hotspot
    credentials are sealed. That seal holds against a passive listener. A device

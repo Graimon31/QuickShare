@@ -775,19 +775,20 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     } catch (e, st) {
       await dest?.release();
       if (attempt != _transferAttempt) return;
-      // A storage problem keeps its own code, so the screen says "the disk is
-      // full" rather than the generic Bluetooth failure.
-      final storageCode =
-          e is FileException && FailureCode.isStorage(e.code) ? e.code : null;
+      // A problem the session gave a code keeps it — the disk is full, the
+      // sending device is an older build, the Wi-Fi link would not come up —
+      // so the screen says which, in the person's language, rather than the
+      // generic Bluetooth failure.
+      final carried = e is FileException ? e.code : null;
       final errorMsg = e is FileException
           ? e.message
           : e.toString().replaceFirst('Exception: ', '');
-      final code = storageCode ?? FailureCode.bluetoothTransferFailed;
+      final code = carried ?? FailureCode.bluetoothTransferFailed;
       AppLogger.error('Bluetooth transfer failed: $errorMsg',
           error: e, stackTrace: st, tag: 'BT_RECEIVER');
       unawaited(_report(0, failure: errorMsg, code: code));
-      add(storageCode != null
-          ? DownloadFailed(errorMsg, code: storageCode)
+      add(carried != null
+          ? DownloadFailed(errorMsg, code: carried)
           : DownloadFailed(errorMsg));
     } finally {
       if (_bluetoothSession == session) {

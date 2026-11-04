@@ -13,10 +13,11 @@ import 'package:quickshare/l10n/gen/app_localizations.dart';
 /// Gates the choice of a transport on the radio or network it cannot work
 /// without.
 ///
-/// The check runs when the mode is *picked*, not when the session is already
-/// being created: a QR code for a transport that is switched off is a promise
-/// the app cannot keep, and the session must not exist yet when the user
-/// says "no" to enabling it.
+/// The check runs when the mode is *picked* — on the home screen, at the
+/// button for it — and again before the file dialog opens, not when the
+/// session is already being created: a QR code for a transport that is
+/// switched off is a promise the app cannot keep, and the session must not
+/// exist yet when the user says "no" to enabling it.
 class TransportPreconditions {
   /// The network probe. A field rather than a `const` so a test can answer
   /// for a host whose real interfaces do not match the case under test.

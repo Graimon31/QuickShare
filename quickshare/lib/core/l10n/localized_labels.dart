@@ -45,6 +45,14 @@ String localizedFailure(
       return l10n.errorBluetoothStartFailed;
     case FailureCode.bluetoothTransferFailed:
       return l10n.errorBluetoothTransferFailed;
+    case FailureCode.bluetoothOff:
+      return l10n.errorBluetoothOff;
+    case FailureCode.bluetoothPermissionDenied:
+      return l10n.errorBluetoothPermissionDenied;
+    case FailureCode.bluetoothSendUnsupported:
+      return l10n.errorBluetoothSendUnsupported;
+    case FailureCode.bluetoothAdvertiseFailed:
+      return l10n.errorBluetoothAdvertiseFailed;
     case FailureCode.internetStartFailed:
       return l10n.errorInternetStartFailed;
     case FailureCode.nothingSelected:
@@ -61,6 +69,8 @@ String localizedFailure(
       return l10n.errorReceiverTooOldForDirectLink;
     case FailureCode.receiverTooOldToPair:
       return l10n.errorReceiverTooOldToPair;
+    case FailureCode.senderTooOldForDirectLink:
+      return l10n.errorSenderTooOldForDirectLink;
     case FailureCode.linkWifiOff:
       return l10n.errorLinkWifiOff;
     case FailureCode.linkPeerSilentAtSetup:
