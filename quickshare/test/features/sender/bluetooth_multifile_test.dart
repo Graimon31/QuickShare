@@ -24,7 +24,7 @@ import 'package:quickshare/core/crypto/link_secret.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
-import 'package:quickshare/core/network/session_code.dart';
+import 'package:quickshare/core/network/hotspot_naming.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
@@ -62,11 +62,13 @@ class _FakeDirectLinkDriver implements DirectLinkDriver {
   bool get canHost => true;
 
   @override
-  Future<HotspotCredentials> host(SessionCode code) async =>
-      HotspotCredentials(
-          ssid: code.ssid,
-          passphrase: code.passphrase,
-          hostAddress: '192.168.4.1');
+  Future<HotspotCredentials> host() async {
+    final naming = HotspotNaming.generate();
+    return HotspotCredentials(
+        ssid: naming.ssid,
+        passphrase: naming.passphrase,
+        hostAddress: '192.168.4.1');
+  }
 
   @override
   Future<void> joinNetwork(HotspotCredentials credentials) async {}

@@ -16,7 +16,9 @@ class BleGatt {
   /// Receiver -> sender writes: CAPS, HELLO, KEX, AP, START.
   static const String control = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B11';
 
-  /// Sender -> receiver notifications: the link and serve frames.
+  /// Sender -> receiver notifications: the link and serve frames, each cut into
+  /// parts that fit one notification and put back together by the receiver.
+  /// See `BleFrame`.
   static const String metadata = 'E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B12';
 
   /// Subscribed to, and nothing else.

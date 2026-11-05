@@ -217,6 +217,7 @@ class ReceiverRepositoryImpl implements ReceiverRepository {
         token: payload.token,
         savePath: tempPath,
         tlsFingerprint: payload.tlsFingerprint,
+        destinationRoot: tempDir.path,
         onProgress: onProgress,
       );
       return Right(resultPath);

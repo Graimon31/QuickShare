@@ -358,13 +358,24 @@ advertise a `QuickShare-` name has to carry the scanned session's locator.
 **The locator and the token are random, and nothing on the air is derived from a
 session code.** Both are drawn from a cryptographic source for each session —
 that is, each time the QR changes — and they are tied to nothing: not to each
-other, not to the code that names the Wi-Fi network, not to the network's name.
-They reach the receiver in the QR and nowhere else. The link directive carries no
+other, not to a code, not to the network's name. They reach the receiver in the
+QR and nowhere else. The link directive carries no
 digits, the sealed credentials are bound to the locator the QR holds, and the
 Bonjour name of an Apple peer-to-peer link is made from it too. Until protocol
 generation 5 the advertised name was a hash of the code, which anyone in range
 could search for the code in seconds (the code is about 33 bits); the directive
 carried the digits themselves; and the token was a hash of them.
+
+**The Wi-Fi network is named at random too.** A device that raises a network
+draws its name (`DirectDrop-` and six characters) and its passphrase (twelve
+characters from a 32-symbol alphabet, 60 bits) from a cryptographic source each
+time, in `lib/core/network/hotspot_naming.dart`, and the pair is related to no
+code, token or locator. Android names its own network and ignores what it is
+asked for; whichever it is, the pair the platform reports is what is sealed into
+the link frame or shown in the `WIFI:` QR, and the other device is never left to
+work it out. Until then the pair was a hash of the ten-digit code at both ends,
+and the name is broadcast: thirty of the code's thirty-three bits were in it, so
+reading it left about ten codes, and the passphrase followed from each.
 With two Android or Windows senders in range, a receiver connects to whichever
 it hears first — and the one it was not meant for refuses the wrong token. The
 Android and Windows senders register their GATT service once per process and
@@ -386,13 +397,27 @@ been used on devices. The Android and Windows senders are complete in code and
 tested against a simulated radio (`test/features/sender/ble_sender_*`), which
 checks what is asked of the platform and how the sender answers, and does not
 prove that a particular phone or adapter will advertise it or that an iPhone
-will find it. They have not been run between two real devices. Two things in
-particular wait for that: whether the hosting directive an Android or Windows
-sender writes (about 220 bytes) fits in one notification to an iPhone, which
-negotiates a 182-byte payload — a frame that does not fit is refused with an
-error, and the optional fields of the serve frame are dropped to make it fit,
-but the directive cannot be shrunk — and whether a given receiver finds an
-advertisement that carries no name.
+will find it. They have not been run between two real devices.
+
+A negotiation frame is longer than a notification: the hosting directive is about
+200 bytes and the serve frame about 225, while an iPhone takes 182-byte
+notifications and a connection nobody negotiated takes 20. So every sender cuts a
+frame into parts that each fit what the other device reported (CoreBluetooth's
+`maximumUpdateValueLength`, `getMaximumNotifyLength` on Android and Windows, the
+`mtu` BlueZ puts on a write on Linux; 20 where nothing is reported), and every
+receiver puts them back together. Nothing is dropped to make a frame fit. A part
+that is missing, repeated, from another frame or not ours, a frame past 3 KB, or
+one that is not whole ten seconds after it began ends the session with a message
+that says the exchange was lost or damaged — not that the other device is old,
+which is said only for a sender that does not cut its frames at all. The format
+is in `lib/core/transfer/ble_frame.dart`; the Swift bridges carry the same code,
+and `test/core/transfer/ble_frame_swift_test.dart` compiles it and runs it
+against the Dart code on the same inputs.
+
+Two things wait for real devices: whether Android, whose plugin gives no signal
+for "the radio took that notification", is spaced widely enough (30 ms between
+parts; a part lost there fails the session with a message, it is not delivered
+cut), and whether a given receiver finds an advertisement that carries no name.
 
 ---
 
@@ -620,27 +645,12 @@ limit and is bounded only by the protocol (100 GB per file, 500 GB per session,
 Open, understood and not fixed. They are written down here so nobody has to
 discover them.
 
-1. **Names derived from the short code can be reversed offline.** The hotspot
-   passphrase and the identifiers below derive from the ten-digit code by
-   unsalted hashes, and the code has about 33 bits. One of them is still broadcast
-   to anyone in radio range: the hotspot SSID where it is requested from the code
-   (`DirectDrop-` plus six characters; Android may name its own network instead).
-   Six characters are 30 bits, so reading one leaves about ten codes out of ten
-   billion (a scan of all of them for six random codes left 9, 9, 11, 12, 12 and
-   14), and the passphrase follows from each. Whoever sees it can try them in a
-   minute and join the network. What they reach is a throwaway
-   network with no internet on it: the transfer is behind the pinned certificate
-   and a token that, for a Bluetooth session, is random and not derived from the
-   code. The local-network announcement carries a one-byte hint that narrows
-   nothing down, and the Bluetooth advertisement, the link directive and the
-   peer-to-peer link's Bonjour name no longer carry anything derived from the code
-   (see [Bluetooth](#bluetooth)).
-2. **A Bonjour browser can still see that an offer exists.** While a Wi-Fi offer
+1. **A Bonjour browser can still see that an offer exists.** While a Wi-Fi offer
    is on a sender's screen, anyone on the same network running a Bonjour browser
    sees an anonymous `_directdrop._tcp` service with a random name, a port and
    one byte of the code's hash. It carries no device name, address, fingerprint
    or token, and it disappears with the offer, but its existence is not hidden.
-3. **Bluetooth frames are not encrypted.** Nothing at the Bluetooth layer
+2. **Bluetooth frames are not encrypted.** Nothing at the Bluetooth layer
    encrypts or bonds them, on any sender — Android and Windows included. The
    `START:<token>` write, the link frame and the serve frame (token, certificate
    fingerprint, file name and size) cross as plain text; only the hotspot
@@ -651,17 +661,17 @@ discover them.
    the pull: it is random, lasts as long as the QR does, and is of no use without
    also being on the same Wi-Fi network, but it is readable. It is not derived
    from the code, so it does not lead to it.
-4. **A computer cannot receive over Bluetooth.** Devices no longer see each
+3. **A computer cannot receive over Bluetooth.** Devices no longer see each
    other: a receiver does not advertise its name and a Bluetooth sender shows no
    list. A Bluetooth session is joined by scanning its QR, which takes a camera,
    so it reaches phones. Typing the session's code does not join it — code entry
    looks for local-network and internet senders, not Bluetooth ones — so a
    computer receives with a code over Wi-Fi or over the internet. This is
    deliberate.
-5. **The code is short.** What protects it is that the exchange is online-only
+4. **The code is short.** What protects it is that the exchange is online-only
    (a captured SPAKE2 run gives nothing to test guesses against) and rate-limited
-   as above. Limitation 1 is the way around that, which is why it matters.
-6. **Typing a code tells the public mailbox 12 bits of it, whoever the sender
+   as above.
+5. **Typing a code tells the public mailbox 12 bits of it, whoever the sender
    is.** The receiver looks on the local network and over the internet at once
    and cannot know in advance which; the internet half publishes the request
    topic (12 bits of a hash of the code) and a SPAKE2 share. For a sender on the
@@ -670,10 +680,10 @@ discover them.
    someone who saw both the network announcement and the mailbox would know about
    20 bits of a code that has 33; the local server's rate limits still stand
    between that and the rest.
-7. **An internet code can be burnt by anyone who knows its topic.** See the
+6. **An internet code can be burnt by anyone who knows its topic.** See the
    guessing limits above: a lock-out for the rest of the code's 5 minutes, not a
    way in.
-8. **The mailbox can lose, repeat and reorder messages, and the Worker keeps
+7. **The mailbox can lose, repeat and reorder messages, and the Worker keeps
    one value per room.** The protocol never depends on one message arriving, and
    every step has a timeout and its own message, but a receiver whose request
    was overwritten sees "not found" after 20 seconds and has to try again.

@@ -4,7 +4,6 @@ import 'package:quickshare/core/crypto/link_secret.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
-import 'package:quickshare/core/network/session_code.dart';
 
 /// The platform half of building the link: raise a network, join one, make
 /// sure the radio is on.
@@ -19,16 +18,18 @@ abstract interface class DirectLinkDriver {
   /// iOS and macOS cannot.
   bool get canHost;
 
-  /// Raise a network named from [code] and return the live credentials.
+  /// Raise a network and return the live credentials.
   ///
-  /// The returned pair can differ from the code's — Android's hotspot API
-  /// names the network itself — and when it does, the returned pair is what
-  /// actually went on air. [HotspotCredentials.hostAddress] must be non-null:
+  /// The name and passphrase are drawn at random for this network, or chosen by
+  /// the platform (Android's hotspot API names the network itself); either way
+  /// the returned pair is what actually went on air, and the only thing the
+  /// other device is ever given. Nothing about them is derived from anything
+  /// the two devices share. [HotspotCredentials.hostAddress] must be non-null:
   /// a network whose interface never got an address is not up, whatever the
   /// platform callback said.
   ///
   /// Throws [HotspotException] when the network did not come up.
-  Future<HotspotCredentials> host(SessionCode code);
+  Future<HotspotCredentials> host();
 
   /// Join the network [credentials] describes. Throws on failure.
   Future<void> joinNetwork(HotspotCredentials credentials);
@@ -97,9 +98,10 @@ class DirectLinkDirective {
   /// rendezvous took that rung. Non-null only for [DirectLinkDirective.overPeerLink].
   final String? peerLinkService;
 
-  /// The sender raised the network itself. The credentials ride along sealed
-  /// — even when they could be derived from the session code — so the joiner
-  /// never has to guess at a network that is not there yet.
+  /// The sender raised the network itself. The credentials ride along sealed:
+  /// they were drawn at random for this network (or chosen by the platform), so
+  /// there is nothing the joiner could work out for itself, and nothing it
+  /// should have to guess at on a network that is not there yet.
   const DirectLinkDirective.hostBySender({
     required String sealedCredentials,
     required String senderPublicKey,
@@ -390,9 +392,6 @@ class DirectLinkCoordinator {
   /// or failed to, and put the session on a peer-to-peer link when neither
   /// device can raise a network at all.
   ///
-  /// [code] names the network this device raises, if it does, and goes no
-  /// further: nothing sent to the other device is derived from it.
-  ///
   /// [sessionId] is what the sealed credentials are bound to. It has to be a
   /// value both devices hold without anything about [code] having crossed the
   /// air — the locator in the QR the receiver scanned. It is not secret (an
@@ -403,7 +402,7 @@ class DirectLinkCoordinator {
   /// [servingPort] is where this device is already serving the session. It is
   /// what the peer-to-peer rung forwards to, and without it that rung is
   /// skipped — there would be nothing on the other end of the link.
-  Future<DirectLinkOutcome> runSender(SessionCode code,
+  Future<DirectLinkOutcome> runSender(
       {required String sessionId, int? servingPort}) async {
     if (sessionId.isEmpty) {
       throw ArgumentError.value(sessionId, 'sessionId',
@@ -430,7 +429,7 @@ class DirectLinkCoordinator {
 
     if (driver.canHost) {
       for (var attempt = 0; attempt < hostAttempts; attempt++) {
-        final creds = await _tryHost(code);
+        final creds = await _tryHost();
         if (creds != null) {
           await signal.sendDirective(DirectLinkDirective.hostBySender(
               sealedCredentials: await secret.seal(
@@ -516,14 +515,11 @@ class DirectLinkCoordinator {
   /// between two Apple devices is the peer-to-peer link.
   ///
   /// [sessionId] is the locator in the QR that was scanned, the same value the
-  /// sender binds what it seals to. [code] is nullable because a receiver
-  /// arrives without one — a scanned Bluetooth QR carries a token and a
-  /// locator, not digits, and nothing sends it any. Hosting needs one only to
-  /// name the network; when the caller has none, a throwaway code names it
-  /// instead, since the actual credentials travel in the offer either way. It
-  /// is not the sender's code and has nothing to do with it.
-  Future<DirectLinkOutcome> runReceiver(
-      {required String sessionId, SessionCode? code}) async {
+  /// sender binds what it seals to. A receiver arrives with no code — a scanned
+  /// Bluetooth QR carries a token and a locator, not digits — and needs none:
+  /// a network it is asked to raise gets a name and passphrase of its own, and
+  /// they travel in the offer.
+  Future<DirectLinkOutcome> runReceiver({required String sessionId}) async {
     if (sessionId.isEmpty) {
       throw ArgumentError.value(sessionId, 'sessionId',
           'a session without one cannot bind what it opens to anything');
@@ -566,7 +562,7 @@ class DirectLinkCoordinator {
         }
         heardAnything = true;
         final outcome =
-            await _actOn(pending.removeAt(0), code, secret, sessionId);
+            await _actOn(pending.removeAt(0), secret, sessionId);
         if (outcome != null) return outcome;
       }
     } finally {
@@ -586,8 +582,8 @@ class DirectLinkCoordinator {
 
   /// One proposal. Null means "this device could not take that one" — the
   /// caller keeps listening rather than declaring the session dead.
-  Future<DirectLinkOutcome?> _actOn(DirectLinkDirective directive,
-      SessionCode? code, LinkSecret secret, String sessionId) async {
+  Future<DirectLinkOutcome?> _actOn(
+      DirectLinkDirective directive, LinkSecret secret, String sessionId) async {
     final peerLinkService = directive.peerLinkService;
     if (peerLinkService != null) {
       if (!driver.canPeerLink) return null;
@@ -624,14 +620,11 @@ class DirectLinkCoordinator {
     // between two Apple devices, and it is not an answer this side can give.
     if (!driver.canHost) return null;
 
-    final naming = code ?? SessionCode.generate();
     for (var attempt = 0; attempt < hostAttempts; attempt++) {
-      final creds = await _tryHost(naming);
+      final creds = await _tryHost();
       if (creds != null) {
-        // Always offer, even when the credentials could be derived from the
-        // session code: a sender waiting on this never has to guess at a
-        // network that is not there yet. Sealed, because an Android host's
-        // network names itself and the pair it hands back is the live
+        // Always offer: a sender waiting on this never has to guess at a
+        // network that is not there yet. Sealed, because the pair is the live
         // passphrase of a network now on the air.
         await signal.sendApOffer(await secret.seal(
           ssid: creds.ssid,
@@ -649,9 +642,9 @@ class DirectLinkCoordinator {
   /// One hosting attempt. Null means the ladder should climb, not stop: the
   /// exception — whatever the driver failed with — is a fact about this
   /// attempt, not about the link.
-  Future<HotspotCredentials?> _tryHost(SessionCode code) async {
+  Future<HotspotCredentials?> _tryHost() async {
     try {
-      final creds = await driver.host(code);
+      final creds = await driver.host();
       if (creds.hostAddress == null) {
         await driver.stopHosting();
         return null;

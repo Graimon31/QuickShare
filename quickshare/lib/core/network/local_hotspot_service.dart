@@ -1,9 +1,11 @@
 import 'dart:io';
+import 'dart:math';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
 
+import 'package:quickshare/core/network/hotspot_naming.dart';
 import 'package:quickshare/core/network/linux_hotspot.dart';
-import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
 /// Credentials for a temporary Wi-Fi network raised by the sender.
@@ -87,9 +89,32 @@ class LocalHotspotService {
   /// see [LinuxHotspot] for why.
   final LinuxHotspot _linux;
 
-  LocalHotspotService({MethodChannel? channel, LinuxHotspot? linux})
-      : _methodChannel = channel ?? _channel,
-        _linux = linux ?? LinuxHotspot();
+  /// [operatingSystem] and [random] are for a test: which platform's way of
+  /// raising a network to follow (it defaults to the one this is running on),
+  /// and where the network's name and passphrase come from (a cryptographic
+  /// source, fresh for each network).
+  LocalHotspotService({
+    MethodChannel? channel,
+    LinuxHotspot? linux,
+    @visibleForTesting String? operatingSystem,
+    @visibleForTesting Random? random,
+    @visibleForTesting int addressAttempts = 15,
+    @visibleForTesting Duration addressInterval =
+        const Duration(milliseconds: 200),
+  })  : _methodChannel = channel ?? _channel,
+        _linux = linux ?? LinuxHotspot(),
+        _os = operatingSystem ?? Platform.operatingSystem,
+        _random = random,
+        _addressAttempts = addressAttempts,
+        _addressInterval = addressInterval;
+
+  final String _os;
+  final Random? _random;
+
+  /// How long [startHosting] waits for the new network's interface to be given
+  /// an address; see [awaitHotspotAddress].
+  final int _addressAttempts;
+  final Duration _addressInterval;
 
   /// True when this platform can raise a network for the other device.
   ///
@@ -98,8 +123,7 @@ class LocalHotspotService {
   /// asks it there and refuses with something the user can act on, because
   /// that question needs a process to answer and this getter has to be cheap
   /// enough to call while drawing a screen.
-  bool get canHost =>
-      Platform.isAndroid || Platform.isLinux || Platform.isWindows;
+  bool get canHost => _os == 'android' || _os == 'linux' || _os == 'windows';
 
   /// True when this platform can join one from inside the app.
   ///
@@ -127,39 +151,37 @@ class LocalHotspotService {
   /// keeps mobile data alive on its own interface while the Wi-Fi radio serves
   /// the guest.
   ///
-  /// [code] pins the network's name and passphrase to a session the caller
-  /// already has, so the far side can derive them from the code it holds
-  /// rather than be told. Left null, one is minted here — the older flows,
-  /// where the QR code is how the session travels, want exactly that.
-  Future<HotspotCredentials> startHosting({SessionCode? code}) async {
+  /// **What comes back is what is on the air.** Windows and Linux are told what
+  /// to call the network and what its passphrase is, and a pair is drawn for the
+  /// purpose (see [HotspotNaming]) — new every time, related to no code or
+  /// token, because the name is broadcast and a name that is derived from
+  /// anything the far side holds is a search key for it. Android names its own
+  /// and ignores what it is told; the platform answers with what it chose, and
+  /// that is what is returned, sealed into a link frame or put in a QR. The
+  /// far side never works any of it out for itself.
+  Future<HotspotCredentials> startHosting() async {
     if (!canHost) {
       throw HotspotException(
           '${Platform.operatingSystem} cannot create a hotspot from inside an '
           'app; the other device has to host');
     }
-    if (Platform.isLinux) return _startHostingOnLinux(code: code);
+    if (_os == 'linux') return _startHostingOnLinux();
 
-    // Windows is told what to call the network; Android names its own and
-    // ignores these. Both answers come back the same way, so the caller does
-    // not have to care which happened.
-    //
-    // The pair comes from a session code so the far side can derive it rather
-    // than be told it — the same reasoning as everywhere else, and the reason
-    // this is not a random string.
-    final sessionCode = code ?? SessionCode.generate();
+    final naming = HotspotNaming.generate(_random);
 
     try {
       final result = await _methodChannel
           .invokeMethod<Map<Object?, Object?>>('startHotspot', {
-        'ssid': sessionCode.ssid,
-        'passphrase': sessionCode.passphrase,
+        'ssid': naming.ssid,
+        'passphrase': naming.passphrase,
       });
       if (result == null) {
         throw const HotspotException(
             'the platform returned no hotspot details');
       }
-      final credentials = HotspotCredentials.fromMap(result)
-          .withHost(await awaitHotspotAddress());
+      final credentials = HotspotCredentials.fromMap(result).withHost(
+          await awaitHotspotAddress(
+              attempts: _addressAttempts, interval: _addressInterval));
       AppLogger.info('Local hotspot up: $credentials', tag: 'HOTSPOT');
       return credentials;
     } on PlatformException catch (e) {
@@ -169,7 +191,7 @@ class LocalHotspotService {
 
   Future<void> stopHosting() async {
     if (!canHost) return;
-    if (Platform.isLinux) return _linux.stop();
+    if (_os == 'linux') return _linux.stop();
     try {
       await _methodChannel.invokeMethod<void>('stopHotspot');
     } on PlatformException catch (e) {
@@ -322,7 +344,7 @@ class LocalHotspotService {
   /// adapter with no AP mode is a fact about the hardware, and telling someone
   /// to host from the other device is more use than "could not create
   /// network".
-  Future<HotspotCredentials> _startHostingOnLinux({SessionCode? code}) async {
+  Future<HotspotCredentials> _startHostingOnLinux() async {
     if (!await _linux.isAvailable) {
       throw const HotspotException(
           'NetworkManager is not running, so this machine cannot create a '
@@ -334,13 +356,11 @@ class LocalHotspotService {
           'other device has to create the network.');
     }
 
-    // Both halves come from a session code, which is the point of having one:
-    // the far side derives the same pair from the code it was shown, so
-    // nothing about the network has to be transmitted.
-    final sessionCode = code ?? SessionCode.generate();
+    // Drawn for this network and no other; see [HotspotNaming].
+    final naming = HotspotNaming.generate(_random);
     final credentials = HotspotCredentials(
-      ssid: sessionCode.ssid,
-      passphrase: sessionCode.passphrase,
+      ssid: naming.ssid,
+      passphrase: naming.passphrase,
     );
 
     try {
@@ -352,7 +372,8 @@ class LocalHotspotService {
       throw HotspotException(e.message);
     }
 
-    return credentials.withHost(await awaitHotspotAddress());
+    return credentials.withHost(await awaitHotspotAddress(
+        attempts: _addressAttempts, interval: _addressInterval));
   }
 
   /// Waits for the hotspot interface to be assigned an address.

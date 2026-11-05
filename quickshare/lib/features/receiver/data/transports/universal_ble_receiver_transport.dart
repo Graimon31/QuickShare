@@ -7,6 +7,7 @@ import 'package:universal_ble/universal_ble.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/core/transfer/ble_frame.dart';
 import 'package:quickshare/core/transfer/ble_gatt.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'ble_receiver_failure.dart';
@@ -33,6 +34,20 @@ import 'ble_receiver_failure.dart';
 /// On iOS and macOS the native CoreBluetooth bridge is used instead — see
 /// `BluetoothReceiverTransport`.
 class UniversalBleReceiverTransport {
+  /// [frameTimeout] is how long a frame that has begun may take to finish; see
+  /// [BleFrame.assemblyTimeout]. Shorter in a test that has to wait it out.
+  UniversalBleReceiverTransport({
+    Duration frameTimeout = BleFrame.assemblyTimeout,
+  }) {
+    _frames = BleFrameAssembler(
+      onFrame: _handleFrame,
+      onFault: _handleFrameFault,
+      timeout: frameTimeout,
+    );
+  }
+
+  late final BleFrameAssembler _frames;
+
   final _devicesController = StreamController<BleDevice>.broadcast();
 
   Stream<BleDevice> get devices => _devicesController.stream;
@@ -157,6 +172,7 @@ class UniversalBleReceiverTransport {
     _targetDeviceId = deviceId;
     _cancelled = false;
     _failedReported = false;
+    _frames.reset();
 
     try {
       await UniversalBle.connect(deviceId);
@@ -234,26 +250,32 @@ class UniversalBleReceiverTransport {
   }
 
   /// The metadata characteristic carries the rendezvous' frames and nothing
-  /// else. A generation-4 sender's are `{"link": …}` and `{"serve": …}`; a
-  /// JSON object that is neither is the first frame of a file — `{name, size,
-  /// …}` — from a sender that predates the direct link.
+  /// else, each cut into parts that fit a notification (see [BleFrame]). Every
+  /// notification goes to the assembler, which hands back whole frames and
+  /// says what is wrong with anything that is not part of one.
   void _handleMetadata(Uint8List value) {
-    if (_cancelled) return;
+    if (_cancelled || _failedReported) return;
+    _frames.add(value);
+  }
+
+  /// A whole frame. A generation-5 sender's are `{"link": …}` and
+  /// `{"serve": …}`; a valid-looking frame that is neither is not one this
+  /// build can act on.
+  void _handleFrame(Uint8List frame) {
+    if (_cancelled || _failedReported) return;
     final Object? decoded;
     try {
-      decoded = jsonDecode(utf8.decode(value));
+      decoded = jsonDecode(utf8.decode(frame));
     } catch (_) {
-      AppLogger.warning(
-          'UniversalBleReceiver: a ${value.length}-byte frame did not parse. '
-          'If it was cut short the connection\'s MTU is too small for it.',
-          tag: 'BLE_RECEIVER');
-      _fail(
-          'A ${value.length}-byte frame from the sending device could not be '
-          'read. It may have been cut short by a connection that carries too '
-          'little at a time.',
-          FailureCode.bluetoothTransferFailed);
+      _failDamaged(
+          'A frame of ${frame.length} bytes arrived complete but is not '
+          'JSON.');
       return;
     }
+    AppLogger.info(
+        'UniversalBleReceiver: a ${frame.length}-byte frame is whole '
+        '(${decoded is Map ? decoded.keys.join(', ') : 'not an object'})',
+        tag: 'BLE_RECEIVER');
     if (decoded is Map<String, dynamic>) {
       final link = decoded['link'];
       if (link is Map<String, dynamic>) {
@@ -272,12 +294,41 @@ class UniversalBleReceiverTransport {
       final serve = decoded['serve'];
       if (serve is Map<String, dynamic>) {
         final info = LinkServeInfo.fromJson(serve);
-        if (info != null) _serveInfoController.add(info);
+        if (info == null) {
+          // The last frame of the rendezvous, with nothing after it to carry on
+          // without: dropping it would leave the screen waiting for an address
+          // that was never going to arrive.
+          _failDamaged('The serve frame is missing what a receiver needs to '
+              'pull the file.');
+          return;
+        }
+        _serveInfoController.add(info);
         return;
       }
     }
-    _failSenderTooOld();
+    _failDamaged('A frame of ${frame.length} bytes arrived complete but is '
+        'neither a link nor a serve frame.');
   }
+
+  void _handleFrameFault(BleFrameException fault) {
+    if (_cancelled || _failedReported) return;
+    // "An older version" is said when the sender's frames are not cut into
+    // parts at all, which only a build from before the parts did. A part
+    // missing, repeated, foreign or late is a connection having a bad time (or
+    // somebody else's write), and the update would not help.
+    if (fault.isOlderSender) {
+      _failSenderTooOld();
+      return;
+    }
+    _failDamaged(fault.message);
+  }
+
+  /// A frame that could not be put together or read, which is not the sender's
+  /// version: the person is told the transfer stopped, and the log says why.
+  void _failDamaged(String why) => _fail(
+        '${BleFrame.damagedMessage} $why',
+        FailureCode.bluetoothTransferFailed,
+      );
 
   /// Nothing is sent on the data characteristic any more. Bytes arriving on it
   /// are a sender that is still pushing a file over Bluetooth, which this
@@ -303,6 +354,7 @@ class UniversalBleReceiverTransport {
   }
 
   Future<void> _release(String deviceId) async {
+    _frames.reset();
     for (final sub in _subs) {
       await sub.cancel();
     }
@@ -320,6 +372,7 @@ class UniversalBleReceiverTransport {
 
   Future<void> dispose() async {
     _cancelled = true;
+    _frames.dispose();
     await stopScanning();
     final deviceId = _targetDeviceId;
     if (deviceId != null) await _release(deviceId);

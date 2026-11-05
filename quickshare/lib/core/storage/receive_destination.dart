@@ -72,7 +72,8 @@ class ReceiveDestination {
     return ReceiveDestination._(downloads.path, placed: true);
   }
 
-  /// Clears `.qs.partial` debris a crashed transfer left in the destination.
+  /// Clears `.qs.partial` debris a crashed transfer left in the destination,
+  /// in its subfolders as well as at the top (see `sweepPartials`).
   ///
   /// Fire-and-forget at the top of a transfer rather than at startup: it is
   /// the moment the folder is known and, on macOS, already inside an open

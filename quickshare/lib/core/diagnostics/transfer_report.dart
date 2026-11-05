@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -213,12 +214,49 @@ class TransferDiagnostics {
     }
   }
 
-  Future<void> record(TransferReport report) async {
+  /// What every write and removal waits for. One queue for the whole process,
+  /// not one per instance: two instances over one file are two writers of it.
+  static Future<void> _tail = Future<void>.value();
+
+  /// Runs [job] when every write asked for before it has finished. A job's
+  /// failure is its caller's alone and does not stop the ones behind it.
+  static Future<void> _inOrder(Future<void> Function() job) {
+    final turn = Completer<void>();
+    final previous = _tail;
+    _tail = turn.future;
+    return previous.then((_) => job()).whenComplete(turn.complete);
+  }
+
+  /// Puts [report] in front of the ones kept.
+  ///
+  /// Writes take turns. The file is read, extended and written back, and two
+  /// that overlapped each read the same file and each wrote it back with only
+  /// their own addition — a transfer that ended at the same moment as another
+  /// simply vanished from the record. The new contents go to a scratch file that
+  /// is then renamed over the real one, so a reader sees the old document or the
+  /// new one and never a file that is half written, and a write that fails
+  /// leaves what was there.
+  ///
+  /// Within this process. Two copies of the app are two processes, and the
+  /// rename keeps the file whole between them but not complete.
+  Future<void> record(TransferReport report) => _inOrder(() => _record(report));
+
+  Future<void> _record(TransferReport report) async {
     try {
       final kept = [report, ...await recent()].take(_keep).toList();
       final file = await _file();
-      await file.writeAsString(
-          jsonEncode([for (final r in kept) r.toJson()]));
+      final scratch = File('${file.path}.$pid.tmp');
+      try {
+        await scratch.writeAsString(
+            jsonEncode([for (final r in kept) r.toJson()]),
+            flush: true);
+        await scratch.rename(file.path);
+      } catch (_) {
+        try {
+          if (await scratch.exists()) await scratch.delete();
+        } catch (_) {}
+        rethrow;
+      }
       // The one line in the whole journal that is supposed to say "here is
       // what actually happened to the user's files" — everything else
       // around it is plumbing (sessions starting, radios toggling). It has
@@ -244,12 +282,12 @@ class TransferDiagnostics {
     }
   }
 
-  Future<void> clear() async {
-    try {
-      final file = await _file();
-      if (await file.exists()) await file.delete();
-    } catch (_) {
-      // Nothing to do; it is a cache of facts, not the facts themselves.
-    }
-  }
+  Future<void> clear() => _inOrder(() async {
+        try {
+          final file = await _file();
+          if (await file.exists()) await file.delete();
+        } catch (_) {
+          // Nothing to do; it is a cache of facts, not the facts themselves.
+        }
+      });
 }

@@ -5,7 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:quickshare/app.dart';
 import 'package:quickshare/core/di/service_locator.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
-import 'package:quickshare/core/network/session_code.dart';
+import 'package:quickshare/core/network/hotspot_naming.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -80,7 +80,7 @@ Future<void> _reportWifiCapabilities() async {
 
     try {
       final all = await hotspot.scanForNetworks();
-      final ours = await hotspot.scanForNetworks(prefix: SessionCode.ssidPrefix);
+      final ours = await hotspot.scanForNetworks(prefix: HotspotNaming.ssidPrefix);
       AppLogger.info(
           'Local network: can $can; location $authorization; '
           '${all.length} network(s) in range, ${ours.length} of them ours',

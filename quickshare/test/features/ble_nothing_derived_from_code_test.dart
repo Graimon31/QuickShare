@@ -30,6 +30,7 @@ import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
+import 'package:quickshare/core/network/hotspot_naming.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
@@ -39,6 +40,7 @@ import 'package:quickshare/core/storage/receive_destination.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
 import 'package:quickshare/core/storage/transfer_cache.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/core/transfer/ble_frame.dart';
 import 'package:quickshare/core/transfer/ble_gatt.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/features/receiver/data/client/isolated_qhtp_receiver.dart';
@@ -56,6 +58,7 @@ import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 
 import '../support/fake_ble.dart';
+import '../support/legacy_network_derivation.dart';
 
 class _MockRepository extends Mock implements SenderRepository {}
 
@@ -102,7 +105,6 @@ class _Driver implements DirectLinkDriver {
   @override
   final bool canPeerLink;
 
-  SessionCode? hostedWith;
   HotspotCredentials? hosted;
   final List<String> peerLinksHosted = [];
   final List<HotspotCredentials> joined = [];
@@ -111,11 +113,12 @@ class _Driver implements DirectLinkDriver {
   Future<bool> ensureWifiReady() async => true;
 
   @override
-  Future<HotspotCredentials> host(SessionCode code) async {
-    hostedWith = code;
+  Future<HotspotCredentials> host() async {
+    // What the real driver does: a pair drawn for this network, from nothing.
+    final naming = HotspotNaming.generate();
     return hosted = HotspotCredentials(
-        ssid: code.ssid,
-        passphrase: code.passphrase,
+        ssid: naming.ssid,
+        passphrase: naming.passphrase,
         hostAddress: '192.168.137.1');
   }
 
@@ -164,18 +167,23 @@ class _OnAir {
   List<String> get everything => [...advertisedNames, ...writes, ...frames];
 }
 
-/// Every value a session code derives, by what it is.
-Map<String, String> _derivedFrom(SessionCode code) => {
-      'the digits': code.code,
-      'the digits, spaced': code.display,
-      'the public id': code.publicId,
-      'the session token': code.sessionToken,
-      'the network name': code.ssid,
-      'the network name without its prefix':
-          code.ssid.substring(SessionCode.ssidPrefix.length),
-      'the passphrase': code.passphrase,
-      'the peer-link name': PeerLinkService.serviceNameFor(code.sessionToken),
-    };
+/// Every value a session code derives, by what it is — including the network
+/// name and passphrase it used to name, which the app no longer derives from
+/// anything (see test/support/legacy_network_derivation.dart).
+Map<String, String> _derivedFrom(SessionCode code) {
+  final network = legacyNetworkOf(code.code);
+  return {
+    'the digits': code.code,
+    'the digits, spaced': code.display,
+    'the public id': code.publicId,
+    'the session token': code.sessionToken,
+    'the network name the code used to name': network.ssid,
+    'the network name without its prefix':
+        network.ssid.substring(HotspotNaming.ssidPrefix.length),
+    'the passphrase the code used to derive': network.passphrase,
+    'the peer-link name': PeerLinkService.serviceNameFor(code.sessionToken),
+  };
+}
 
 /// What an eavesdropper does with a value read off the air: hash every code,
 /// keep the one it matches.
@@ -187,14 +195,14 @@ Map<String, String> _derivedFrom(SessionCode code) => {
 /// that is known to contain the code cannot be searched for it.
 SessionCode? _recover(Iterable<String> read, String firstFiveDigits) {
   final air = read.join('\n').toLowerCase();
-  for (var i = 0; i < 100000; i++) {
-    final candidate =
-        SessionCode('$firstFiveDigits${i.toString().padLeft(5, '0')}');
+  for (final digits in codesStartingWith(firstFiveDigits)) {
+    final candidate = SessionCode(digits);
+    final network = legacyNetworkOf(digits);
     final hashes = [
       candidate.publicId,
       candidate.sessionToken,
-      candidate.passphrase,
-      candidate.ssid,
+      network.passphrase,
+      network.ssid,
       PeerLinkService.serviceNameFor(candidate.sessionToken),
     ];
     if (hashes.any((h) => air.contains(h.toLowerCase()))) return candidate;
@@ -218,7 +226,12 @@ class _LinkedPeripheral extends FakeBlePeripheral {
   }) async {
     await super.updateCharacteristicValue(
         characteristicId: characteristicId, value: value, deviceId: deviceId);
-    central.notifyBytes('peer', characteristicId, value);
+    // Like a real link: what does not fit the negotiated size is cut to it,
+    // silently. A sender that sent a frame whole to a small link would deliver
+    // half a document here, as it would on a phone.
+    final carried = maxNotifyLength ?? 20;
+    central.notifyBytes('peer', characteristicId,
+        value.length > carried ? value.sublist(0, carried) : value);
   }
 }
 
@@ -370,9 +383,8 @@ void main() {
     return state as BluetoothAdvertising;
   }
 
-  List<String> frames() => [
-        for (final n in radio.notificationsOn(BleGatt.metadata)) n.text,
-      ];
+  /// Every negotiation frame the sender completed, as text.
+  List<String> frames() => radio.framesOn(BleGatt.metadata);
 
   /// Waits for a condition, not for a time: polls the radio until [condition]
   /// holds, and fails with [what] if it never does.
@@ -434,11 +446,15 @@ void main() {
     group('a sender on ${platform.name}', () {
       setUp(() => debugDefaultTargetPlatformOverride = platform);
 
-      test('puts nothing on the air that its code derives', () async {
+      test('puts nothing on the air that a code derives, nor the network it '
+          'raised', () async {
         final driver = _Driver(canHost: true);
         final session = await sessionOn(driver);
         final air = session.air;
-        final code = driver.hostedWith!;
+        // There is no code in a Bluetooth session. These are the values a code
+        // would derive, for a code picked to stand in for any: none of them is
+        // anywhere the radio carries.
+        final code = SessionCode.generate();
 
         expect(air.frames.length, greaterThanOrEqualTo(2),
             reason: 'the test has to have seen the directive and the serve '
@@ -449,28 +465,41 @@ void main() {
                 reason: '${entry.key} is on the air, in: $text');
           }
         }
+        // And the real network's name and passphrase cross sealed, never as
+        // themselves.
+        for (final secret in [driver.hosted!.ssid, driver.hosted!.passphrase]) {
+          for (final text in air.everything) {
+            expect(text, isNot(contains(secret)),
+                reason: 'the network that was raised is readable off the air');
+          }
+        }
       });
 
-      test('cannot be searched for its code, by anything it says', () async {
+      test('cannot be searched for a code, by anything it says', () async {
         final driver = _Driver(canHost: true);
         final session = await sessionOn(driver);
-        final code = driver.hostedWith!;
-        final firstFive = code.code.substring(0, 5);
+        // The search an eavesdropper runs over the part of the code space that
+        // holds a code. Which code does not matter: nothing the session says is
+        // a function of one, so no choice of haystack has an answer in it.
+        const firstFive = '40817';
 
         // The control: the value this used to advertise. Searching for it finds
         // the code, which is what makes the empty answer below mean something.
-        final old = _recover(
-            ['QuickShare-${code.publicId}'], firstFive);
+        const code = SessionCode('4081726359');
+        final old = _recover(['QuickShare-${code.publicId}'], firstFive);
         expect(old, code,
             reason: 'the search has to work on the old value, or it proves '
                 'nothing about the new one');
+        final oldNetwork = _recover([legacyNetworkOf(code.code).ssid], firstFive);
+        expect(oldNetwork, code,
+            reason: 'and on the network name the code used to name');
 
         expect(_recover(session.air.everything, firstFive), isNull,
-            reason: 'a value on the air led back to the code');
-      });
+            reason: 'a value on the air led back to a code');
+      }, timeout: const Timeout(Duration(minutes: 2)));
 
       test('names itself, to the receiver that scanned the QR, with a value '
-          'that has nothing to do with the code', () async {
+          'that has nothing to do with a code', () async {
         final driver = _Driver(canHost: true);
         final session = await sessionOn(driver);
         final qr = session.air.qr;
@@ -479,13 +508,10 @@ void main() {
         expect(BleAdvertisement.nameFor(qr.locator), 'QuickShare-${qr.locator}');
         expect(transports.single.locator, qr.locator,
             reason: 'what is on the air is what the QR hands to the receiver');
-        expect(qr.locator, isNot(driver.hostedWith!.publicId));
-        expect(qr.token, isNot(driver.hostedWith!.sessionToken));
         expect(session.offer.locator, qr.locator);
       });
 
-      test('uses the token it advertises for the transfer, and never derives '
-          'one from the code', () async {
+      test('uses the token it advertises for the transfer', () async {
         final driver = _Driver(canHost: true);
         final session = await sessionOn(driver);
         final serve = (jsonDecode(
@@ -494,7 +520,24 @@ void main() {
         expect(serve['token'], session.air.qr.token,
             reason: 'one session, one token: the one in the QR, the one the '
                 'receiver wrote in START, the one it pulls with');
-        expect(serve['token'], isNot(driver.hostedWith!.sessionToken));
+      });
+
+      test('raises a different network every time, whatever the session',
+          () async {
+        final first = _Driver(canHost: true);
+        await sessionOn(first);
+        final firstNetwork = first.hosted!;
+        await bloc?.close();
+        bloc = null;
+        transports.clear();
+        radio.notifications.clear();
+        radio.advertised.clear();
+
+        final second = _Driver(canHost: true);
+        await sessionOn(second);
+
+        expect(second.hosted!.ssid, isNot(firstNetwork.ssid));
+        expect(second.hosted!.passphrase, isNot(firstNetwork.passphrase));
       });
     });
   }
@@ -575,7 +618,7 @@ void main() {
       expect(error.message, BleControlProtocol.directLinkRequiredMessage);
       expect(frames(), isEmpty,
           reason: 'nothing was negotiated with a peer that cannot take part');
-      expect(driver.hostedWith, isNull, reason: 'no network was raised for it');
+      expect(driver.hosted, isNull, reason: 'no network was raised for it');
     });
 
     test('and one that said nothing at all is refused the same way', () async {
@@ -636,85 +679,95 @@ void main() {
       );
     }
 
-    test('the sender hosts: the receiver opens what was sealed, joins that '
-        'network, and is told where the file is', () async {
-      final sender = _Driver(canHost: true);
-      final b = build(sender);
-      final offer = await offerOn(b);
-      final qr = BluetoothQrPayload.tryDecode(offer.qrData)!;
+    // The same exchange over every size of link there is: one that carries a
+    // whole frame (512), an iPhone's (182) and one nobody negotiated (20). The
+    // frames are cut to what the link carries, so one that was sent whole
+    // arrives as half a document and the exchange does not finish.
+    for (final limit in [512, 182, 20]) {
+      group('over a link that carries $limit', () {
+        setUp(() => radio.maxNotifyLength = limit);
 
-      final r = receiver();
-      final running = r.session.run(
-        token: qr.token,
-        locator: qr.locator,
-        destination: await cacheDestination(),
-        onProgress: (_, __, ___) {},
-        onVerifying: () {},
-      );
-      // The receiver scans for the service, and the OS hands it the sender.
-      // Android and Windows senders advertise no name.
-      await until(() => central.scans.isNotEmpty, 'the scan');
-      central.discover(
-          id: 'peer',
-          name: radio.advertised.single.localName,
-          services: radio.advertised.single.services);
+        test('the sender hosts: the receiver opens what was sealed, joins that '
+            'network, and is told where the file is', () async {
+          final sender = _Driver(canHost: true);
+          final b = build(sender);
+          final offer = await offerOn(b);
+          final qr = BluetoothQrPayload.tryDecode(offer.qrData)!;
 
-      final result = await running.timeout(const Duration(seconds: 30));
+          final r = receiver();
+          final running = r.session.run(
+            token: qr.token,
+            locator: qr.locator,
+            destination: await cacheDestination(),
+            onProgress: (_, __, ___) {},
+            onVerifying: () {},
+          );
+          // The receiver scans for the service, and the OS hands it the sender.
+          // Android and Windows senders advertise no name.
+          await until(() => central.scans.isNotEmpty, 'the scan');
+          central.discover(
+              id: 'peer',
+              name: radio.advertised.single.localName,
+              services: radio.advertised.single.services);
 
-      expect(result.displayName, 'offer.bin');
-      // The receiver joined exactly the network the sender raised: the
-      // credentials crossed sealed, were opened against the locator from the
-      // QR, and nothing about the code was sent for it to work them out from.
-      expect(r.driver.joined.single.ssid, sender.hosted!.ssid);
-      expect(r.driver.joined.single.passphrase, sender.hosted!.passphrase);
-      // And it pulls with the QR's token, from where the serve frame said.
-      final pulled = r.qhtp.pulledWith!;
-      expect(pulled.token, qr.token);
-      expect(pulled.ip, '192.168.137.1');
-      expect(pulled.port, 8123);
-      expect(pulled.tlsFingerprint, 'ppyVDnOklxV6jThfz6nwYkm7r_rGePi0X5ULmV_k2qY');
-      // None of it is the code's.
-      final code = sender.hostedWith!;
-      expect(pulled.token, isNot(code.sessionToken));
-      expect(frames().join().toLowerCase(),
-          isNot(contains(code.code)));
-    });
+          final result = await running.timeout(const Duration(seconds: 30));
 
-    test('the receiver is asked to host: it raises a network of its own, '
-        'named from a code that is not the sender\'s, and the sender joins',
-        () async {
-      final sender = _Driver(canHost: false);
-      final b = build(sender);
-      final offer = await offerOn(b);
-      final qr = BluetoothQrPayload.tryDecode(offer.qrData)!;
+          expect(result.displayName, 'offer.bin');
+          // The receiver joined exactly the network the sender raised: the
+          // credentials crossed sealed, were opened against the locator from the
+          // QR, and nothing about the code was sent for it to work them out from.
+          expect(r.driver.joined.single.ssid, sender.hosted!.ssid);
+          expect(r.driver.joined.single.passphrase, sender.hosted!.passphrase);
+          // And it pulls with the QR's token, from where the serve frame said.
+          final pulled = r.qhtp.pulledWith!;
+          expect(pulled.token, qr.token);
+          expect(pulled.ip, '192.168.137.1');
+          expect(pulled.port, 8123);
+          expect(pulled.tlsFingerprint, 'ppyVDnOklxV6jThfz6nwYkm7r_rGePi0X5ULmV_k2qY');
+          // And none of it is a code's: the network the sender raised appears on
+          // the air only sealed.
+          expect(frames().join(), isNot(contains(sender.hosted!.ssid)));
+          expect(frames().join(), isNot(contains(sender.hosted!.passphrase)));
+        });
 
-      final r = receiver(canHost: true);
-      final running = r.session.run(
-        token: qr.token,
-        locator: qr.locator,
-        destination: await cacheDestination(),
-        onProgress: (_, __, ___) {},
-        onVerifying: () {},
-      );
-      await until(() => central.scans.isNotEmpty, 'the scan');
-      central.discover(
-          id: 'peer',
-          name: radio.advertised.single.localName,
-          services: radio.advertised.single.services);
+        test('the receiver is asked to host: it raises a network of its own, '
+            'named from a code that is not the sender\'s, and the sender joins',
+            () async {
+          final sender = _Driver(canHost: false);
+          final b = build(sender);
+          final offer = await offerOn(b);
+          final qr = BluetoothQrPayload.tryDecode(offer.qrData)!;
 
-      final result = await running.timeout(const Duration(seconds: 30));
+          final r = receiver(canHost: true);
+          final running = r.session.run(
+            token: qr.token,
+            locator: qr.locator,
+            destination: await cacheDestination(),
+            onProgress: (_, __, ___) {},
+            onVerifying: () {},
+          );
+          await until(() => central.scans.isNotEmpty, 'the scan');
+          central.discover(
+              id: 'peer',
+              name: radio.advertised.single.localName,
+              services: radio.advertised.single.services);
 
-      expect(result.displayName, 'offer.bin');
-      // The sender found the credentials the receiver offered, sealed, and
-      // joined that network: the offer was opened against the same locator.
-      expect(sender.joined.single.ssid, r.driver.hosted!.ssid);
-      expect(sender.joined.single.passphrase, r.driver.hosted!.passphrase);
-      expect(r.driver.hostedWith, isNotNull,
-          reason: 'it named its network from a code it made itself — the sender '
-              'sent none');
-      expect(r.qhtp.pulledWith!.token, qr.token);
-      expect(frames().first, contains('"host":"receiver"'));
-    });
+          final result = await running.timeout(const Duration(seconds: 30));
+
+          expect(result.displayName, 'offer.bin');
+          // The sender found the credentials the receiver offered, sealed, and
+          // joined that network: the offer was opened against the same locator.
+          expect(sender.joined.single.ssid, r.driver.hosted!.ssid);
+          expect(sender.joined.single.passphrase, r.driver.hosted!.passphrase);
+          expect(r.driver.hosted, isNotNull,
+              reason: 'it raised a network of its own when asked to');
+          expect(frames().join(), isNot(contains(r.driver.hosted!.passphrase)),
+              reason: 'and never said its passphrase in the clear');
+          expect(r.qhtp.pulledWith!.token, qr.token);
+          expect(frames().first, contains('"host":"receiver"'));
+        });
+      });
+    }
 
     test('a sender of the generation before is told to update, at once, and '
         'the negotiation is not left to run out', () async {
@@ -734,7 +787,7 @@ void main() {
       central.discover(
           id: 'peer', name: null, services: [BleGatt.service]);
       await until(() => central.subscribed.length >= 2, 'the subscriptions');
-      central.notify(
+      central.notifyFrame(
           'peer',
           BleGatt.metadata,
           jsonEncode({
@@ -758,13 +811,17 @@ void main() {
     // The numbers the owner asked for, measured on the real objects rather than
     // worked out by hand. An iPhone negotiates a 185-byte ATT MTU, which holds
     // 182 bytes of a notification; Android before 14 holds 20 until the central
-    // asks for more. A frame longer than the limit is refused whole by the
-    // sender (`BluetoothRadioException`) — never cut, because the receiver
-    // cannot read half a JSON document.
+    // asks for more. A frame longer than that crosses as parts, each of which
+    // fits — see `BleFrame`.
     const iPhone = 182;
 
     Future<int> bytes(Map<String, Object?> frame) async =>
         utf8.encode(jsonEncode(frame)).length;
+
+    /// How many notifications of at most [limit] bytes carry a frame of [size].
+    int partsFor(int size, int limit) =>
+        (size + (limit - BleFrame.headerBytes) - 1) ~/
+        (limit - BleFrame.headerBytes);
 
     Future<DirectLinkDirective> sealedFrom(String ssid, String passphrase) async {
       final sender = await LinkSecret.generate();
@@ -779,27 +836,27 @@ void main() {
       );
     }
 
-    test('what each frame comes to', () async {
+    test('what each frame comes to, and in how many parts', () async {
       final key = (await LinkSecret.generate()).publicKey;
-      final hotspot = SessionCode.generate();
-      final sizes = <String, int>{
-        'link, sender hosts (Windows/Linux hotspot name)': await bytes({
+      final hotspot = HotspotNaming.generate();
+      final frames = <String, Map<String, Object?>>{
+        'link, sender hosts (Windows/Linux hotspot name)': {
           'link': (await sealedFrom(hotspot.ssid, hotspot.passphrase)).toJson()
-        }),
-        'link, sender hosts (Android-style name)': await bytes({
+        },
+        'link, sender hosts (Android-style name)': {
           'link': (await sealedFrom('AndroidShare_4821', 'X7K29DMQ41ZT'))
               .toJson()
-        }),
-        'link, receiver is asked to host': await bytes({
+        },
+        'link, receiver is asked to host': {
           'link': DirectLinkDirective.hostByReceiver(senderPublicKey: key)
               .toJson()
-        }),
-        'link, Apple peer-to-peer': await bytes({
+        },
+        'link, Apple peer-to-peer': {
           'link': DirectLinkDirective.overPeerLink(
                   serviceName: 'dd-K3M9Q2TV', senderPublicKey: key)
               .toJson()
-        }),
-        'serve, every field': await bytes({
+        },
+        'serve, every field': {
           'serve': const LinkServeInfo(
             ip: '192.168.137.1',
             port: 54321,
@@ -811,36 +868,44 @@ void main() {
             senderName: "Farman's PC",
             lanIp: '192.168.1.10',
           ).toJson()
-        }),
-        'serve, only what a receiver needs': await bytes({
+        },
+        'serve, only what a receiver needs': {
           'serve': const LinkServeInfo(
             ip: '192.168.137.1',
             port: 54321,
             token: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
             tlsFingerprint: 'ppyVDnOklxV6jThfz6nwYkm7r_rGePi0X5ULmV_k2qY',
           ).toJson()
-        }),
+        },
+      };
+      final sizes = {
+        for (final e in frames.entries) e.key: await bytes(e.value),
       };
       // ignore: avoid_print
-      sizes.forEach((name, size) => print('FRAME_BYTES $size  $name'));
+      sizes.forEach((name, size) => print(
+          'FRAME_BYTES $size  parts@182=${partsFor(size, iPhone)} '
+          'parts@20=${partsFor(size, 20)}  $name'));
 
-      expect(sizes['link, receiver is asked to host']!, lessThanOrEqualTo(iPhone));
-      expect(sizes['link, Apple peer-to-peer']!, lessThanOrEqualTo(iPhone));
-      expect(sizes['serve, only what a receiver needs']!,
-          lessThanOrEqualTo(iPhone));
-      expect(sizes['serve, every field']!, greaterThan(iPhone),
-          reason: 'the optional fields give way, one at a time, until it fits');
+      // Every one of them fits the frame limit with room to spare, and the
+      // ones that were refused or cut before now cross whole.
+      for (final size in sizes.values) {
+        expect(size, lessThan(BleFrame.maxFrameBytes ~/ 8));
+        expect(partsFor(size, 20), lessThanOrEqualTo(BleFrame.maxParts));
+      }
+      expect(sizes['serve, every field']!, greaterThan(iPhone));
+      expect(partsFor(sizes['serve, every field']!, iPhone), 2);
     });
 
-    test('the directive that carries the credentials is 20 bytes shorter than '
-        'it was, and is still longer than an iPhone takes', () async {
+    test('the directive that carries the credentials is 203 bytes with a '
+        '12-character passphrase, and crosses an iPhone in two parts',
+        () async {
       // It was 223 with the ten digits in it (`"code":"4081726359",` is 20
       // bytes). The digits are gone; the rest is the sealed pair and a key,
       // which cannot be dropped. A Windows PC, Linux machine or Android phone
       // that hosts and is received by an iPhone is the pairing this affects.
       final frame = {
         'link': (await sealedFrom(
-                SessionCode.generate().ssid, 'X7K29DMQ41ZT'))
+                HotspotNaming.generate().ssid, 'X7K29DMQ41ZT'))
             .toJson()
       };
       final size = await bytes(frame);
@@ -848,9 +913,10 @@ void main() {
       expect(size, 203);
       expect(size + utf8.encode(',"code":"4081726359"').length, 223);
       expect(size, greaterThan(iPhone));
+      expect(partsFor(size, iPhone), 2);
     });
 
-    test('a sender refuses to send it into a notification that cannot hold it',
+    test('a sender sends it to a notification that cannot hold it, in parts',
         () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       radio.maxNotifyLength = iPhone;
@@ -858,17 +924,20 @@ void main() {
       await offerOn(b);
       radio.subscribe('phone', BleGatt.data);
       await Future<void>.delayed(Duration.zero);
+      final before = radio.notifications.length;
+      final frame = {
+        'link': (await sealedFrom(
+                HotspotNaming.generate().ssid, 'X7K29DMQ41ZT'))
+            .toJson()
+      };
 
-      await expectLater(
-        transports.single.sendLinkFrame({
-          'link': (await sealedFrom(
-                  SessionCode.generate().ssid, 'X7K29DMQ41ZT'))
-              .toJson()
-        }),
-        throwsA(isA<BluetoothRadioException>()
-            .having((e) => e.message, 'message', contains('203'))),
-      );
-      expect(frames(), isEmpty, reason: 'nothing was cut and sent');
+      await transports.single.sendLinkFrame(frame);
+
+      expect(radio.notifications.length - before, 2);
+      expect(radio.partsOn(BleGatt.metadata).map((p) => p.length),
+          everyElement(lessThanOrEqualTo(iPhone)));
+      expect(frames().last, jsonEncode(frame),
+          reason: 'put back together it is what was sent, whole');
     });
   });
 }

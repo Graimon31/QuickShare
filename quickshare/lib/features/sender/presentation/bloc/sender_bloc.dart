@@ -449,19 +449,6 @@ class SenderError extends SenderState {
 }
 
 // BLoC
-/// What one Bluetooth session is made of, held while the link is negotiated.
-///
-/// [ids] is what the radio carries and the QR hands over: a random locator and a
-/// random token, related to nothing. [networkCode] names the Wi-Fi network this
-/// device raises if it is the one that does, and is not sent to the other device
-/// at all.
-class _BluetoothSession {
-  const _BluetoothSession({required this.ids, required this.networkCode});
-
-  final BleSession ids;
-  final SessionCode networkCode;
-}
-
 class SenderBloc extends Bloc<SenderEvent, SenderState> {
   final SenderRepository repository;
   StreamSubscription<double>? _progressSubscription;
@@ -517,7 +504,13 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   /// The live Bluetooth session's values, kept for the link negotiation that
   /// follows the receiver's arrival.
-  _BluetoothSession? _bluetoothSession;
+  /// What one Bluetooth session is made of, held while the link is negotiated:
+  /// a random locator and a random token, related to nothing — least of all to
+  /// a code. What the radio carries and the QR hands over is these and only
+  /// these. The Wi-Fi network this device raises, if it is the one that does,
+  /// gets a name and passphrase of its own (see `HotspotNaming`) and they reach
+  /// the other device sealed.
+  BleSession? _bluetoothSession;
 
   /// One negotiation per session — [BluetoothTransferTransport.receiverReady]
   /// can fire again on a reconnect, and a second coordinator would raise a
@@ -1271,22 +1264,22 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         }
       });
 
-      // Three values that have nothing to do with one another. The token that
-      // authorises the transfer and the locator that goes out over the air are
-      // random and independent; the code only names the Wi-Fi network this
-      // device raises, if it is the one that does, and is never sent.
+      // The token that authorises the transfer and the locator that goes out
+      // over the air are random and independent of each other and of anything
+      // else, a code included. The Wi-Fi network this device raises, if it is
+      // the one that does, is named and given its passphrase when it is raised,
+      // at random, and they reach the other device sealed.
       //
       // They used to be one thing: the token and the identifier were both
       // hashes of the same ten digits, so everything the radio carries — the
       // advertised name, the `START:<token>` write, the serve frame — could be
       // searched backwards for the digits (about 33 bits, seconds of hashing),
-      // and the digits derive the network's name and passphrase. A Bluetooth
-      // session has no digits to type, so nothing needs them to be related.
-      // Each time the code changes (every few minutes) all three are new.
+      // and the digits derived the network's name and passphrase. A Bluetooth
+      // session has no digits to type, so nothing needs anything to be related.
+      // Each time the code changes (every few minutes) all of it is new.
       final ids = BleSession.generate();
       final token = ids.token;
-      _bluetoothSession =
-          _BluetoothSession(ids: ids, networkCode: SessionCode.generate());
+      _bluetoothSession = ids;
       _directLinkStarted = false;
       // Bounded, because there is no way out of the screen this runs
       // behind except killing the app. Raising an advertisement is a radio
@@ -1599,7 +1592,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       // to the one device it exists to serve.
       final started = await repository.startQhtpTransfer(
         paths,
-        authToken: bt.ids.token,
+        authToken: bt.token,
         // This screen already knows the counts — `expandSelection` walked the
         // same selection before the radio started advertising — so only the
         // two facts it does not have are wired up: the real size for the
@@ -1640,8 +1633,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         offerRounds: isApplePeer ? 0 : 1,
         apOfferTimeout: const Duration(milliseconds: 1200),
         retryPause: const Duration(milliseconds: 200),
-      ).runSender(bt.networkCode,
-          sessionId: bt.ids.locator, servingPort: session.serverPort);
+      ).runSender(sessionId: bt.locator, servingPort: session.serverPort);
 
       // The session may have been cancelled while the ladder climbed.
       if (!identical(transport, _activeBluetoothTransport)) {
@@ -1695,7 +1687,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           'serve': LinkServeInfo(
             ip: ip,
             port: session.serverPort,
-            token: bt.ids.token,
+            token: bt.token,
             tlsFingerprint: fingerprint,
             fileName: displayFile?.name ?? '',
             fileSize: totalBytes,

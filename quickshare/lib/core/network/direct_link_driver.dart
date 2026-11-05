@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
-import 'package:quickshare/core/network/session_code.dart';
 
 /// The coordinator's platform half, built on the services the app already
 /// has: [LocalHotspotService] for raising and joining the network, and the
@@ -21,8 +20,8 @@ class LocalHotspotDriver implements DirectLinkDriver {
   bool get canHost => _hotspot.canHost;
 
   @override
-  Future<HotspotCredentials> host(SessionCode code) async {
-    final credentials = await _hotspot.startHosting(code: code);
+  Future<HotspotCredentials> host() async {
+    final credentials = await _hotspot.startHosting();
     // The coordinator's contract: no address, no network — whatever the
     // platform callback claimed. The interface takes a moment to pick its
     // address up, which is what startHosting already waits out.

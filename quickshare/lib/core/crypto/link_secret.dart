@@ -9,10 +9,10 @@ import 'package:cryptography/cryptography.dart';
 /// ## Why this exists
 ///
 /// The rendezvous runs over a GATT characteristic with no bonding and no
-/// encryption, and the network an Android host raises names itself:
-/// `startLocalOnlyHotspot` picks the SSID and the passphrase and hands them
-/// back, so they cannot be derived from anything both sides already know —
-/// they have to travel. They travelled in the clear, which put the WPA
+/// encryption, and a network's name and passphrase are random (an Android host
+/// raises one that names itself: `startLocalOnlyHotspot` picks both and hands
+/// them back), so they cannot be derived from anything both sides already
+/// know — they have to travel. They travelled in the clear, which put the WPA
 /// passphrase of a live network in a packet anyone in radio range could read.
 ///
 /// ## Why a key exchange and not the session token

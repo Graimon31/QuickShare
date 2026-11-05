@@ -537,9 +537,9 @@ class SafePath {
   /// renames. When one of them is a link, or [path] is not under [base] at all,
   /// nothing is deleted: the file stays where it is, a line in the log says
   /// which and why, and [false] comes back. A leftover partial is debris — the
-  /// startup sweep only looks at the top level of the destination, so one in a
-  /// subfolder can stay until somebody removes it — but deleting a stranger's
-  /// file to get rid of it would be a much worse thing to have done.
+  /// startup sweep (`sweepPartials`) clears it on a later receive, if nothing
+  /// is in the way of it getting there — but deleting a stranger's file to get
+  /// rid of it would be a much worse thing to have done.
   ///
   /// What is at [path] itself may be a file or a link — a link is removed as a
   /// link, never its target. A folder is left alone (this is for files).

@@ -23,7 +23,7 @@ import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
-import 'package:quickshare/core/network/session_code.dart';
+import 'package:quickshare/core/network/hotspot_naming.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/core/transfer/ble_gatt.dart';
 import 'package:quickshare/core/utils/either.dart';
@@ -69,10 +69,13 @@ class _Driver implements DirectLinkDriver {
   Future<bool> ensureWifiReady() async => true;
 
   @override
-  Future<HotspotCredentials> host(SessionCode code) async {
+  Future<HotspotCredentials> host() async {
     hosted++;
+    final naming = HotspotNaming.generate();
     return HotspotCredentials(
-        ssid: code.ssid, passphrase: code.passphrase, hostAddress: '192.168.137.1');
+        ssid: naming.ssid,
+        passphrase: naming.passphrase,
+        hostAddress: '192.168.137.1');
   }
 
   @override
@@ -318,8 +321,8 @@ void main() {
     }
 
     List<Map<String, Object?>> frames() => [
-          for (final n in radio.notificationsOn(BleGatt.metadata))
-            jsonDecode(n.text) as Map<String, Object?>,
+          for (final f in radio.framesOn(BleGatt.metadata))
+            jsonDecode(f) as Map<String, Object?>,
         ];
 
     Future<void> until(bool Function() condition, String what) async {

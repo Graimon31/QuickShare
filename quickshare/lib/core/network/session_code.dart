@@ -3,34 +3,30 @@ import 'dart:math';
 
 import 'package:crypto/crypto.dart';
 
-/// One short secret both devices hold, and everything derived from it.
+/// One short secret that is typed or scanned, and what is derived from it.
 ///
-/// The problem this solves is the second QR code. A device that raises a
-/// network knows its name and passphrase; the device that has to join needs
-/// them, and there is no channel to send them over — the first code has
-/// already been shown, and a QR cannot answer back. The usual fix is a second
-/// code in the other direction, which needs a camera and a screen at both
-/// ends, and two desktops have neither pointed at the other.
+/// A code is ten digits a person reads aloud or types on a numeric keypad. It
+/// stands for a *request*: the receiver proves it holds the code (SPAKE2, see
+/// `CodePake`) and the sender's person says yes. What the code derives is small
+/// and public by construction — [discoveryHint], one byte, to skip most devices
+/// in range — and the keys of the proof itself.
 ///
-/// So nothing is sent. Both ends derive the same network name, passphrase and
-/// session token from a secret they already share, exactly as
-/// `PeerLinkService.serviceNameFor` already derives a Bonjour name from the
-/// session token. What travels between the devices is only the code itself —
-/// as a QR where there is a camera, and as eight characters a person can read
-/// aloud where there is not.
+/// **It no longer names a Wi-Fi network.** It used to: the network's name and
+/// passphrase were hashes of the code, so that two devices holding it could
+/// raise and join the same network with nothing sent. A name is broadcast in the
+/// clear, and a name that is a hash of 33 bits leaks thirty of them: the code is
+/// found in seconds and the passphrase with it. A network now gets a name and
+/// passphrase of its own, drawn at random each time it is raised (see
+/// `HotspotNaming`), and they reach the other device sealed, or in a QR.
 ///
 /// ## Why ten digits
 ///
 /// Digits, not letters, because this is read aloud across a table or typed on
 /// a phone keypad — and both are noticeably worse with an alphabet that mixes
-/// cases and shapes. Ten of them is 10^10, a shade over 33 bits.
-///
-/// That is the whole strength of the passphrase too, since it is derived from
-/// this and nothing else — worth stating plainly rather than implying WPA2's
-/// usual margins. It is sized for what it defends: a network that exists for
-/// one transfer, in radio range, for a couple of minutes, where an attacker
-/// has to be in the room and gets that long to try against an access point
-/// answering at radio speed.
+/// cases and shapes. Ten of them is 10^10, a shade over 33 bits. That is the
+/// strength of the code and no more, which is why nothing that protects a file
+/// or a network rests on it alone: it gates a prompt a person answers, over a
+/// proof that cannot be tried offline.
 class SessionCode {
   /// Digits only. What a person reads out or types on a numeric keypad.
   static const String alphabet = '0123456789';
@@ -38,14 +34,10 @@ class SessionCode {
   /// Ten digits, shown in two groups of five.
   static const int length = 10;
 
-  /// The alphabet the *derived* passphrase uses.
-  ///
-  /// Crockford's Base32, less `I`, `L`, `O` and `U`: the passphrase is
-  /// occasionally read off a screen and typed into a system Wi-Fi dialog by
-  /// hand, where those are the characters people get wrong. Exactly 32 symbols
-  /// matters beyond readability — deriving a character is a byte modulo the
-  /// alphabet size, and only a power of two divides 256 evenly.
-  static const String passphraseAlphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  /// The alphabet derived strings are spelled in: Crockford's Base32, less `I`,
+  /// `L`, `O` and `U`. Exactly 32 symbols, because deriving a character is a
+  /// byte modulo the alphabet size, and only a power of two divides 256 evenly.
+  static const String _derivedAlphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
   /// The canonical form: upper case, no separators.
   final String code;
@@ -98,7 +90,7 @@ class SessionCode {
     final bytes = _derive(purpose);
     final buffer = StringBuffer();
     for (var i = 0; i < chars; i++) {
-      buffer.write(passphraseAlphabet[bytes[i] % passphraseAlphabet.length]);
+      buffer.write(_derivedAlphabet[bytes[i] % _derivedAlphabet.length]);
     }
     return buffer.toString();
   }
@@ -138,41 +130,18 @@ class SessionCode {
   String get discoveryHint =>
       _derive('hint').first.toRadixString(16).padLeft(2, '0');
 
-  /// What every network this app raises is called, before the derived part.
+  /// A token worked out from the code. **Nothing uses it.** A session's token
+  /// is drawn at random and is independent of any code (`BleSession`, the
+  /// session token in the sender); this is what it used to be, kept as the
+  /// example of a value that must not go on the air, which the tests search for.
   ///
-  /// A device scanning the air filters on this to tell our networks from the
-  /// neighbours' — which is how two desktops find each other with no camera
-  /// between them.
-  static const String ssidPrefix = 'DirectDrop-';
-
-  /// The network's name, which both ends work out independently.
-  ///
-  /// Short enough to leave room inside the 32 bytes an SSID allows.
-  String get ssid => '$ssidPrefix${_deriveString('ssid', 6)}';
-
-  /// The network's passphrase. Twelve characters, comfortably past WPA2's
-  /// eight-character floor.
-  String get passphrase => _deriveString('psk', 12);
-
-  /// The QHTP session token, so the transfer authenticates against the same
-  /// secret that got the devices onto one network.
-  ///
-  /// Hex rather than the display alphabet: this one is never read by a person,
-  /// and the existing token format is hex everywhere else.
+  /// Hex rather than the display alphabet.
   String get sessionToken {
     final bytes = _derive('token');
     return bytes
         .take(16)
         .map((b) => b.toRadixString(16).padLeft(2, '0'))
         .join();
-  }
-
-  /// The `WIFI:` payload every phone camera understands, so the joining device
-  /// can be walked onto the network without the app installed.
-  String get wifiQrPayload {
-    String escape(String value) =>
-        value.replaceAllMapped(RegExp(r'([\\;,:"])'), (m) => '\\${m[1]}');
-    return 'WIFI:T:WPA;S:${escape(ssid)};P:${escape(passphrase)};;';
   }
 
   @override

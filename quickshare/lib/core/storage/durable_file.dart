@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:ffi';
 import 'dart:io';
 
@@ -254,7 +255,8 @@ Future<void> syncFile(String filePath) async {
 
 // --- startup sweep --------------------------------------------------------
 
-/// Removes stale `*.qs.partial` debris sitting directly under [root].
+/// Removes stale `*.qs.partial` debris under [root], at any depth up to
+/// [maxDepth] folders down.
 ///
 /// "Stale" means last modified before [before]. At startup every partial on
 /// disk belongs to an earlier run, so the caller passes a cutoff of roughly
@@ -268,58 +270,133 @@ Future<void> syncFile(String filePath) async {
 ///  * a folder holding a [kKeptMarker] file: a folder received in full whose
 ///    rename onto its real name failed, which is the only copy there is.
 ///
-/// Top level only: a fast scan that catches the ordinary cases (a loose
-/// `video.mp4.qs.partial`, a staged `Trip.qs.partial/`) without walking a
-/// Downloads folder that may hold tens of thousands of files.
+/// ## Going down
+///
+/// A folder received over QHTP lands as `Trip/clip.bin`, and while it arrives
+/// as `Trip/clip.bin.qs.partial`, so what an abandoned folder session leaves is
+/// one or more folders down; looking at the top level alone left it for ever.
+/// So the folders under [root] are walked, breadth first, with limits that keep
+/// a Downloads folder of tens of thousands of files from costing a transfer its
+/// start:
+///
+///  * [maxDepth] folders below [root], and
+///  * [maxEntries] entries looked at below the top level, after which the walk
+///    stops and says so in the log. The top level itself is always done in
+///    full, as it always was.
+///
+/// What going down must not do, and does not:
+///
+///  * **Follow a link.** A link is never entered, whatever it points at and
+///    whatever it is named, and a partial is deleted only after every folder
+///    between [root] and it has been looked at again (the walk and the delete
+///    are two moments, and a folder can be swapped between them). One that is
+///    now a link leaves the file where it is, with a line in the log.
+///  * **Take what is wanted.** [pinned], [kKeptMarker] and the cutoff apply at
+///    every depth exactly as at the top. A partial inside a staged
+///    `*.qs.partial` folder is not looked at on its own: the folder is the
+///    unit, kept or removed whole.
+///  * **Take what is not ours.** Only a name that ends in `.qs.partial` is
+///    considered. Everything else, files and folders, is walked past.
+///
+/// Whatever is left unswept because of a limit stays until the next sweep or
+/// until somebody removes it; it is debris, not a hazard.
 Future<int> sweepPartials(
   String root, {
   required DateTime before,
   Set<String> pinned = const {},
+  int maxDepth = 12,
+  int maxEntries = 20000,
 }) async {
-  final dir = Directory(root);
-  if (!await dir.exists()) return 0;
-
-  List<FileSystemEntity> entries;
-  try {
-    entries = await dir.list(followLinks: false).toList();
-  } on FileSystemException {
-    return 0;
-  }
+  final top = Directory(root);
+  if (!await top.exists()) return 0;
 
   final keep = {for (final path in pinned) _sweepKey(path)};
   var freed = 0;
-  for (final entry in entries) {
-    if (!isPartialPath(entry.path)) continue;
-    // A link that happens to be named like one of ours is somebody else's
-    // business; it is never followed and never counted.
-    if (entry is Link) continue;
-    if (keep.contains(_sweepKey(entry.path))) continue;
+  var looked = 0;
+  var stoppedEarly = false;
+
+  // Folders still to read, with how far down each is. A queue, not recursion:
+  // a deep tree must not be a deep call stack, and breadth first means the
+  // shallow folders — where a received folder's files are — are done before a
+  // budget can run out in the deep ones.
+  final queue = Queue<(String, int)>()..add((root, 0));
+  while (queue.isNotEmpty) {
+    final (current, depth) = queue.removeFirst();
+
+    List<FileSystemEntity> entries;
     try {
-      final stat = await entry.stat();
-      if (stat.modified.isAfter(before)) continue;
-      if (stat.type == FileSystemEntityType.directory) {
-        if (FileSystemEntity.typeSync(p.join(entry.path, kKeptMarker),
-                followLinks: false) ==
-            FileSystemEntityType.file) {
-          continue;
-        }
-        freed += await _treeSize(Directory(entry.path));
-        await Directory(entry.path).delete(recursive: true);
-      } else {
-        freed += stat.size;
-        await File(entry.path).delete();
-      }
+      entries = await Directory(current).list(followLinks: false).toList();
     } on FileSystemException {
-      // Raced another sweep, or the OS reclaimed it first; nothing to free.
+      continue; // not readable, or gone since it was seen: nothing to sweep
     }
+
+    for (final entry in entries) {
+      if (depth > 0 && ++looked > maxEntries) {
+        stoppedEarly = true;
+        break;
+      }
+      // A link that happens to be named like one of ours is somebody else's
+      // business; it is never followed and never counted. Nor is a link to a
+      // folder walked into.
+      if (entry is Link) continue;
+
+      if (isPartialPath(entry.path)) {
+        freed += await _sweepOne(root, entry, before, keep);
+        continue; // a staged folder is one unit; its insides are not walked
+      }
+      if (entry is Directory && depth < maxDepth) {
+        queue.add((entry.path, depth + 1));
+      }
+    }
+    if (stoppedEarly) break;
   }
 
+  if (stoppedEarly) {
+    AppLogger.info(
+        'Partial sweep of $root stopped after $maxEntries entries below the '
+        'top level; what is further on is left for a later sweep',
+        tag: 'DISK');
+  }
   if (freed > 0) {
     AppLogger.info(
         'Swept $freed bytes of interrupted-transfer debris from $root',
         tag: 'DISK');
   }
   return freed;
+}
+
+/// Removes one entry named like a partial, if it is stale and not wanted.
+/// Returns the bytes freed.
+Future<int> _sweepOne(String root, FileSystemEntity entry, DateTime before,
+    Set<String> keep) async {
+  if (keep.contains(_sweepKey(entry.path))) return 0;
+  try {
+    final stat = await entry.stat();
+    if (stat.modified.isAfter(before)) return 0;
+    // Looked at again, now, from the root down: the walk saw these folders a
+    // moment ago and they may not be what they were.
+    SafePath.assertNoLinksBelow(root, entry.path);
+    if (stat.type == FileSystemEntityType.directory) {
+      if (FileSystemEntity.typeSync(p.join(entry.path, kKeptMarker),
+              followLinks: false) ==
+          FileSystemEntityType.file) {
+        return 0;
+      }
+      final size = await _treeSize(Directory(entry.path));
+      await Directory(entry.path).delete(recursive: true);
+      return size;
+    }
+    await File(entry.path).delete();
+    return stat.size;
+  } on UnsafePathException catch (e) {
+    AppLogger.warning(
+        'Left "${entry.path}" in place instead of sweeping it: ${e.reason}. '
+        'Nothing outside the destination was touched',
+        tag: 'DISK');
+  } on FileSystemException {
+    // Raced another sweep, or the OS reclaimed it first; nothing to free.
+  }
+  return 0;
 }
 
 /// A path as the sweep compares it: absolute and normalised, and without case

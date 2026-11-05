@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,71 +7,44 @@ import 'package:quickshare/core/network/session_code.dart';
 
 void main() {
   group('derivation', () {
-    test('both ends derive the same network from the code they share', () {
-      // The whole point: nothing about the network is transmitted. The device
-      // that raises it and the device that joins it work out the same name and
-      // passphrase from the code alone.
+    test('what is derived is the same for a code however it was typed', () {
       const shown = SessionCode('1234567890');
       final typed = SessionCode.parse('12345-67890')!;
 
-      expect(typed.ssid, equals(shown.ssid));
-      expect(typed.passphrase, equals(shown.passphrase));
       expect(typed.sessionToken, equals(shown.sessionToken));
+      expect(typed.discoveryHint, equals(shown.discoveryHint));
     });
 
     test('different codes do not collide', () {
       const a = SessionCode('1234567890');
       const b = SessionCode('1234567891');
 
-      expect(a.ssid, isNot(equals(b.ssid)));
-      expect(a.passphrase, isNot(equals(b.passphrase)));
       expect(a.sessionToken, isNot(equals(b.sessionToken)));
     });
 
-    test('the network name gives away nothing about the passphrase', () {
-      // The SSID is broadcast in the clear to everyone in radio range. If it
-      // shared a derivation with the passphrase it would be handing out the
-      // key to the network it names.
-      const code = SessionCode('1234567890');
-
-      expect(code.ssid, isNot(contains(code.passphrase)));
-      expect(code.passphrase, isNot(contains(code.ssid)));
-      // Nor may either be a prefix of the other's derivation.
-      expect(code.ssid.replaceFirst('DirectDrop-', ''),
-          isNot(equals(code.passphrase.substring(0, 6))));
-    });
-
-    test('the token is not the code, and not the passphrase', () {
+    test('the token is not the code', () {
       const code = SessionCode('1234567890');
 
       expect(code.sessionToken, isNot(contains(code.code)));
-      expect(code.sessionToken, isNot(equals(code.passphrase)));
       expect(code.sessionToken, hasLength(32));
       expect(RegExp(r'^[0-9a-f]+$').hasMatch(code.sessionToken), isTrue);
     });
 
-    test('the SSID is recognisable and fits what Wi-Fi allows', () {
-      // Prefixed so a device scanning the air can tell our networks apart from
-      // the neighbours' before trying to join one. 32 bytes is the SSID limit.
-      const code = SessionCode('1234567890');
+    test('a code no longer names a Wi-Fi network', () {
+      // It used to: the network's name and passphrase were hashes of the
+      // digits, and the name is broadcast, so thirty of the thirty-three bits
+      // of the code were on the air. The network gets its own, at random (see
+      // hotspot_naming_test.dart); nothing here is left to be misused for it.
+      final source =
+          File('lib/core/network/session_code.dart').readAsStringSync();
+      final code = source
+          .split('\n')
+          .where((line) => !line.trimLeft().startsWith('///'))
+          .join('\n');
 
-      expect(code.ssid, startsWith('DirectDrop-'));
-      expect(code.ssid.length, lessThanOrEqualTo(32));
-    });
-
-    test('the passphrase clears the WPA2 minimum', () {
-      // Eight characters is the floor; anything shorter is refused by the
-      // radio, not by us.
-      expect(const SessionCode('1234567890').passphrase.length,
-          greaterThanOrEqualTo(8));
-    });
-
-    test('derived values use only unambiguous characters', () {
-      // A passphrase somebody may end up typing by hand must not contain the
-      // pairs that alphabet exists to avoid.
-      const code = SessionCode('1234567890');
-      for (final char in code.passphrase.split('')) {
-        expect(SessionCode.passphraseAlphabet, contains(char));
+      for (final gone in ['get ssid', 'get passphrase', 'wifiQrPayload',
+          'ssidPrefix', 'passphraseAlphabet']) {
+        expect(code, isNot(contains(gone)), reason: gone);
       }
     });
   });
@@ -89,7 +63,6 @@ void main() {
       const code = SessionCode('1234567890');
       expect(code.publicId, isNot(contains(code.code)));
       expect(code.publicId, isNot(equals(code.sessionToken)));
-      expect(code.publicId, isNot(equals(code.passphrase)));
     });
 
     test('different codes get different identifiers', () {
@@ -148,14 +121,6 @@ void main() {
       expect(SessionCode.parse('1234 5678AB'), isNull);
     });
 
-    test('the passphrase alphabet divides a byte evenly', () {
-      // Derivation is `byte % alphabet.length`; at any size but a power of two
-      // the low characters come up more often than the high ones.
-      expect(SessionCode.passphraseAlphabet, hasLength(32));
-      expect(SessionCode.passphraseAlphabet.split('').toSet(), hasLength(32),
-          reason: 'a repeated symbol would skew the derivation too');
-    });
-
     test('the wrong length is refused', () {
       expect(SessionCode.parse('123456789'), isNull);
       expect(SessionCode.parse('12345678901'), isNull);
@@ -196,20 +161,6 @@ void main() {
         SessionCode.generate(Random(42)).code,
         equals(SessionCode.generate(Random(42)).code),
       );
-    });
-  });
-
-  group('wifiQrPayload', () {
-    test('is the standard payload a phone camera already understands', () {
-      // The joining device may not have the app yet — the system camera can
-      // still put it on the network from this.
-      const code = SessionCode('1234567890');
-      final payload = code.wifiQrPayload;
-
-      expect(payload, startsWith('WIFI:T:WPA;'));
-      expect(payload, contains('S:${code.ssid};'));
-      expect(payload, contains('P:${code.passphrase};'));
-      expect(payload, endsWith(';;'));
     });
   });
 }

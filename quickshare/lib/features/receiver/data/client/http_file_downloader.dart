@@ -29,11 +29,19 @@ class HttpFileDownloader {
   /// never through a link) and are given their name only once whole, without
   /// replacing anything: a file already at [savePath] stays, and the download
   /// lands as `name (1).ext`. The returned path says which.
+  ///
+  /// [destinationRoot] is the folder [savePath] was resolved under. Every folder
+  /// between it and the file is checked for being a link before the partial is
+  /// made, before it is given its name and before it is removed, so a folder
+  /// swapped for a link while the download ran leads nowhere. Without one, the
+  /// folder that holds [savePath] stands in for it, which protects the file and
+  /// not the folders above it: a caller that has the real root should pass it.
   Future<String> download({
     required String url,
     required String token,
     required String savePath,
     required String tlsFingerprint,
+    String? destinationRoot,
     void Function(int, int)? onProgress,
   }) async {
     if (tlsFingerprint.isEmpty) {
@@ -55,7 +63,9 @@ class HttpFileDownloader {
 
     // The folder the caller chose is the destination; everything below it is
     // checked.
-    final base = p.dirname(savePath);
+    final base = (destinationRoot == null || destinationRoot.isEmpty)
+        ? p.dirname(savePath)
+        : destinationRoot;
     final partialPath = '$savePath$kPartialSuffix';
 
     int attempts = 0;
@@ -76,24 +86,24 @@ class HttpFileDownloader {
       } on DioException catch (e) {
         final storage = classifyStorageError(e);
         if (storage != null) {
-          _discard(partialPath);
+          _discard(base, partialPath);
           throw storage.toException();
         }
         if (e.response != null && e.response!.statusCode != null) {
           if (e.response!.statusCode! >= 400 && e.response!.statusCode! < 500) {
-            _discard(partialPath);
+            _discard(base, partialPath);
             rethrow; // Don't retry client errors
           }
         }
         attempts++;
         if (attempts >= 3) {
-          _discard(partialPath);
+          _discard(base, partialPath);
           throw NetworkException(
               'Download failed after 3 attempts: ${e.message}');
         }
         await Future.delayed(Duration(seconds: attempts));
       } catch (e) {
-        _discard(partialPath);
+        _discard(base, partialPath);
         if (e is NetworkException) rethrow;
         final storage = classifyStorageError(e);
         if (storage != null) throw storage.toException();
@@ -101,19 +111,17 @@ class HttpFileDownloader {
             'Unknown error during download. Please try again.');
       }
     }
-    _discard(partialPath);
+    _discard(base, partialPath);
     throw const NetworkException('Download failed');
   }
 
-  /// Removes what a failed attempt left, link or file; never a link's target.
-  void _discard(String partialPath) {
-    try {
-      if (FileSystemEntity.typeSync(partialPath, followLinks: false) !=
-          FileSystemEntityType.notFound) {
-        File(partialPath).deleteSync();
-      }
-    } catch (_) {}
-  }
+  /// Removes what a failed attempt left, link or file; never a link's target,
+  /// and never through a folder that has become a link. See
+  /// [SafePath.discard]: when the chain above the partial is not what it was,
+  /// the partial stays and the log says why. Never throws — the failure being
+  /// reported is the one the person sees.
+  void _discard(String base, String partialPath) =>
+      SafePath.discard(base, partialPath);
 
   void cancel() {
     _cancelToken.cancel();

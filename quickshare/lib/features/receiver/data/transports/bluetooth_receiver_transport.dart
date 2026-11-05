@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/core/transfer/ble_frame.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'ble_receiver_failure.dart';
 import 'universal_ble_receiver_transport.dart';
@@ -214,7 +215,17 @@ class BluetoothReceiverTransport implements BleReceiver {
         if (serve is Map) {
           final info =
               LinkServeInfo.fromJson(Map<String, Object?>.from(serve));
-          if (info != null) _serveInfoController.add(info);
+          if (info != null) {
+            _serveInfoController.add(info);
+          } else {
+            // The last frame of the rendezvous, with nothing after it to carry
+            // on without: dropped, it would leave the screen waiting for an
+            // address that was never going to arrive.
+            _failureController.add(const BleReceiverFailure(
+                '${BleFrame.damagedMessage} The serve frame is missing what a '
+                'receiver needs to pull the file.',
+                FailureCode.bluetoothTransferFailed));
+          }
         }
         break;
 

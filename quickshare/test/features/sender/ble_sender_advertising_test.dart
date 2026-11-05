@@ -23,6 +23,7 @@ import 'package:universal_ble/universal_ble.dart';
 import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/core/transfer/ble_frame.dart';
 import 'package:quickshare/core/transfer/ble_gatt.dart';
 import 'package:quickshare/core/transfer/ble_session.dart';
 import 'package:quickshare/features/receiver/data/transports/universal_ble_receiver_transport.dart';
@@ -358,7 +359,8 @@ void main() {
 
       final sent = radio.notificationsOn(BleGatt.metadata).single;
       expect(sent.deviceId, 'client-7');
-      expect(sent.text, '{"link":{"host":"sender"}}');
+      expect(radio.framesOn(BleGatt.metadata),
+          ['{"link":{"host":"sender"}}']);
     });
 
     test('on Windows they are not: the plugin refuses a targeted update',
@@ -376,22 +378,256 @@ void main() {
       expect(radio.notificationsOn(BleGatt.metadata).single.deviceId, isNull);
     });
 
-    test('one that cannot fit in a notification is refused, not truncated',
-        () async {
+    test('one that is longer than a notification goes out in parts, none of '
+        'them longer than it', () async {
       // The platforms cut a notification to the negotiated payload without
       // saying so, and the receiver then fails to read half a JSON document.
+      // So nothing longer than the limit is ever asked for.
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       radio.maxNotifyLength = 20;
       final transport = await started(BleSession.generate());
       radio.subscribe('client-7', BleGatt.data);
       await Future<void>.delayed(Duration.zero);
+      final frame = {'link': {'host': 'sender', 'sealed': 'x' * 60}};
+
+      await transport.sendLinkFrame(frame);
+
+      final parts = radio.partsOn(BleGatt.metadata);
+      expect(parts.length, greaterThan(1));
+      expect(parts.map((p) => p.length), everyElement(lessThanOrEqualTo(20)));
+      expect(radio.framesOn(BleGatt.metadata), [jsonEncode(frame)],
+          reason: 'put back together, it is what was sent');
+    });
+  });
+
+  group('a frame is cut for what the connection carries', () {
+    // The numbers are the ones the owner asked about: the directive that
+    // carries credentials is 203 bytes with a 12-character passphrase, the
+    // serve frame 225, an iPhone takes 182, a connection nobody negotiated 20.
+    final directive = {
+      'link': {'host': 'sender', 'sealed': 's' * 112, 'kex': 'k' * 44}
+    };
+    final serve = {
+      'serve': {
+        'ip': '192.168.137.1',
+        'port': 54321,
+        'token': 't' * 32,
+        'tf': 'f' * 43,
+        'fn': 'Vacation photos',
+        'fs': 123456789,
+        'ic': 12,
+        'sn': "Farman's PC",
+        'lip': '192.168.1.10',
+      }
+    };
+
+    Future<BluetoothTransferTransport> connected(
+        {int? limit, TargetPlatform? platform, Duration? pacing}) async {
+      debugDefaultTargetPlatformOverride = platform ?? TargetPlatform.android;
+      radio.maxNotifyLength = limit;
+      final transport = BluetoothTransferTransport(
+          notificationPacing: pacing ?? Duration.zero);
+      await transport.initialize();
+      final session = BleSession.generate();
+      await transport.startSharing(_file, session.token,
+          locator: session.locator);
+      radio.subscribe('client-7', BleGatt.data);
+      await Future<void>.delayed(Duration.zero);
+      return transport;
+    }
+
+    test('the sizes: 203 bytes in two parts at an iPhone\'s 182, 225 in two',
+        () async {
+      final transport = await connected(limit: 182);
+
+      expect(utf8.encode(jsonEncode(directive)), hasLength(203));
+      await transport.sendLinkFrame(directive);
+      final directiveParts = radio.notifications.length;
+      expect(utf8.encode(jsonEncode(serve)), hasLength(225));
+      await transport.sendLinkFrame(serve);
+
+      expect(directiveParts, 2, reason: '203 bytes is 178 + 25 of payload');
+      expect(radio.notifications.length - directiveParts, 2);
+      expect(radio.partsOn(BleGatt.metadata).map((p) => p.length),
+          everyElement(lessThanOrEqualTo(182)));
+      expect(radio.framesOn(BleGatt.metadata),
+          [jsonEncode(directive), jsonEncode(serve)]);
+    });
+
+    test('the sizes: 14 and 15 parts of 20 bytes on a connection nobody '
+        'negotiated', () async {
+      final transport = await connected(limit: 20);
+
+      await transport.sendLinkFrame(directive);
+      final directiveParts = radio.notifications.length;
+      await transport.sendLinkFrame(serve);
+
+      expect(directiveParts, 13, reason: '203 bytes at 16 a part');
+      expect(radio.notifications.length - directiveParts, 15,
+          reason: '225 bytes at 16 a part');
+      expect(radio.framesOn(BleGatt.metadata),
+          [jsonEncode(directive), jsonEncode(serve)]);
+    });
+
+    test('the sizes: one part each at 244 and 512', () async {
+      for (final limit in [244, 512]) {
+        radio.notifications.clear();
+        final transport = await connected(limit: limit);
+
+        await transport.sendLinkFrame(directive);
+        await transport.sendLinkFrame(serve);
+
+        expect(radio.notifications, hasLength(2), reason: 'limit $limit');
+        expect(radio.partsOn(BleGatt.metadata).map((p) => p.length),
+            [203 + 4, 225 + 4]);
+        await transport.stopSharing();
+      }
+    });
+
+    test('the serve frame goes whole: nothing optional is dropped', () async {
+      final transport = await connected(limit: 182);
+
+      await transport.sendLinkFrame(serve);
+
+      final got = jsonDecode(radio.framesOn(BleGatt.metadata).single) as Map;
+      expect(got['serve'], serve['serve']);
+    });
+
+    test('an unknown limit is the least a connection carries, on Android and '
+        'on Windows alike', () async {
+      for (final platform in [TargetPlatform.android, TargetPlatform.windows]) {
+        radio.notifications.clear();
+        final transport = await connected(limit: null, platform: platform);
+
+        await transport.sendLinkFrame(directive);
+
+        expect(radio.partsOn(BleGatt.metadata).map((p) => p.length),
+            everyElement(lessThanOrEqualTo(20)),
+            reason: platform.name);
+        expect(radio.framesOn(BleGatt.metadata), [jsonEncode(directive)]);
+        await transport.stopSharing();
+      }
+    });
+
+    test('a limit the platform makes up is not believed past what an '
+        'attribute can be', () async {
+      final transport = await connected(limit: 100000);
+
+      await transport.sendLinkFrame({
+        'serve': {...(serve['serve'] as Map), 'fn': 'n' * 1500}
+      });
+
+      expect(radio.partsOn(BleGatt.metadata).map((p) => p.length),
+          everyElement(lessThanOrEqualTo(512)));
+    });
+
+    test('a frame beyond the largest there is is refused, and nothing is sent',
+        () async {
+      final transport = await connected(limit: 512);
 
       await expectLater(
-        transport.sendLinkFrame({'link': {'host': 'sender', 'sealed': 'x' * 60}}),
-        throwsA(isA<BluetoothRadioException>().having(
-            (e) => e.message, 'message', contains('20'))),
+        transport.sendLinkFrame({
+          'serve': {'fn': 'x' * 4000}
+        }),
+        throwsA(isA<BluetoothRadioException>()
+            .having((e) => e.message, 'message', contains('3072'))),
       );
-      expect(radio.notificationsOn(BleGatt.metadata), isEmpty);
+      expect(radio.notifications, isEmpty);
+    });
+
+    test('a connection too small to hold a header says so, and sends nothing',
+        () async {
+      final transport = await connected(limit: 4);
+
+      await expectLater(
+        transport.sendLinkFrame(directive),
+        throwsA(isA<BluetoothRadioException>()
+            .having((e) => e.message, 'message', contains('4 bytes'))),
+      );
+      expect(radio.notifications, isEmpty);
+    });
+
+    test('a connection so small the frame would need more than 255 parts is '
+        'refused', () async {
+      // One byte of payload a part, and a frame of more than 255 bytes.
+      final transport = await connected(limit: 5);
+
+      await expectLater(
+        transport.sendLinkFrame({
+          'link': {'host': 'sender', 'sealed': 's' * 300}
+        }),
+        throwsA(isA<BluetoothRadioException>()
+            .having((e) => e.message, 'message', contains('255'))),
+      );
+      expect(radio.notifications, isEmpty);
+    });
+
+    test('two frames asked for at once are sent one after the other, never '
+        'mixed', () async {
+      final transport = await connected(limit: 20);
+
+      await Future.wait([
+        transport.sendLinkFrame(directive),
+        transport.sendLinkFrame(serve),
+        transport.sendLinkFrame(directive),
+      ]);
+
+      expect(radio.framesOn(BleGatt.metadata),
+          [jsonEncode(directive), jsonEncode(serve), jsonEncode(directive)]);
+    });
+
+    test('a frame that fails does not stop the ones after it', () async {
+      final transport = await connected(limit: 512);
+
+      await expectLater(
+        transport.sendLinkFrame({'serve': {'fn': 'x' * 4000}}),
+        throwsA(isA<BluetoothRadioException>()),
+      );
+      await transport.sendLinkFrame(directive);
+
+      expect(radio.framesOn(BleGatt.metadata), [jsonEncode(directive)]);
+    });
+
+    test('every frame has a number of its own, and every part of it the same',
+        () async {
+      final transport = await connected(limit: 20);
+
+      await transport.sendLinkFrame(directive);
+      await transport.sendLinkFrame(directive);
+
+      final parts = radio.partsOn(BleGatt.metadata);
+      final ids = {for (final p in parts) p[1]};
+      expect(ids, hasLength(2));
+      expect(parts.first[0], BleFrame.marker);
+      expect(parts.first[2], 0, reason: 'a frame starts at part 0');
+      expect(parts.first[3], parts.where((p) => p[1] == parts.first[1]).length);
+    });
+
+    test('the parts are spaced where the platform does not wait for the '
+        'radio, and not where it does', () async {
+      final spaced = await connected(
+          limit: 20, pacing: const Duration(milliseconds: 25));
+      final times = <DateTime>[];
+      radio.onNotification = (_) => times.add(DateTime.now());
+
+      await spaced.sendLinkFrame(directive);
+
+      expect(times.length, greaterThan(5));
+      for (var i = 1; i < times.length; i++) {
+        expect(times[i].difference(times[i - 1]).inMilliseconds,
+            greaterThanOrEqualTo(20),
+            reason: 'part $i went before the radio could have taken part '
+                '${i - 1}');
+      }
+    });
+
+    test('Android spaces them by default; Windows, whose plugin awaits each '
+        'notification, does not', () async {
+      final android = BluetoothTransferTransport();
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      expect(android.debugPacing, greaterThan(Duration.zero));
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      expect(android.debugPacing, Duration.zero);
     });
   });
 
@@ -402,78 +638,13 @@ void main() {
     final transport = await started(BleSession.generate());
     radio.subscribe('client-7', BleGatt.data);
     await Future<void>.delayed(Duration.zero);
+    final frame = {'link': {'host': 'sender', 'sealed': 'x' * 60}};
 
-    await expectLater(
-      transport.sendLinkFrame({'link': {'host': 'sender', 'sealed': 'x' * 60}}),
-      throwsA(isA<BluetoothRadioException>()),
-    );
-  });
+    await transport.sendLinkFrame(frame);
 
-  test('on Windows an unknown limit is not a small one', () async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.windows;
-    radio.maxNotifyLength = null;
-    final transport = await started(BleSession.generate());
-    radio.subscribe('client-7', BleGatt.data);
-    await Future<void>.delayed(Duration.zero);
-
-    await transport.sendLinkFrame({'link': {'host': 'sender', 'sealed': 'x' * 60}});
-
-    expect(radio.notificationsOn(BleGatt.metadata), hasLength(1));
-  });
-
-  test('the optional fields of a serve frame are what gives way when it is '
-      'too long', () async {
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
-    radio.maxNotifyLength = 182; // an iPhone
-    final transport = await started(BleSession.generate());
-    radio.subscribe('client-7', BleGatt.data);
-    await Future<void>.delayed(Duration.zero);
-    final serve = {
-      'ip': '192.168.137.1',
-      'port': 54321,
-      'token': 't' * 32,
-      'tf': 'f' * 64,
-      'fn': 'Vacation photos',
-      'fs': 123456789,
-      'ic': 12,
-      'sn': "Farman's PC",
-      'lip': '192.168.1.10',
-    };
-
-    await transport.sendLinkFrame({'serve': serve});
-
-    final sent = radio.notificationsOn(BleGatt.metadata).single;
-    expect(sent.value.length, lessThanOrEqualTo(182));
-    final decoded = jsonDecode(sent.text)['serve'] as Map;
-    for (final key in ['ip', 'port', 'token', 'tf']) {
-      expect(decoded[key], serve[key], reason: 'the receiver needs $key');
-    }
-  });
-
-  test('a hosting directive is longer than an iPhone takes, and says so',
-      () async {
-    // The finding the device check has to settle: the sealed credentials and
-    // the sender's key make a frame of 203 bytes, and an iPhone negotiates 182.
-    // It cannot be made smaller by dropping something optional. (It was 223
-    // while the frame also carried the ten digits of the code — 20 bytes that
-    // did not fit either, and that no longer cross at all.)
-    debugDefaultTargetPlatformOverride = TargetPlatform.android;
-    radio.maxNotifyLength = 182;
-    final transport = await started(BleSession.generate());
-    radio.subscribe('client-7', BleGatt.data);
-    await Future<void>.delayed(Duration.zero);
-
-    await expectLater(
-      transport.sendLinkFrame({
-        'link': {
-          'host': 'sender',
-          'sealed': 's' * 112,
-          'kex': 'k' * 44,
-        }
-      }),
-      throwsA(isA<BluetoothRadioException>().having(
-          (e) => e.message, 'message', allOf(contains('203'), contains('182')))),
-    );
+    expect(radio.partsOn(BleGatt.metadata).map((p) => p.length),
+        everyElement(lessThanOrEqualTo(20)));
+    expect(radio.framesOn(BleGatt.metadata), [jsonEncode(frame)]);
   });
 
   test('a HELLO is read, so the sender knows who it is talking to', () async {

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +10,7 @@ import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/core/transfer/ble_frame.dart';
 import 'package:quickshare/core/transfer/ble_gatt.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
@@ -38,14 +40,20 @@ class BluetoothTransferTransport implements TransferTransport {
   /// advertising before saying so out loud. A platform that accepts the
   /// request and then never answers would otherwise leave the person looking
   /// at a spinner until the app is killed.
+  ///
+  /// [notificationPacing] is the pause after each notification sent through
+  /// `universal_ble`; see [_pacing]. Null picks the platform's own.
   BluetoothTransferTransport({
     Duration advertisingTimeout = const Duration(seconds: 10),
-  }) : _advertisingTimeout = advertisingTimeout;
+    Duration? notificationPacing,
+  })  : _advertisingTimeout = advertisingTimeout,
+        _notificationPacing = notificationPacing;
 
   static const _method = MethodChannel('quickshare/bluetooth');
   static const _events = EventChannel('quickshare/bluetooth/events');
 
   final Duration _advertisingTimeout;
+  final Duration? _notificationPacing;
 
   /// The peripheral local name Apple and Linux senders advertise.
   ///
@@ -70,6 +78,14 @@ class BluetoothTransferTransport implements TransferTransport {
   bool _universalDataSubscribed = false;
   bool _universalStartReceived = false;
   bool _universalTransferStarted = false;
+
+  /// Numbers the frames of one session, so a stray part of one cannot pass for
+  /// a part of the next. Replaced for every session.
+  BleFrameSplitter _universalSplitter = BleFrameSplitter();
+
+  /// Whether this session has put a notification on the radio yet; see
+  /// [_notifyUniversal].
+  bool _universalNotified = false;
 
   /// What the receiver said it can take, from its `CAPS:` write.
   ///
@@ -117,103 +133,150 @@ class BluetoothTransferTransport implements TransferTransport {
   DirectLinkSignal get linkSignal => _SenderLinkSignal(this);
 
   /// Sends a negotiation frame — `{"link": …}` or `{"serve": …}` — to the
-  /// connected receiver over the metadata characteristic.
+  /// connected receiver over the metadata characteristic, whole.
   ///
-  /// Retried briefly where the platform queue can refuse: CoreBluetooth
-  /// answers a full queue with a BUSY error rather than a lost frame, and a
-  /// negotiation frame lost is a session that never begins.
-  Future<void> sendLinkFrame(Map<String, Object?> frame) async {
-    if (_usesNativeAppleBridge) {
-      PlatformException? lastBusy;
-      for (var attempt = 0; attempt < 4; attempt++) {
-        try {
+  /// A frame is longer than a notification (203 bytes for the directive that
+  /// carries credentials, 225 for the serve frame, against 182 on an iPhone and
+  /// 20 on a connection nobody negotiated), so it crosses as parts that each fit
+  /// and the far side puts it back together: see [BleFrame]. Every platform cuts
+  /// and sends in the order of the parts, and a frame is finished before the
+  /// next begins — calls made while one is still going wait for it, so the
+  /// parts of two frames are never mixed.
+  ///
+  /// What differs between the platforms is how big a part may be and what
+  /// happens when the radio cannot take the next one yet:
+  ///
+  ///  * Apple: the bridge reads `maximumUpdateValueLength` of the central and
+  ///    keeps the parts it could not hand over (`updateValue` returned false)
+  ///    until `peripheralManagerIsReady`; this call completes when the last one
+  ///    has gone, or fails if the radio never becomes ready.
+  ///  * Linux: BlueZ reports the negotiated MTU with each write the receiver
+  ///    makes; there is no way to ask the stack to wait, and its queue keeps
+  ///    the order.
+  ///  * Android and Windows: [_notifyUniversal].
+  Future<void> sendLinkFrame(Map<String, Object?> frame) =>
+      _inOrder(() async {
+        if (_usesNativeAppleBridge) {
           await _method.invokeMethod('sendLinkFrame', {'frame': frame});
           return;
-        } on PlatformException catch (e) {
-          if (e.code != 'BUSY') rethrow;
-          lastBusy = e;
-          await Future<void>.delayed(const Duration(milliseconds: 250));
         }
-      }
-      throw lastBusy!;
-    }
-    if (_usesLinuxBridge) {
-      await _linuxSender?.notifyLinkFrame(frame);
-      return;
-    }
-    await _notifyUniversal(frame);
+        if (_usesLinuxBridge) {
+          try {
+            await _linuxSender?.notifyLinkFrame(frame);
+          } on BleFrameException catch (e) {
+            AppLogger.error(e.message, tag: 'BT_SENDER');
+            throw BluetoothRadioException(
+                e.message, FailureCode.bluetoothTransferFailed);
+          }
+          return;
+        }
+        await _notifyUniversal(frame);
+      });
+
+  Future<void> _frameQueue = Future<void>.value();
+
+  /// Runs [send] when every frame before it has been sent. The queue never
+  /// carries a failure forward: a frame that failed is that caller's to deal
+  /// with, and the next one starts clean.
+  Future<void> _inOrder(Future<void> Function() send) {
+    final turn = Completer<void>();
+    final previous = _frameQueue;
+    _frameQueue = turn.future;
+    return previous.then((_) => send()).whenComplete(turn.complete);
   }
 
-  /// One frame as one notification on the metadata characteristic.
+  /// The pause between two notifications handed to `universal_ble`.
   ///
-  /// A notification carries at most the negotiated ATT payload and the
-  /// platforms cut a longer one to it without saying so, which reaches the
-  /// receiver as half a JSON document. So the limit is asked for, and a frame
-  /// that cannot fit is shrunk where it can be and refused where it cannot.
-  Future<void> _notifyUniversal(Map<String, Object?> frame) async {
-    final clientId = _universalClientId;
-    var bytes = Uint8List.fromList(utf8.encode(jsonEncode(frame)));
+  /// **Android needs one, and the plugin gives no other way to know.** Its
+  /// `updateCharacteristic` sets the characteristic's value, posts
+  /// `notifyCharacteristicChanged` to the main thread and returns; it does not
+  /// wait for `onNotificationSent` and it throws away the boolean the call
+  /// answers with. Android's stack takes one notification at a time, so a
+  /// second one asked for before the first has gone is refused — and nothing
+  /// here would hear of it. A part that disappears that way is not a silent
+  /// loss for the receiver (the next part arrives with its predecessor missing,
+  /// and that is a fault, see [BleFrameAssembler]) but it is a failed session,
+  /// so the parts are spaced. 30 ms is a little more than a connection
+  /// interval on the slow end of what a phone negotiates, which is when the
+  /// stack hands the controller its next packet. That is a measure taken from
+  /// how the stack behaves, not from a radio on a bench: see the report.
+  ///
+  /// Windows' `NotifyValueAsync` is awaited to completion by the plugin, which
+  /// is the flow control; no pause is needed.
+  Duration get _pacing =>
+      _notificationPacing ??
+      (defaultTargetPlatform == TargetPlatform.android
+          ? const Duration(milliseconds: 30)
+          : Duration.zero);
 
+  @visibleForTesting
+  Duration get debugPacing => _pacing;
+
+  /// What one notification to the connected receiver can carry.
+  ///
+  /// Asked of the platform where it knows (the negotiated ATT MTU less three:
+  /// Android once the central has negotiated one, Windows from the GATT
+  /// session). Everywhere it does not — no answer, an answer of nothing — it is
+  /// [BleFrame.defaultNotificationBytes], what even a connection nobody
+  /// negotiated carries. Assuming more is how a frame reaches the far side
+  /// cut in half; assuming the least costs a few more parts.
+  Future<int> _notificationBytes(String? clientId) async {
     int? limit;
     if (clientId != null) {
       try {
         limit = await UniversalBlePeripheral.getMaximumNotifyLength(clientId);
       } catch (_) {
-        // Unknown is not small: send, and let the receiver be the judge.
-      }
-      // Android only knows a limit once the central has negotiated one. A
-      // central that never did — Android before 14 that did not ask — is on
-      // the 23-byte default, which holds 20 bytes of a frame; the plugin
-      // reports that as "unknown".
-      if (limit == null && defaultTargetPlatform == TargetPlatform.android) {
-        limit = 20;
+        // Unknown, which is not the same as large.
       }
     }
-    if (limit != null && limit > 0 && bytes.length > limit) {
-      final smaller = _withoutOptionalFields(frame, limit);
-      if (smaller == null) {
-        final message = 'A ${bytes.length}-byte frame does not fit in a '
-            'Bluetooth notification of $limit bytes, and the receiver cannot '
-            'read a frame that has been cut.';
-        AppLogger.error(message, tag: 'BT_SENDER');
-        throw BluetoothRadioException(
-            message, FailureCode.bluetoothTransferFailed);
-      }
-      AppLogger.warning(
-          'Frame of ${bytes.length} bytes sent as ${smaller.length}: the '
-          'notification holds $limit and the dropped fields are optional.',
-          tag: 'BT_SENDER');
-      bytes = smaller;
-    }
-
-    await UniversalBlePeripheral.updateCharacteristicValue(
-      characteristicId: BleGatt.metadata,
-      value: bytes,
-      // Windows' GattLocalCharacteristic notifies every subscribed client and
-      // universal_ble answers "does not support targeting a specific device"
-      // to any call that names one. There is one receiver per session anyway.
-      deviceId:
-          defaultTargetPlatform == TargetPlatform.windows ? null : clientId,
-    );
+    if (limit == null || limit <= 0) return BleFrame.defaultNotificationBytes;
+    return math.min(limit, BleFrame.maxNotificationBytes);
   }
 
-  /// The serve frame without the fields a receiver does not need to start.
-  ///
-  /// File name, size, count, sender name and LAN address are all optional on
-  /// the far side — the QR it scanned carries the first four and the QHTP
-  /// manifest the rest. Dropped one at a time, least useful first, until the
-  /// frame fits. Null when there is nothing optional to drop.
-  static Uint8List? _withoutOptionalFields(
-      Map<String, Object?> frame, int limit) {
-    final serve = frame['serve'];
-    if (serve is! Map) return null;
-    final kept = Map<String, Object?>.from(serve);
-    for (final key in const ['lip', 'sn', 'fn', 'fs', 'ic']) {
-      kept.remove(key);
-      final bytes = Uint8List.fromList(utf8.encode(jsonEncode({'serve': kept})));
-      if (bytes.length <= limit) return bytes;
+  /// One frame as one or more notifications on the metadata characteristic.
+  Future<void> _notifyUniversal(Map<String, Object?> frame) async {
+    final clientId = _universalClientId;
+    final bytes = Uint8List.fromList(utf8.encode(jsonEncode(frame)));
+    final notificationBytes = await _notificationBytes(clientId);
+
+    final List<Uint8List> parts;
+    try {
+      parts = _universalSplitter.split(bytes,
+          notificationBytes: notificationBytes);
+    } on BleFrameException catch (e) {
+      // A real excess — a frame past the largest there is, a connection that
+      // cannot hold a header — and the only reason left to refuse one.
+      AppLogger.error(e.message, tag: 'BT_SENDER');
+      throw BluetoothRadioException(
+          e.message, FailureCode.bluetoothTransferFailed);
     }
-    return null;
+    AppLogger.info(
+        'Frame of ${bytes.length} bytes goes out as ${parts.length} '
+        '${parts.length == 1 ? 'part' : 'parts'} of at most '
+        '$notificationBytes bytes.',
+        tag: 'BT_SENDER');
+
+    final pause = _pacing;
+    for (final part in parts) {
+      // Before every notification but the first of the session, so the pause
+      // separates two notifications wherever they belong — two parts of one
+      // frame, or the last of one and the first of the next — and a caller
+      // that has just sent the last part is not kept waiting for a pause that
+      // protects nothing: the reply it is waiting for may come first.
+      if (pause > Duration.zero && _universalNotified) {
+        await Future<void>.delayed(pause);
+      }
+      _universalNotified = true;
+      await UniversalBlePeripheral.updateCharacteristicValue(
+        characteristicId: BleGatt.metadata,
+        value: part,
+        // Windows' GattLocalCharacteristic notifies every subscribed client and
+        // universal_ble answers "does not support targeting a specific device"
+        // to any call that names one. There is one receiver per session anyway.
+        deviceId:
+            defaultTargetPlatform == TargetPlatform.windows ? null : clientId,
+      );
+    }
   }
 
   /// Why the last failure happened, in words meant for the person sending.
@@ -497,6 +560,8 @@ class BluetoothTransferTransport implements TransferTransport {
     _universalDataSubscribed = false;
     _universalStartReceived = false;
     _universalTransferStarted = false;
+    _universalSplitter = BleFrameSplitter();
+    _universalNotified = false;
     // Nothing is assumed about the receiver: a build that never says what it
     // can take (everything before v1.0.10) is refused at START rather than
     // trusted with a directive it cannot read.

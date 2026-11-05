@@ -14,6 +14,7 @@ import 'package:universal_ble/universal_ble.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/core/transfer/ble_frame.dart';
 import 'package:quickshare/core/transfer/ble_gatt.dart';
 import 'package:quickshare/features/receiver/data/transports/ble_receiver_failure.dart';
 import 'package:quickshare/features/receiver/data/transports/universal_ble_receiver_transport.dart';
@@ -93,7 +94,7 @@ void main() {
     setUp(() async => receiver.connect('sender-1', token: 'tok'));
 
     test('a link directive reaches the coordinator', () async {
-      radio.notify(
+      radio.notifyFrame(
           'sender-1',
           BleGatt.metadata,
           jsonEncode(
@@ -111,7 +112,7 @@ void main() {
       // frame is refused at once, with the update it needs, instead of being
       // handed to a negotiation whose seal could not open — which would only
       // say so after waiting out its whole budget.
-      radio.notify(
+      radio.notifyFrame(
           'sender-1',
           BleGatt.metadata,
           jsonEncode({
@@ -130,7 +131,7 @@ void main() {
     });
 
     test('and so does a serve frame', () async {
-      radio.notify(
+      radio.notifyFrame(
           'sender-1',
           BleGatt.metadata,
           jsonEncode({
@@ -139,6 +140,28 @@ void main() {
       await settle();
 
       expect(serves.single.port, 8123);
+    });
+
+    test('a frame that is longer than the notification arrives in parts and '
+        'comes out whole', () async {
+      final serve = {
+        'ip': '192.168.137.1',
+        'port': 54321,
+        'token': 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
+        'tf': 'ppyVDnOklxV6jThfz6nwYkm7r_rGePi0X5ULmV_k2qY',
+        'fn': 'Vacation photos',
+        'fs': 123456789,
+        'ic': 12,
+        'sn': "Farman's PC",
+        'lip': '192.168.1.10',
+      };
+      radio.notifyFrame('sender-1', BleGatt.metadata, jsonEncode({'serve': serve}),
+          notificationBytes: 20);
+      await settle();
+
+      expect(failures, isEmpty);
+      expect(serves.single.fileName, 'Vacation photos');
+      expect(serves.single.lanIp, '192.168.1.10');
     });
 
     test('a sender that begins a file on the metadata characteristic is told '
@@ -166,16 +189,43 @@ void main() {
       expect(failures.single.code, FailureCode.senderTooOldForDirectLink);
     });
 
-    test('half a frame is reported as what it is, not as an old sender',
-        () async {
-      final whole = jsonEncode({
-        'serve': {'ip': '10.0.0.2', 'port': 8123, 'token': 't' * 32, 'tf': 'ff' * 32}
-      });
-      radio.notify('sender-1', BleGatt.metadata, whole.substring(0, 20));
+    test('a sender whose frames are not in parts is an older build, and is '
+        'told so', () async {
+      // Bare JSON, which is what every sender before the parts sent — and what
+      // a build made from the commit before them still sends.
+      radio.notify(
+          'sender-1',
+          BleGatt.metadata,
+          jsonEncode({
+            'link': const DirectLinkDirective.hostByReceiver(senderPublicKey: 'k')
+                .toJson()
+          }));
       await settle();
 
+      expect(directives, isEmpty);
+      expect(failures.single.code, FailureCode.senderTooOldForDirectLink);
+      expect(failures.single.message, BleControlProtocol.senderTooOldMessage);
+    });
+
+    test('parts cut short by the link are damage, not an old sender',
+        () async {
+      // Every part of a current sender's frame carries its header, so a link
+      // that cuts a notification to 20 bytes leaves valid parts with too little
+      // in them — and the frame that comes out is half a document.
+      final bytes = Uint8List.fromList(utf8.encode(jsonEncode({
+        'serve': {'ip': '10.0.0.2', 'port': 8123, 'token': 't' * 32, 'tf': 'ff' * 32}
+      })));
+      for (final part
+          in BleFrameSplitter().split(bytes, notificationBytes: 182)) {
+        radio.notifyBytes('sender-1', BleGatt.metadata,
+            part.length > 20 ? part.sublist(0, 20) : part);
+      }
+      await settle();
+
+      expect(failures, hasLength(1));
       expect(failures.single.code, FailureCode.bluetoothTransferFailed);
-      expect(failures.single.message, contains('20-byte'));
+      expect(failures.single.message, contains(BleFrame.damagedMessage));
+      expect(failures.single.message, isNot(contains('older version')));
       expect(serves, isEmpty);
     });
 
@@ -194,6 +244,193 @@ void main() {
 
       expect(failures, isEmpty);
       expect(radio.disconnects, ['sender-1']);
+    });
+  });
+
+  group('a frame that cannot be put together', () {
+    setUp(() async => receiver.connect('sender-1', token: 'tok'));
+
+    /// The parts of a frame of [size] bytes of JSON, cut for [notificationBytes].
+    List<Uint8List> partsOf(int size,
+        {int notificationBytes = 20, int? frameId}) {
+      final filler = 'x' * (size - '{"serve":{"x":""}}'.length);
+      return BleFrameSplitter().split(
+          Uint8List.fromList(utf8.encode('{"serve":{"x":"$filler"}}')),
+          notificationBytes: notificationBytes,
+          frameId: frameId ?? 9);
+    }
+
+    void play(Iterable<Uint8List> parts) {
+      for (final part in parts) {
+        radio.notifyBytes('sender-1', BleGatt.metadata, part);
+      }
+    }
+
+    /// What the person is told, and that it is not the old-version message.
+    void expectDamaged(String about) {
+      expect(failures, hasLength(1),
+          reason: 'one failure for the session, not one per part that follows');
+      expect(failures.single.code, FailureCode.bluetoothTransferFailed);
+      expect(failures.single.message, contains(BleFrame.damagedMessage));
+      expect(failures.single.message, contains(about));
+      expect(failures.single.message, isNot(contains('older version')));
+      expect(serves, isEmpty);
+      expect(directives, isEmpty);
+    }
+
+    test('a part that never arrives is a lost part, said at the next one',
+        () async {
+      final parts = partsOf(100);
+      play([parts[0], parts[1], ...parts.skip(3)]);
+      await settle();
+
+      expectDamaged('a part was lost');
+    });
+
+    test('a part that arrives twice is refused', () async {
+      final parts = partsOf(100);
+      play([parts[0], parts[1], parts[1], ...parts.skip(2)]);
+      await settle();
+
+      expectDamaged('arrived twice');
+    });
+
+    test('a part from another frame in the middle of one is refused',
+        () async {
+      final mine = partsOf(100, frameId: 9);
+      final theirs = partsOf(100, frameId: 77);
+      play([mine[0], mine[1], theirs[2], ...mine.skip(2)]);
+      await settle();
+
+      expectDamaged('arrived inside frame 9');
+    });
+
+    test('a frame that begins before the last one ended is refused', () async {
+      final mine = partsOf(100, frameId: 9);
+      final next = partsOf(60, frameId: 10);
+      play([mine[0], mine[1], next[0]]);
+      await settle();
+
+      expectDamaged('began while frame 9');
+    });
+
+    test('a part from the middle of a frame whose start never came is refused',
+        () async {
+      final parts = partsOf(100);
+      play([parts[3]]);
+      await settle();
+
+      expectDamaged('no beginning');
+    });
+
+    test('a part that disagrees about how many there are is refused',
+        () async {
+      final parts = partsOf(100);
+      final lying = Uint8List.fromList(parts[1])..[3] = parts[1][3] + 1;
+      play([parts[0], lying]);
+      await settle();
+
+      expectDamaged('said it had');
+    });
+
+    test('a frame that grows past the limit is stopped, not stored', () async {
+      // 250 parts of 16 bytes is 4000: past the 3072 a frame may have, and the
+      // assembler says so at the part that crosses it instead of keeping on.
+      final parts = <Uint8List>[
+        for (var i = 0; i < 250; i++)
+          Uint8List.fromList([BleFrame.marker, 5, i, 250, ...List.filled(16, 0x41)])
+      ];
+      play(parts);
+      await settle();
+
+      expectDamaged('is past ${BleFrame.maxFrameBytes} bytes');
+    });
+
+    test('a notification that is not a part at all is refused', () async {
+      play([Uint8List.fromList([0x00, 0x01, 0x02, 0x03, 0x04])]);
+      await settle();
+
+      expectDamaged('not a part of a frame');
+    });
+
+    test('a part with a header and nothing after it is refused', () async {
+      play([Uint8List.fromList([BleFrame.marker, 1, 0, 1])]);
+      await settle();
+
+      expectDamaged('nothing after it');
+    });
+
+    test('a frame that arrives whole but is not JSON is refused', () async {
+      play(BleFrameSplitter().split(Uint8List.fromList(utf8.encode('not json')),
+          notificationBytes: 182));
+      await settle();
+
+      expectDamaged('not JSON');
+    });
+
+    test('a frame that is JSON but neither link nor serve is refused',
+        () async {
+      radio.notifyFrame('sender-1', BleGatt.metadata, '{"hello":1}');
+      await settle();
+
+      expectDamaged('neither a link nor a serve frame');
+    });
+
+    test('a serve frame without what the pull needs is refused, not dropped',
+        () async {
+      // No fingerprint: the receiver could not pin the pull, and a silent drop
+      // would leave the screen waiting for an address that never comes.
+      radio.notifyFrame('sender-1', BleGatt.metadata,
+          jsonEncode({'serve': {'ip': '10.0.0.2', 'port': 8123, 'token': 't'}}));
+      await settle();
+
+      expectDamaged('missing what a receiver needs');
+    });
+
+    test('nothing follows a refused frame: the rest of its parts say nothing',
+        () async {
+      final parts = partsOf(100);
+      play([parts[0], parts[2], ...parts.skip(3)]);
+      await settle();
+
+      expect(failures, hasLength(1));
+    });
+
+    test('a frame that never finishes is stopped by the clock, not waited for',
+        () async {
+      final timed = UniversalBleReceiverTransport(
+          frameTimeout: const Duration(milliseconds: 40));
+      addTearDown(timed.dispose);
+      final seen = <BleReceiverFailure>[];
+      timed.failures.listen(seen.add);
+      await timed.connect('sender-2', token: 'tok');
+
+      radio.notifyBytes('sender-2', BleGatt.metadata, partsOf(100).first);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      expect(seen, hasLength(1));
+      expect(seen.single.code, FailureCode.bluetoothTransferFailed);
+      expect(seen.single.message, contains('did not finish'));
+      expect(seen.single.message, contains('1 of'));
+    });
+
+    test('and a frame that does finish in time stops its clock', () async {
+      final timed = UniversalBleReceiverTransport(
+          frameTimeout: const Duration(milliseconds: 40));
+      addTearDown(timed.dispose);
+      final seen = <BleReceiverFailure>[];
+      final got = <LinkServeInfo>[];
+      timed.failures.listen(seen.add);
+      timed.serveInfos.listen(got.add);
+      await timed.connect('sender-2', token: 'tok');
+
+      radio.notifyFrame('sender-2', BleGatt.metadata,
+          jsonEncode({'serve': {'ip': '10.0.0.2', 'port': 8123, 'token': 't', 'tf': 'ff'}}),
+          notificationBytes: 20);
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+
+      expect(got, hasLength(1));
+      expect(seen, isEmpty);
     });
   });
 

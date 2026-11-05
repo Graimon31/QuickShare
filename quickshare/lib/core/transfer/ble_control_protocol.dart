@@ -87,9 +87,12 @@ class BleControlProtocol {
 
   /// Receiver → sender: "the network is up — here is how to join it, sealed".
   ///
-  /// Credentials travel at all because an Android host's network names
-  /// itself: `startLocalOnlyHotspot` picks the SSID and the passphrase, so
-  /// neither can be derived from anything the two devices already share.
+  /// Credentials travel at all because they are random: a network's name and
+  /// passphrase are drawn for it when it is raised (and an Android host's
+  /// network names itself, `startLocalOnlyHotspot` picking both), so neither can
+  /// be worked out from anything the two devices already share. They used to be
+  /// derived from a session code, which put thirty of its thirty-three bits in
+  /// the network's name.
   ///
   /// What crosses the wire is a sealed blob and nothing else. It used to be
   /// the pair itself, percent-encoded, on a characteristic with no bonding
@@ -119,10 +122,10 @@ class BleControlProtocol {
   /// Both are readable by anyone listening, and that is the point of a key
   /// exchange: what is derived from the pair never crosses the wire.
   ///
-  /// Sent even when a session code exists. The code would make a serviceable
-  /// key on the paths that have one, but a receiver may hold none — the token
-  /// can reach it only after the link is up — and one mechanism that covers
-  /// both is one fewer thing to get wrong than two.
+  /// Sent whether or not either side holds a code. A code would make a
+  /// serviceable key on the paths that have one, but a Bluetooth receiver holds
+  /// none, and one mechanism that covers both is one fewer thing to get wrong
+  /// than two.
   static const String kexPrefix = 'KEX:';
 
   static String keyExchange(String publicKey) => '$kexPrefix$publicKey';

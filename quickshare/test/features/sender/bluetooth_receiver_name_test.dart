@@ -20,7 +20,6 @@ import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
-import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/utils/either.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/features/sender/domain/repositories/sender_repository.dart';
@@ -54,7 +53,7 @@ class _AppleDriver implements DirectLinkDriver {
   @override
   Future<bool> ensureWifiReady() async => true;
   @override
-  Future<HotspotCredentials> host(SessionCode code) =>
+  Future<HotspotCredentials> host() =>
       throw UnimplementedError('canHost is false');
   @override
   Future<void> joinNetwork(HotspotCredentials credentials) async {}

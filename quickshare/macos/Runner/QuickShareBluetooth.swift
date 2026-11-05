@@ -132,6 +132,225 @@ enum BTServiceIDs {
     static let data = CBUUID(string: "E9C1F384-1D30-4B77-8B8B-9E1A7D5F6B13")
 }
 
+// MARK: - BEGIN QuickShareBleFrame
+// The same text in ios/Runner and macos/Runner (a test holds the two to it),
+// and the same format as lib/core/transfer/ble_frame.dart (a test compiles this
+// and runs it against what that produces). Change all three or none.
+
+/// How one negotiation frame crosses the metadata characteristic.
+///
+/// A notification carries at most what the two devices negotiated — the ATT MTU
+/// less three: 182 to an iPhone, 20 to a connection nobody negotiated — and the
+/// platforms cut a longer one to that and say nothing. A `link` frame with
+/// sealed credentials is 203 bytes and a `serve` frame 225, so a frame is cut
+/// into parts that each fit and the far side puts it back together:
+///
+///     byte 0   marker       0xD1 — never `{`, which bare JSON starts with
+///     byte 1   frame id     every part of one frame carries the same
+///     byte 2   part index   0-based, strictly increasing
+///     byte 3   part count   1...255, the same in every part
+///     byte 4.. payload      at least one byte
+///
+/// The channel is neither encrypted nor bonded, so anybody in range can write a
+/// part of their own: the assembler believes nothing it is not owed. Parts must
+/// arrive in order, none may repeat or be skipped, the count may not change, the
+/// whole may not outgrow `maxFrameBytes`, and a frame that has begun must end
+/// within `assemblyTimeout`. Anything else is an error that says which.
+enum QuickShareBleFrameProblem: String {
+    // The sender's, when cutting a frame up.
+    case emptyFrame, frameTooLarge, notificationTooSmall, tooManyParts
+    // The receiver's, when putting one together.
+    case unframed, notAFrame, tooShort, badHeader, orphanPart, interrupted
+    case interleaved, duplicatePart, missingPart, countChanged, tooLarge, timedOut
+}
+
+struct QuickShareBleFrameError: Error {
+    let problem: QuickShareBleFrameProblem
+    let message: String
+
+    /// Whether the sender does not cut its frames into parts at all, which only
+    /// a build from before the parts did. The one problem that says the other
+    /// side is an older version; every other is a frame damaged on the way.
+    var isOlderSender: Bool { problem == .unframed }
+}
+
+enum QuickShareBleFrame {
+    static let marker: UInt8 = 0xD1
+    static let headerBytes = 4
+    static let maxParts = 255
+    static let maxFrameBytes = 3072
+    static let maxNotificationBytes = 512
+    static let defaultNotificationBytes = 20
+    static let assemblyTimeout: TimeInterval = 10
+
+    /// Bare JSON starts with `{`; every sender of generation 4 and below sends
+    /// it so, and no framed sender starts a notification with it.
+    static func looksUnframed(_ first: UInt8) -> Bool { first == 0x7B }
+
+    /// The parts of `frame`, each at most `notificationBytes` long.
+    static func split(_ frame: Data, frameId: UInt8, notificationBytes: Int) throws -> [Data] {
+        let bytes = [UInt8](frame)
+        if bytes.isEmpty {
+            throw QuickShareBleFrameError(problem: .emptyFrame, message: "There is no frame to send.")
+        }
+        if bytes.count > maxFrameBytes {
+            throw QuickShareBleFrameError(
+                problem: .frameTooLarge,
+                message: "A \(bytes.count)-byte frame is past the \(maxFrameBytes) bytes a Bluetooth frame may have.")
+        }
+        let payload = notificationBytes - headerBytes
+        if payload < 1 {
+            throw QuickShareBleFrameError(
+                problem: .notificationTooSmall,
+                message: "A Bluetooth notification of \(notificationBytes) bytes cannot carry a part of a frame: the header alone is \(headerBytes).")
+        }
+        let count = (bytes.count + payload - 1) / payload
+        if count > maxParts {
+            throw QuickShareBleFrameError(
+                problem: .tooManyParts,
+                message: "A \(bytes.count)-byte frame needs \(count) parts of \(payload) bytes at \(notificationBytes) bytes a notification, and a frame may have \(maxParts).")
+        }
+        var parts: [Data] = []
+        for index in 0..<count {
+            let from = index * payload
+            let to = min(from + payload, bytes.count)
+            var part = Data([marker, frameId, UInt8(index), UInt8(count)])
+            part.append(contentsOf: bytes[from..<to])
+            parts.append(part)
+        }
+        return parts
+    }
+}
+
+/// Puts the parts of a frame back together. One per connection.
+///
+/// Pure: it keeps no clock. The owner starts one when `isAssembling` turns true
+/// and calls `expire()` when it runs out, so the same code runs under a test.
+///
+/// A fault is final until `reset()`: once one part is missing, repeated or not
+/// ours, the parts after it say nothing a receiver can believe, and taking each
+/// as a new fault would bury the first. Further parts are ignored.
+struct QuickShareBleFrameAssembler {
+    enum Step {
+        /// The part was taken; the frame is not finished.
+        case need
+        /// The frame is whole.
+        case frame(Data)
+    }
+
+    let maxFrameBytes: Int
+    private(set) var isAssembling = false
+    private(set) var hasFaulted = false
+    private var id: UInt8 = 0
+    private var count = 0
+    private var next = 0
+    private var bytes: [UInt8] = []
+
+    init(maxFrameBytes: Int = QuickShareBleFrame.maxFrameBytes) {
+        self.maxFrameBytes = maxFrameBytes
+    }
+
+    /// Takes one notification. Throws what is wrong with it, leaving the
+    /// assembler empty and ready for the next frame.
+    mutating func accept(_ data: Data) throws -> Step {
+        if hasFaulted { return .need }
+        let part = [UInt8](data)
+        guard let first = part.first else {
+            throw fault(.tooShort, "An empty notification arrived on the frame channel.")
+        }
+        if first != QuickShareBleFrame.marker {
+            if !isAssembling && QuickShareBleFrame.looksUnframed(first) {
+                throw fault(.unframed, "A \(part.count)-byte notification of bare JSON arrived: the sender does not cut its frames into parts.")
+            }
+            throw fault(.notAFrame, "A \(part.count)-byte notification that is not a part of a frame (it starts with 0x\(String(first, radix: 16))).")
+        }
+        if part.count <= QuickShareBleFrame.headerBytes {
+            throw fault(.tooShort, "A \(part.count)-byte part has a header and nothing after it.")
+        }
+
+        let partId = part[1]
+        let index = Int(part[2])
+        let partCount = Int(part[3])
+        if partCount == 0 || index >= partCount {
+            throw fault(.badHeader, "A part says it is number \(index) of \(partCount).")
+        }
+
+        if !isAssembling {
+            if index != 0 {
+                throw fault(.orphanPart, "Part \(index) of \(partCount) of frame \(partId) arrived with no beginning: the earlier parts were lost, or this is not from the sender.")
+            }
+            isAssembling = true
+            id = partId
+            count = partCount
+            next = 0
+            bytes = []
+        } else {
+            if partId != id {
+                if index == 0 {
+                    throw fault(.interrupted, "Frame \(partId) began while frame \(id) had \(next) of \(count) parts.")
+                }
+                throw fault(.interleaved, "Part \(index) of frame \(partId) arrived inside frame \(id).")
+            }
+            if partCount != count {
+                throw fault(.countChanged, "Frame \(id) said it had \(count) parts, and then part \(index) said \(partCount).")
+            }
+            if index < next {
+                throw fault(.duplicatePart, "Part \(index) of frame \(id) arrived twice.")
+            }
+            if index > next {
+                throw fault(.missingPart, "Part \(index) of frame \(id) arrived with part \(next) still missing: a part was lost.")
+            }
+        }
+
+        let payload = part.count - QuickShareBleFrame.headerBytes
+        if bytes.count + payload > maxFrameBytes {
+            throw fault(.tooLarge, "Frame \(id) is past \(maxFrameBytes) bytes at part \(index) of \(count).")
+        }
+        bytes.append(contentsOf: part[QuickShareBleFrame.headerBytes...])
+        next = index + 1
+
+        if next == count {
+            let frame = Data(bytes)
+            clear()
+            return .frame(frame)
+        }
+        return .need
+    }
+
+    /// The frame in progress has run out of time. Nil when none is.
+    mutating func expire() -> QuickShareBleFrameError? {
+        guard isAssembling else { return nil }
+        let error = QuickShareBleFrameError(
+            problem: .timedOut,
+            message: "Frame \(id) did not finish: \(next) of \(count) parts arrived in \(Int(QuickShareBleFrame.assemblyTimeout)) seconds.")
+        clear()
+        hasFaulted = true
+        return error
+    }
+
+    /// Forgets a frame in progress and takes back the last fault: the next part
+    /// is the first of a new stream. Nothing is reported. For a new connection.
+    mutating func reset() {
+        clear()
+        hasFaulted = false
+    }
+
+    private mutating func clear() {
+        isAssembling = false
+        id = 0
+        count = 0
+        next = 0
+        bytes = []
+    }
+
+    private mutating func fault(_ problem: QuickShareBleFrameProblem, _ message: String) -> QuickShareBleFrameError {
+        clear()
+        hasFaulted = true
+        return QuickShareBleFrameError(problem: problem, message: message)
+    }
+}
+// MARK: - END QuickShareBleFrame
+
 public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     private var eventSink: FlutterEventSink?
 
@@ -165,6 +384,198 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     /// A sender that is pushing a file over this channel is an older build.
     /// Said once: its file is thousands of notifications.
     private var reportedStaleSender = false
+
+    // MARK: Frames
+
+    /// A part of a frame waiting for the radio.
+    private struct OutgoingPart {
+        let data: Data
+        /// The Flutter call to answer once this part has gone. Only the last part of
+        /// a frame carries it, so a frame is "sent" when all of it has been.
+        let finishes: FlutterResult?
+    }
+
+    private var outbox: [OutgoingPart] = []
+    private var outboxWatchdog: Timer?
+    private var metadataCentrals: [UUID: CBCentral] = [:]
+    private var nextFrameId = UInt8.random(in: 0...255)
+
+    private var frames = QuickShareBleFrameAssembler()
+    private var frameClock: Timer?
+    private var reportedDamagedFrame = false
+
+    /// Cuts `frame` into parts that fit what the subscribed receiver can take, and
+    /// sends them in order. Answers `result` when the last has gone to the radio,
+    /// or with why it could not.
+    ///
+    /// Sent whole is not an option: a notification carries the central's
+    /// `maximumUpdateValueLength` (182 to an iPhone) and a frame that is longer is
+    /// cut by CoreBluetooth without a word.
+    private func sendFrame(_ frame: Data, _ result: @escaping FlutterResult) {
+        guard peripheralManager != nil, metadataChar != nil else {
+            result(FlutterError(code: "UNAVAILABLE", message: "no link channel is up", details: nil))
+            return
+        }
+        guard !metadataCentrals.isEmpty else {
+            result(FlutterError(code: "UNAVAILABLE", message: "the receiver is not subscribed to the frame channel", details: nil))
+            return
+        }
+        let parts: [Data]
+        do {
+            parts = try QuickShareBleFrame.split(
+                frame, frameId: nextFrameId, notificationBytes: notificationBytes())
+        } catch let error as QuickShareBleFrameError {
+            result(FlutterError(code: "FRAME", message: error.message, details: error.problem.rawValue))
+            return
+        } catch {
+            result(FlutterError(code: "FRAME", message: "\(error)", details: nil))
+            return
+        }
+        nextFrameId = nextFrameId &+ 1
+        for (index, part) in parts.enumerated() {
+            outbox.append(OutgoingPart(data: part, finishes: index == parts.count - 1 ? result : nil))
+        }
+        drainOutbox()
+    }
+
+    /// The most one notification can carry to every receiver subscribed: the least
+    /// of their limits, or what a connection nobody negotiated carries.
+    private func notificationBytes() -> Int {
+        let carried = metadataCentrals.values.map { $0.maximumUpdateValueLength }.filter { $0 > 0 }
+        guard let least = carried.min() else { return QuickShareBleFrame.defaultNotificationBytes }
+        return min(least, QuickShareBleFrame.maxNotificationBytes)
+    }
+
+    /// Hands the radio as many waiting parts as it will take, in order.
+    ///
+    /// `updateValue` answers false when the transmit queue is full. That part was
+    /// not sent and nothing behind it may be: it and every part after it stay where
+    /// they are, and `peripheralManagerIsReady` is what says to go on. Parts are
+    /// never skipped, repeated or reordered, which is the whole of what the
+    /// receiver checks.
+    private func drainOutbox() {
+        guard let manager = peripheralManager, let metadata = metadataChar else {
+            failOutbox(code: "UNAVAILABLE", message: "the link channel went away before the frame was sent")
+            return
+        }
+        while let first = outbox.first {
+            if !manager.updateValue(first.data, for: metadata, onSubscribedCentrals: nil) {
+                armOutboxWatchdog()
+                return
+            }
+            outbox.removeFirst()
+            outboxWatchdog?.invalidate()
+            outboxWatchdog = nil
+            first.finishes?(nil)
+        }
+    }
+
+    /// A radio that stays busy for ten seconds is a connection that has gone: the
+    /// frames waiting are answered with an error instead of for ever.
+    private func armOutboxWatchdog() {
+        guard outboxWatchdog == nil else { return }
+        outboxWatchdog = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+            self?.outboxWatchdog = nil
+            self?.failOutbox(code: "TIMEOUT", message: "the radio stayed busy for 10 seconds and the frame could not be sent")
+        }
+    }
+
+    /// Answers every frame still waiting with an error and forgets its parts. A
+    /// frame that went out half-way is left to the receiver, whose assembler
+    /// reports it.
+    private func failOutbox(code: String, message: String) {
+        outboxWatchdog?.invalidate()
+        outboxWatchdog = nil
+        let waiting = outbox
+        outbox.removeAll()
+        for part in waiting {
+            part.finishes?(FlutterError(code: code, message: message, details: nil))
+        }
+    }
+
+    /// One notification from the sender's metadata characteristic.
+    private func acceptFramePart(_ part: Data) {
+        // After one frame has been refused the rest of the connection is not to be
+        // believed, and reporting each part that follows would bury the first.
+        if reportedStaleSender || reportedDamagedFrame { return }
+        do {
+            switch try frames.accept(part) {
+            case .need:
+                armFrameClock()
+            case .frame(let frame):
+                disarmFrameClock()
+                handleFrame(frame)
+            }
+        } catch let fault as QuickShareBleFrameError {
+            disarmFrameClock()
+            refuseFrame(fault)
+        } catch {
+            disarmFrameClock()
+            refuseDamagedFrame("\(error)")
+        }
+    }
+
+    /// A frame that has begun has ten seconds, counted from its first part.
+    private func armFrameClock() {
+        guard frames.isAssembling, frameClock == nil else { return }
+        frameClock = Timer.scheduledTimer(withTimeInterval: QuickShareBleFrame.assemblyTimeout, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            self.frameClock = nil
+            if let fault = self.frames.expire() { self.refuseFrame(fault) }
+        }
+    }
+
+    private func disarmFrameClock() {
+        frameClock?.invalidate()
+        frameClock = nil
+    }
+
+    private func resetFrames() {
+        frames.reset()
+        disarmFrameClock()
+        reportedDamagedFrame = false
+    }
+
+    /// A whole frame. A link frame is not a file: the sender is negotiating the
+    /// Wi-Fi network the transfer will cross, and a serve frame says where on it the
+    /// file then is.
+    private func handleFrame(_ frame: Data) {
+        guard let json = try? JSONSerialization.jsonObject(with: frame) as? [String: Any] else {
+            refuseDamagedFrame("A frame of \(frame.count) bytes arrived complete but is not a JSON object.")
+            return
+        }
+        if let link = json["link"] as? [String: Any] {
+            emit(["type": "linkDirective", "link": link])
+            return
+        }
+        if let serve = json["serve"] as? [String: Any] {
+            emit(["type": "serveInfo", "serve": serve])
+            return
+        }
+        refuseDamagedFrame("A frame of \(frame.count) bytes arrived complete but is neither a link nor a serve frame.")
+    }
+
+    /// "An older version" is said when the sender's frames are not cut into parts
+    /// at all, which only a build from before the parts did. A part missing,
+    /// repeated, foreign or late is a connection having a bad time, or somebody
+    /// else's write, and updating would not help.
+    private func refuseFrame(_ fault: QuickShareBleFrameError) {
+        if fault.isOlderSender {
+            refuseStaleSender()
+        } else {
+            refuseDamagedFrame(fault.message)
+        }
+    }
+
+    /// A frame that could not be put together or read, which says nothing about the
+    /// sender's version. Said once.
+    private func refuseDamagedFrame(_ why: String) {
+        guard !reportedDamagedFrame else { return }
+        reportedDamagedFrame = true
+        emit(["type": "receiverFailed",
+              "error": "A message from the sending device was lost or damaged on the way, so the transfer could not be set up. \(why)",
+              "code": "bluetoothTransferFailed"])
+    }
 
     static func register(with registrar: FlutterPluginRegistrar) {
         let instance = QuickShareBluetoothPlugin()
@@ -222,15 +633,10 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
                 result(FlutterError(code: "BAD_ARGS", message: "frame required", details: nil))
                 return
             }
-            guard let metadata = metadataChar, let manager = peripheralManager else {
-                result(FlutterError(code: "UNAVAILABLE", message: "no link channel is up", details: nil))
-                return
-            }
-            if manager.updateValue(data, for: metadata, onSubscribedCentrals: nil) {
-                result(nil)
-            } else {
-                result(FlutterError(code: "BUSY", message: "the notification queue is full", details: nil))
-            }
+            // Cut into parts that fit the receiver and sent in order, however
+            // often the radio has to be waited for; answered when the last has
+            // gone. See sendFrame.
+            sendFrame(data, result)
 
         // The receiver's half of the negotiation: the credentials of the
         // network it raised, written back over the control characteristic.
@@ -340,6 +746,8 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     private var pendingDeviceName: String?
 
     private func stopAdvertising() {
+        failOutbox(code: "UNAVAILABLE", message: "the link channel was closed before the frame was sent")
+        metadataCentrals.removeAll()
         peripheralManager?.stopAdvertising()
         peripheralManager = nil
         controlChar = nil
@@ -407,6 +815,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         metadataSubscribed = false
         dataSubscribed = false
         reportedStaleSender = false
+        resetFrames()
         pendingControlWrites.removeAll()
         peripheral.delegate = self
 
@@ -442,6 +851,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         dataSubscribed = false
         pendingControlWrites.removeAll()
         discovered.removeAll()
+        resetFrames()
     }
 
     /// A sender that writes a file's metadata or bytes to this channel is a
@@ -489,6 +899,7 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
     public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
         if characteristic.uuid == BTServiceIDs.metadata {
             subscribedToMetadata = true
+            metadataCentrals[central.identifier] = central
         }
         if characteristic.uuid == BTServiceIDs.data {
             subscribedToData = true
@@ -498,11 +909,21 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
         if characteristic.uuid == BTServiceIDs.metadata {
-            subscribedToMetadata = false
+            metadataCentrals.removeValue(forKey: central.identifier)
+            subscribedToMetadata = !metadataCentrals.isEmpty
+            if metadataCentrals.isEmpty {
+                failOutbox(code: "UNAVAILABLE", message: "the receiver stopped listening before the frame was sent")
+            }
         }
         if characteristic.uuid == BTServiceIDs.data {
             subscribedToData = false
         }
+    }
+
+    /// The transmit queue has room again: the parts that were refused go next,
+    /// in the order they were refused.
+    public func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
+        drainOutbox()
     }
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveWrite requests: [CBATTRequest]) {
@@ -654,6 +1075,7 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
         dataSubscribed = false
         pendingControlWrites.removeAll()
         discovered.removeAll()
+        resetFrames()
 
         // Whether this matters is Dart's call: before the serve frame it ends
         // the session, after it nothing is waiting on the radio.
@@ -756,33 +1178,10 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
         guard let value = characteristic.value else { return }
 
         if characteristic.uuid == BTServiceIDs.metadata {
-            if let text = String(data: value, encoding: .utf8) {
-                if let sealed = BTControl.parseApOffer(text) {
-                    emit(["type": "apOffer", "sealed": sealed])
-                    return
-                }
-                if let key = BTControl.parseKeyExchange(text) {
-                    emit(["type": "peerKey", "key": key])
-                    return
-                }
-            }
-            // A link frame is not a file: the sender is negotiating the
-            // Wi-Fi network the transfer will actually cross (generation 4),
-            // and a serve frame says where on that network the file then is.
-            if let json = try? JSONSerialization.jsonObject(with: value) as? [String: Any] {
-                if let link = json["link"] as? [String: Any] {
-                    emit(["type": "linkDirective", "link": link])
-                    return
-                }
-                if let serve = json["serve"] as? [String: Any] {
-                    emit(["type": "serveInfo", "serve": serve])
-                    return
-                }
-            }
-            // Anything else on this characteristic is the first frame of a file
-            // from a sender that predates the direct link — or half a frame,
-            // cut by a connection that carries too little.
-            refuseStaleSender()
+            // Every notification here is a part of a frame (or something that
+            // should not be): the assembler hands back whole frames and says
+            // what is wrong with the rest.
+            acceptFramePart(value)
             return
         }
 

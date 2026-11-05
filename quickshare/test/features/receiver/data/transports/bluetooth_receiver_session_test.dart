@@ -9,7 +9,6 @@ import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/network/local_hotspot_service.dart';
 import 'package:quickshare/core/network/network_info_service.dart';
-import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/storage/gallery_formats.dart';
 import 'package:quickshare/core/storage/receive_destination.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
@@ -97,7 +96,7 @@ class _FakeDriver implements DirectLinkDriver {
   Future<void> stopPeerLink() async {}
 
   @override
-  Future<HotspotCredentials> host(SessionCode code) =>
+  Future<HotspotCredentials> host() =>
       throw UnimplementedError('canHost is false; host is never called');
 
   @override

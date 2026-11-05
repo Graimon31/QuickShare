@@ -5,6 +5,9 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import 'package:quickshare/core/storage/safe_path.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
+
 class QhtpItemState {
   final String id;
   final String path;
@@ -313,12 +316,21 @@ class SessionStateStore {
   /// already has. A path outside the directory the record claims is left out
   /// too: this feeds deletions and exemptions alike, and a malformed record
   /// must not be able to aim either somewhere else.
-  Future<List<String>> _partialPathsOf(File stateFile) async {
+  Future<List<String>> _partialPathsOf(File stateFile) async =>
+      (await _readPartials(stateFile)).paths;
+
+  /// The folder one state file was recorded for and the unfinished items'
+  /// `.qs.partial` paths under it. The folder is what a deletion has to be
+  /// checked against; see [_deletePartialsOf].
+  Future<({String? baseDir, List<String> paths})> _readPartials(
+      File stateFile) async {
     final jsonMap =
         jsonDecode(await stateFile.readAsString()) as Map<String, dynamic>;
     final baseDir = jsonMap['baseDir'] as String?;
     final items = jsonMap['items'] as Map<String, dynamic>? ?? {};
-    if (baseDir == null || baseDir.isEmpty) return const [];
+    if (baseDir == null || baseDir.isEmpty) {
+      return (baseDir: null, paths: const <String>[]);
+    }
 
     final paths = <String>[];
     for (final raw in items.values) {
@@ -337,21 +349,40 @@ class SessionStateStore {
       }
       paths.add(partial);
     }
-    return paths;
+    return (baseDir: baseDir, paths: paths);
   }
 
   /// Removes the `.qs.partial` files belonging to one expired state file.
   ///
   /// Completed items are deliberately left alone — those are files the user
-  /// asked for and already has.
+  /// asked for and already have.
+  ///
+  /// The names are lexically inside the destination the record names, and that
+  /// says nothing about what is on disk there now: a folder between the
+  /// destination and a partial may since have become a link, and `File.delete`
+  /// on a name under it removes the file of that name wherever the link leads.
+  /// So each one goes through [SafePath.discard], which looks at every folder
+  /// above it first; one that is not what it should be leaves the file where it
+  /// is, with a line in the log. The bytes counted as freed are only those of a
+  /// plain file that was removed — never what a link pointed at.
   Future<int> _deletePartialsOf(File stateFile) async {
     var reclaimed = 0;
     try {
-      for (final path in await _partialPathsOf(stateFile)) {
-        final partial = File(path);
-        if (!await partial.exists()) continue;
-        reclaimed += await partial.length();
-        await partial.delete();
+      final record = await _readPartials(stateFile);
+      final baseDir = record.baseDir;
+      if (baseDir == null) return 0;
+      for (final path in record.paths) {
+        final type = FileSystemEntity.typeSync(path, followLinks: false);
+        if (type == FileSystemEntityType.notFound) continue;
+        final size =
+            type == FileSystemEntityType.file ? File(path).lengthSync() : 0;
+        if (SafePath.discard(baseDir, path)) {
+          reclaimed += size;
+        } else {
+          AppLogger.warning(
+              'The expired session at ${stateFile.path} left "$path" in place',
+              tag: 'DISK');
+        }
       }
     } catch (e) {
       debugPrint('Could not clean partials for ${stateFile.path}: $e');

@@ -9,9 +9,13 @@
 // Android reporting a failed advertisement on a stream rather than by
 // throwing.
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart' show fail;
 import 'package:universal_ble/universal_ble.dart';
+
+import 'package:quickshare/core/transfer/ble_frame.dart';
 
 /// One characteristic as the sender registered it.
 class FakeGattCharacteristic {
@@ -126,6 +130,32 @@ class FakeBlePeripheral extends UniversalBlePeripheralPlatform {
       notifications.where(
           (n) => BleUuidParser.compareStrings(n.characteristicId, characteristic));
 
+  /// The frames the notifications on [characteristic] made up, whole, as text,
+  /// in the order they were completed.
+  ///
+  /// Negotiation frames cross as parts (see `BleFrame`); this puts them back
+  /// together the way a receiver does, with the receiver's own assembler. A
+  /// frame still being sent — its last part not yet notified — is not in the
+  /// list. A notification that is not a well-formed part of a frame fails the
+  /// test where it is read, with why.
+  List<String> framesOn(String characteristic) {
+    final frames = <String>[];
+    final assembler = BleFrameAssembler(
+      onFrame: (frame) => frames.add(utf8.decode(frame)),
+      onFault: (fault) => fail('A notification on $characteristic is not a '
+          'well-formed part of a frame: ${fault.message}'),
+    );
+    for (final n in notificationsOn(characteristic)) {
+      assembler.add(n.value);
+    }
+    assembler.dispose();
+    return frames;
+  }
+
+  /// The parts [notificationsOn] has for [characteristic], as plain bytes.
+  List<Uint8List> partsOn(String characteristic) =>
+      [for (final n in notificationsOn(characteristic)) n.value];
+
   // ── platform ──────────────────────────────────────────────────────────
 
   @override
@@ -230,8 +260,14 @@ class FakeBlePeripheral extends UniversalBlePeripheralPlatform {
     required Uint8List value,
     String? deviceId,
   }) async {
-    notifications.add(FakeNotification(characteristicId, value, deviceId));
+    final n = FakeNotification(characteristicId, value, deviceId);
+    notifications.add(n);
+    onNotification?.call(n);
   }
+
+  /// Called for each notification as it is asked for, for a test that cares
+  /// when.
+  void Function(FakeNotification notification)? onNotification;
 
   @override
   Future<List<String>> getSubscribedClients(String characteristicId) async =>
@@ -326,6 +362,20 @@ class FakeBleCentral extends UniversalBlePlatform {
   void notify(String deviceId, String characteristic, String text) =>
       updateCharacteristicValue(deviceId, characteristic,
           Uint8List.fromList(text.codeUnits), null);
+
+  final BleFrameSplitter _frameSplitter = BleFrameSplitter(firstId: 0);
+
+  /// The sender notifies [text] as one negotiation frame: cut into parts that
+  /// each fit [notificationBytes] (an iPhone's 182 unless a test says another
+  /// connection) and notified in order, the way a current sender does.
+  void notifyFrame(String deviceId, String characteristic, String text,
+      {int notificationBytes = 182}) {
+    for (final part in _frameSplitter.split(
+        Uint8List.fromList(utf8.encode(text)),
+        notificationBytes: notificationBytes)) {
+      updateCharacteristicValue(deviceId, characteristic, part, null);
+    }
+  }
 
   /// The sender notifies raw bytes.
   void notifyBytes(String deviceId, String characteristic, List<int> bytes) =>

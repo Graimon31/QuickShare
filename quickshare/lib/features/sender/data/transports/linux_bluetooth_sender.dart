@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:dbus/dbus.dart';
+import 'package:flutter/foundation.dart';
 
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/core/transfer/ble_frame.dart';
 
 /// [error] is English and technical; [code] is the same fact as a
 /// `FailureCode`, where this bridge decided it rather than caught it.
@@ -43,6 +46,13 @@ class LinuxBluetoothSender {
 
   String? _token;
 
+  /// The ATT MTU the receiver's connection negotiated, as BlueZ last reported
+  /// it (see [mtuOfWrite]). Null until a write has said.
+  int? _peerMtu;
+
+  /// Numbers this session's frames; see [notifyLinkFrame].
+  BleFrameSplitter _splitter = BleFrameSplitter();
+
   /// What the receiver said it can take, from its `CAPS:` write. Null means
   /// it never sent one — a build that predates the direct link.
   int? _peerGeneration;
@@ -63,6 +73,8 @@ class LinuxBluetoothSender {
   }) async {
     await stop();
     _peerGeneration = null;
+    _peerMtu = null;
+    _splitter = BleFrameSplitter();
     _token = token;
     _onStatus = onStatus;
     _onApOffer = onApOffer;
@@ -90,9 +102,13 @@ class LinuxBluetoothSender {
         servicePath: servicePath,
         uuid: controlUuid,
         flags: const ['write', 'write-without-response'],
-        onWrite: (bytes) async {
+        onWrite: (bytes, mtu) async {
           // Returns false to refuse the write; BlueZ turns that into an ATT
           // error for the peer, which is the only way this side can say no.
+
+          // The MTU the connection ended up with, which is what bounds a
+          // notification back. The latest answer wins: it can be renegotiated.
+          if (mtu != null) _peerMtu = mtu;
 
           final command = utf8.decode(bytes, allowMalformed: true);
           // Always ahead of START, so it is on record before the decision
@@ -231,12 +247,73 @@ class LinuxBluetoothSender {
   }
 
   /// Pushes a negotiation frame — `{"link": …}` or `{"serve": …}` — to the
-  /// connected receiver as a metadata notification.
+  /// connected receiver as metadata notifications, cut into parts that each fit
+  /// the connection (see [BleFrame]).
+  ///
+  /// What a notification carries is the negotiated ATT MTU less three, and the
+  /// stack that sends it cuts a longer one to that without a word. BlueZ does
+  /// not offer the MTU of a notification's own connection to a service
+  /// registered over D-Bus (`AcquireNotify` would, but returns a file
+  /// descriptor this client cannot read), so it is taken from the `mtu` option
+  /// BlueZ puts on every write the receiver makes — which it has made several of
+  /// (CAPS, KEX, START) before the first frame goes out. Without one it is
+  /// [BleFrame.defaultNotificationBytes].
+  ///
+  /// There is no way to ask BlueZ to wait: each part is a `PropertiesChanged`
+  /// signal for `Value`, and the daemon sends them in the order it receives them
+  /// on the bus. Called from [BluetoothTransferTransport], which lets one frame
+  /// finish before the next begins.
   Future<void> notifyLinkFrame(Map<String, Object?> frame) async {
-    final metadataCharacteristic = _metadata;
-    if (metadataCharacteristic == null || _stopping) return;
-    await metadataCharacteristic.setValue(utf8.encode(jsonEncode(frame)));
+    if (_stopping) return;
+    final emit = debugEmit ?? _metadata?.setValue;
+    if (emit == null) return;
+    final bytes = Uint8List.fromList(utf8.encode(jsonEncode(frame)));
+    final parts =
+        _splitter.split(bytes, notificationBytes: notificationBytes(_peerMtu));
+    for (final part in parts) {
+      if (_stopping) return;
+      await emit(part);
+    }
   }
+
+  /// What one notification carries on a connection whose MTU is [mtu], or on
+  /// one nobody has reported: the MTU less the three bytes of ATT header, never
+  /// more than an attribute value can be, and the least a connection carries
+  /// when there is no answer.
+  @visibleForTesting
+  static int notificationBytes(int? mtu) {
+    if (mtu == null || mtu <= 3) return BleFrame.defaultNotificationBytes;
+    return math.min(mtu - 3, BleFrame.maxNotificationBytes);
+  }
+
+  /// The ATT MTU in the options of a `WriteValue` call, when BlueZ gave one.
+  ///
+  /// Options are `a{sv}`; BlueZ has put `mtu` (a `q`, "Exchanged MTU") in them
+  /// for the server side since 5.50. Anything else — a dictionary without it, a
+  /// value of another type, no dictionary — is "not said".
+  @visibleForTesting
+  static int? mtuOfWrite(List<DBusValue> arguments) {
+    if (arguments.length < 2) return null;
+    try {
+      for (final entry in arguments[1].asDict().entries) {
+        if (entry.key.asString() == 'mtu') {
+          return entry.value.asVariant().asUint16();
+        }
+      }
+    } catch (_) {
+      // Not a dictionary of variants, or not a number: not said.
+    }
+    return null;
+  }
+
+  /// Where a part goes instead of the characteristic, for a test that has no
+  /// D-Bus to put it on.
+  @visibleForTesting
+  Future<void> Function(Uint8List part)? debugEmit;
+
+  /// The MTU a write reported, set by hand in a test.
+  @visibleForTesting
+  set debugPeerMtu(int? mtu) => _peerMtu = mtu;
 
   /// The session is fully dressed — the receiver's notifications are up and
   /// its START has arrived — so the session may begin.
@@ -309,6 +386,7 @@ class LinuxBluetoothSender {
     _advertisement = null;
     _token = null;
     _peerGeneration = null;
+    _peerMtu = null;
     _onStatus = null;
     _onApOffer = null;
     _onPeerKey = null;
@@ -366,7 +444,7 @@ class _GattService extends _GattObject {
 
 /// Handles one write. False refuses it, which BlueZ answers as an ATT error
 /// for the peer; true accepts.
-typedef _GattWriteHandler = Future<bool> Function(List<int> value);
+typedef _GattWriteHandler = Future<bool> Function(List<int> value, int? mtu);
 typedef _GattNotifyHandler = Future<void> Function(bool notifying);
 
 class _GattCharacteristic extends _GattObject {
@@ -413,8 +491,9 @@ class _GattCharacteristic extends _GattObject {
         if (onWrite == null || methodCall.values.isEmpty) {
           return DBusMethodErrorResponse.unknownMethod();
         }
-        final accepted =
-            await onWrite!(methodCall.values.first.asByteArray().toList());
+        final accepted = await onWrite!(
+            methodCall.values.first.asByteArray().toList(),
+            LinuxBluetoothSender.mtuOfWrite(methodCall.values));
         if (!accepted) {
           // BlueZ maps this to insufficient authentication for the peer —
           // the same answer Apple's bridges give, and the same one Android

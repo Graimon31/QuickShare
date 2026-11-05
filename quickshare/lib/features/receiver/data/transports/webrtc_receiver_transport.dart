@@ -900,7 +900,8 @@ class WebRtcReceiverTransport {
   /// inside the staging folder that became a link is unlinked by the recursive
   /// delete, not entered. When the chain above it is not what it should be the
   /// folder stays and the log says why — it is debris, and stays until the
-  /// startup sweep (top level of the destination) or the person removes it.
+  /// startup sweep (which does not enter a link either) or the person removes
+  /// it.
   ///
   /// Never throws: the failure being reported is the one the person sees.
   Future<void> _discardStagedRoot(String staged) async {
