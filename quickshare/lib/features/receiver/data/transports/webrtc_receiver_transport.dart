@@ -879,27 +879,50 @@ class WebRtcReceiverTransport {
     _currentFile = null;
     await file?.abort();
     if (_folderMode && _stagedRoot != null) {
-      // Looked at without following links. A link standing where the staging
-      // folder was is removed as a link; nothing is deleted through it.
-      final type = FileSystemEntity.typeSync(_stagedRoot!, followLinks: false);
       if (_keptStagedRoot == _stagedRoot) {
         // Complete, and the only copy: see [_keptStagedRoot].
-      } else if (type == FileSystemEntityType.link) {
-        try {
-          await Link(_stagedRoot!).delete();
-        } catch (_) {}
-      } else if (type == FileSystemEntityType.directory) {
-        try {
-          await Directory(_stagedRoot!).delete(recursive: true);
-        } catch (_) {}
+        return;
       }
+      await _discardStagedRoot(_stagedRoot!);
     } else if (_targetPath != null) {
-      final partial = File('$_targetPath$kPartialSuffix');
-      if (partial.existsSync()) {
-        try {
-          await partial.delete();
-        } catch (_) {}
+      // Not `File(...).existsSync()` and `delete()`: both follow a link in any
+      // folder above the file, and a folder swapped for one while the transfer
+      // ran made this remove a same-named file from wherever it pointed.
+      SafePath.discard(_baseDir, '$_targetPath$kPartialSuffix');
+    }
+  }
+
+  /// Removes the staging folder of a folder session that did not finish.
+  ///
+  /// Looked at without following links, and every folder between the
+  /// destination and it checked first. A link standing where the staging folder
+  /// was is removed as a link, and nothing is deleted through it; a folder
+  /// inside the staging folder that became a link is unlinked by the recursive
+  /// delete, not entered. When the chain above it is not what it should be the
+  /// folder stays and the log says why — it is debris, and stays until the
+  /// startup sweep (top level of the destination) or the person removes it.
+  ///
+  /// Never throws: the failure being reported is the one the person sees.
+  Future<void> _discardStagedRoot(String staged) async {
+    try {
+      SafePath.assertNoLinksBelow(
+          _baseDir.isEmpty ? p.dirname(staged) : _baseDir, staged);
+      final type = FileSystemEntity.typeSync(staged, followLinks: false);
+      if (type == FileSystemEntityType.link) {
+        await Link(staged).delete();
+      } else if (type == FileSystemEntityType.directory) {
+        await Directory(staged).delete(recursive: true);
       }
+    } on UnsafePathException catch (e) {
+      AppLogger.warning(
+          'Left the staging folder "$staged" in place instead of deleting '
+          'it: ${e.reason}. Nothing outside the destination was touched',
+          tag: 'DISK');
+    } catch (e) {
+      AppLogger.warning(
+          'Could not remove the staging folder "$staged": $e — it stays '
+          'where it is',
+          tag: 'DISK');
     }
   }
 

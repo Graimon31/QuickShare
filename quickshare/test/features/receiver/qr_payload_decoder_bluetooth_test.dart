@@ -12,7 +12,7 @@ void main() {
   test('decodes Bluetooth QR payload with metadata into QRPayload', () {
     const bt = BluetoothQrPayload(
       token: 'session-bt-999',
-      publicId: 'cid-pub-123',
+      locator: 'ABCD2345',
       fileName: 'VacationFolder',
       fileSize: 10485760,
       itemCount: 5,
@@ -23,7 +23,7 @@ void main() {
 
     expect(payload.mode, QRPayloadDecoder.bluetoothMode);
     expect(payload.token, 'session-bt-999');
-    expect(payload.sessionId, 'cid-pub-123');
+    expect(payload.sessionId, 'ABCD2345');
     expect(payload.fileName, 'VacationFolder');
     expect(payload.fileSize, 10485760);
     expect(payload.itemCount, 5);

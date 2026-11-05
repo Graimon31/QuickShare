@@ -73,7 +73,7 @@ class BluetoothReceiverSession {
 
   Future<BluetoothReceiverSessionResult> run({
     required String token,
-    required String publicId,
+    required String locator,
     required ReceiveDestination destination,
     required void Function(int received, int total, String fileName) onProgress,
     required void Function() onVerifying,
@@ -213,11 +213,11 @@ class BluetoothReceiverSession {
       // The negotiation starts once the handshake is done, not beside it: its
       // first act is a write to the sender, and a write to a device whose
       // services are not discovered yet is a write that fails.
-      unawaited(_negotiate(fail));
+      unawaited(_negotiate(fail, locator));
     });
 
     try {
-      await _transport.startScanning(sessionToken: token, publicId: publicId);
+      await _transport.startScanning(sessionToken: token, locator: locator);
     } catch (e) {
       fail('Failed to start scanning for Bluetooth sender: $e');
     }
@@ -228,7 +228,8 @@ class BluetoothReceiverSession {
   /// Settles with the sender which of them raises the Wi-Fi network, and
   /// joins or raises it. The file is pulled afterwards, when the serve frame
   /// says where.
-  Future<void> _negotiate(void Function(String, {String? code}) fail) async {
+  Future<void> _negotiate(
+      void Function(String, {String? code}) fail, String locator) async {
     try {
       final outcome = await DirectLinkCoordinator(
         driver: _driver,
@@ -243,7 +244,7 @@ class BluetoothReceiverSession {
           }
           return false;
         },
-      ).runReceiver(null);
+      ).runReceiver(sessionId: locator);
 
       if (_cancelled || _completed) return;
       switch (outcome) {

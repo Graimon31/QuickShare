@@ -51,7 +51,7 @@ class _FakeBleReceiver implements BleReceiver {
   Stream<BleReceiverFailure> get failures => _failureController.stream;
 
   @override
-  Future<void> startScanning({String? sessionToken, String? publicId}) async {}
+  Future<void> startScanning({String? sessionToken, String? locator}) async {}
 
   @override
   Future<void> stopScanning() async {}
@@ -173,7 +173,7 @@ void main() {
 
     final running = session.run(
       token: 'token',
-      publicId: 'public',
+      locator: 'public',
       destination: await cacheDestination(),
       onProgress: (_, __, ___) {},
       onVerifying: () {},
@@ -213,7 +213,7 @@ void main() {
 
     final running = session.run(
       token: 'token',
-      publicId: 'public',
+      locator: 'public',
       destination: dest,
       onProgress: (_, __, ___) {},
       onVerifying: () {},
@@ -251,7 +251,7 @@ void main() {
     unawaited(session
         .run(
           token: 'token',
-          publicId: 'public',
+          locator: 'public',
           destination: await cacheDestination(),
           onProgress: (_, __, ___) {},
           onVerifying: () {},
@@ -284,7 +284,7 @@ void main() {
             BluetoothReceiverSession session) async =>
         session.run(
           token: 'token',
-          publicId: 'public',
+          locator: 'public',
           destination: await cacheDestination(),
           onProgress: (_, __, ___) {},
           onVerifying: () {},
@@ -352,7 +352,7 @@ void main() {
               preferredResultPath: dest.path, displayName: 'a.bin')));
       final running = session.run(
         token: 'token',
-        publicId: 'public',
+        locator: 'public',
         destination: dest,
         onProgress: (_, __, ___) {},
         onVerifying: () {},

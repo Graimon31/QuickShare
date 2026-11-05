@@ -70,6 +70,18 @@ abstract interface class DirectLinkDriver {
 /// can, otherwise the receiver does" — but a sender that *should* host and
 /// fails (an adapter that will not act as an access point) redelegates with
 /// the same message, so the receiver never has to know why it was asked.
+///
+/// ## What is not in it
+///
+/// **Nothing derived from a session code.** This frame crosses an unencrypted,
+/// unbonded characteristic, so anybody who can see the connection reads it.
+/// Until generation 5 it carried the code's ten digits, so that a receiver that
+/// had scanned a QR (which holds a token and a locator, not the digits) could
+/// work out the same value the sender sealed against and name a network it was
+/// asked to raise. That put the whole code in a packet: from it follow the
+/// session token, the network's name and its passphrase. The seal is bound to
+/// the locator the QR carries instead, which both sides already hold, and a
+/// receiver that is asked to raise a network names it with a code of its own.
 class DirectLinkDirective {
   final bool receiverHosts;
 
@@ -85,24 +97,16 @@ class DirectLinkDirective {
   /// rendezvous took that rung. Non-null only for [DirectLinkDirective.overPeerLink].
   final String? peerLinkService;
 
-  /// The session code's ten digits, carried so a receiver that connected
-  /// without them — a Bluetooth QR carries the token and the public
-  /// identifier, not the digits — can still name a network it is asked to
-  /// raise after the session it belongs to.
-  final String? codeDigits;
-
   /// The sender raised the network itself. The credentials ride along sealed
   /// — even when they could be derived from the session code — so the joiner
   /// never has to guess at a network that is not there yet.
   const DirectLinkDirective.hostBySender({
     required String sealedCredentials,
     required String senderPublicKey,
-    String? codeDigits,
   }) : this._(
             receiverHosts: false,
             sealedCredentials: sealedCredentials,
-            senderPublicKey: senderPublicKey,
-            codeDigits: codeDigits);
+            senderPublicKey: senderPublicKey);
 
   /// Neither device can raise a network, and both are Apple: the sender put
   /// the session on a peer-to-peer Wi-Fi link instead, and the receiver joins
@@ -111,26 +115,18 @@ class DirectLinkDirective {
   const DirectLinkDirective.overPeerLink({
     required String serviceName,
     String? senderPublicKey,
-    String? codeDigits,
   }) : this._(
             receiverHosts: false,
             peerLinkService: serviceName,
-            senderPublicKey: senderPublicKey,
-            codeDigits: codeDigits);
+            senderPublicKey: senderPublicKey);
 
   /// The receiver has to raise it — the sender cannot (iPhone, Mac), or
   /// tried and failed.
-  const DirectLinkDirective.hostByReceiver({
-    String? senderPublicKey,
-    String? codeDigits,
-  }) : this._(
-            receiverHosts: true,
-            senderPublicKey: senderPublicKey,
-            codeDigits: codeDigits);
+  const DirectLinkDirective.hostByReceiver({String? senderPublicKey})
+      : this._(receiverHosts: true, senderPublicKey: senderPublicKey);
 
   const DirectLinkDirective._({
     required this.receiverHosts,
-    required this.codeDigits,
     this.sealedCredentials,
     this.senderPublicKey,
     this.peerLinkService,
@@ -143,14 +139,22 @@ class DirectLinkDirective {
         if (sealedCredentials != null) 'sealed': sealedCredentials,
         if (senderPublicKey != null) 'kex': senderPublicKey,
         if (peerLinkService != null) 'service': peerLinkService,
-        if (codeDigits != null) 'code': codeDigits,
       };
 
+  /// Whether [json] came from a sender of generation 4 or below.
+  ///
+  /// Those senders put the code's digits in every directive (`code`), so the
+  /// field is how they are recognised — at no cost to the frame, which matters:
+  /// the directive that carries sealed credentials is already close to what an
+  /// iPhone's notification holds. A receiver refuses such a directive
+  /// outright and says so, instead of acting on it: what it seals is bound to a
+  /// value this build does not work out, so nothing in it would open, and the
+  /// negotiation would run out its whole budget before saying anything. And a
+  /// frame that is still putting the code on the air is not one to continue.
+  static bool fromOlderGeneration(Map<String, Object?> json) =>
+      json.containsKey('code');
+
   static DirectLinkDirective? fromJson(Map<String, Object?> json) {
-    final codeDigits = json['code'];
-    final digits = codeDigits is String && codeDigits.isNotEmpty
-        ? codeDigits
-        : null;
     final kex = json['kex'];
     final senderKey = kex is String && kex.isNotEmpty ? kex : null;
     switch (json['host']) {
@@ -158,12 +162,9 @@ class DirectLinkDirective {
         final service = json['service'];
         if (service is! String || service.isEmpty) return null;
         return DirectLinkDirective.overPeerLink(
-            serviceName: service,
-            senderPublicKey: senderKey,
-            codeDigits: digits);
+            serviceName: service, senderPublicKey: senderKey);
       case 'receiver':
-        return DirectLinkDirective.hostByReceiver(
-            senderPublicKey: senderKey, codeDigits: digits);
+        return DirectLinkDirective.hostByReceiver(senderPublicKey: senderKey);
       case 'sender':
         final sealed = json['sealed'];
         if (sealed is! String || sealed.isEmpty) return null;
@@ -171,9 +172,7 @@ class DirectLinkDirective {
         // so a directive missing it is not one.
         if (senderKey == null) return null;
         return DirectLinkDirective.hostBySender(
-            sealedCredentials: sealed,
-            senderPublicKey: senderKey,
-            codeDigits: digits);
+            sealedCredentials: sealed, senderPublicKey: senderKey);
       default:
         return null;
     }
@@ -391,11 +390,25 @@ class DirectLinkCoordinator {
   /// or failed to, and put the session on a peer-to-peer link when neither
   /// device can raise a network at all.
   ///
+  /// [code] names the network this device raises, if it does, and goes no
+  /// further: nothing sent to the other device is derived from it.
+  ///
+  /// [sessionId] is what the sealed credentials are bound to. It has to be a
+  /// value both devices hold without anything about [code] having crossed the
+  /// air — the locator in the QR the receiver scanned. It is not secret (an
+  /// Apple or Linux sender advertises it) and does not have to be: it only
+  /// has to make credentials sealed for one session useless in another. The
+  /// peer-to-peer link's Bonjour name is made from it for the same reason.
+  ///
   /// [servingPort] is where this device is already serving the session. It is
   /// what the peer-to-peer rung forwards to, and without it that rung is
   /// skipped — there would be nothing on the other end of the link.
   Future<DirectLinkOutcome> runSender(SessionCode code,
-      {int? servingPort}) async {
+      {required String sessionId, int? servingPort}) async {
+    if (sessionId.isEmpty) {
+      throw ArgumentError.value(sessionId, 'sessionId',
+          'a session without one cannot bind what it seals to anything');
+    }
     if (!await driver.ensureWifiReady()) {
       return const DirectLinkUnavailable(
           'Wi-Fi is turned off. The transfer builds a direct Wi-Fi link '
@@ -423,11 +436,10 @@ class DirectLinkCoordinator {
               sealedCredentials: await secret.seal(
                 ssid: creds.ssid,
                 passphrase: creds.passphrase,
-                sessionId: code.publicId,
+                sessionId: sessionId,
                 peerPublicKey: peerKey,
               ),
-              senderPublicKey: secret.publicKey,
-              codeDigits: code.code));
+              senderPublicKey: secret.publicKey));
           if (await _probe()) {
             return DirectLinkReady(credentials: creds, hosting: true);
           }
@@ -444,11 +456,11 @@ class DirectLinkCoordinator {
     // a lost BLE write costs a round, not the session.
     for (var round = 0; round < offerRounds; round++) {
       await signal.sendDirective(DirectLinkDirective.hostByReceiver(
-          senderPublicKey: secret.publicKey, codeDigits: code.code));
+          senderPublicKey: secret.publicKey));
       final sealed = await _firstFrom(signal.apOffers, apOfferTimeout);
       if (sealed == null) continue;
       final offer = await secret.open(
-          sealed: sealed, sessionId: code.publicId, peerPublicKey: peerKey);
+          sealed: sealed, sessionId: sessionId, peerPublicKey: peerKey);
       // A frame that will not open is somebody else's, or stale, or being
       // probed at: the round is spent, the session is not.
       if (offer == null) continue;
@@ -468,14 +480,15 @@ class DirectLinkCoordinator {
     // other rung was tried and nobody offered" is the evidence it uses
     // instead. A receiver that cannot join simply lets the directive pass.
     if (servingPort != null && driver.canPeerLink) {
-      final name = PeerLinkService.serviceNameFor(code.sessionToken);
+      // Made from the locator, not from anything the code or the token holds:
+      // a Bonjour name is announced to the whole network and is read in the
+      // directive below, and neither may be searchable for the code.
+      final name = PeerLinkService.serviceNameFor(sessionId);
       for (var attempt = 0; attempt < hostAttempts; attempt++) {
         try {
           await driver.hostPeerLink(name, servingPort);
           await signal.sendDirective(DirectLinkDirective.overPeerLink(
-              serviceName: name,
-              senderPublicKey: secret.publicKey,
-              codeDigits: code.code));
+              serviceName: name, senderPublicKey: secret.publicKey));
           return const DirectLinkOverPeerLink(hosting: true);
         } on Error {
           rethrow;
@@ -502,12 +515,19 @@ class DirectLinkCoordinator {
   /// pass leaves this device listening for the rung that does reach it, which
   /// between two Apple devices is the peer-to-peer link.
   ///
-  /// [code] is nullable because a receiver can arrive without one — a scanned
-  /// Bluetooth QR carries the token, not the digits. Hosting needs it only to
-  /// name the network; when neither the caller nor the directive carries
-  /// one, a throwaway code names it instead, since the actual credentials
-  /// travel in the offer either way.
-  Future<DirectLinkOutcome> runReceiver([SessionCode? code]) async {
+  /// [sessionId] is the locator in the QR that was scanned, the same value the
+  /// sender binds what it seals to. [code] is nullable because a receiver
+  /// arrives without one — a scanned Bluetooth QR carries a token and a
+  /// locator, not digits, and nothing sends it any. Hosting needs one only to
+  /// name the network; when the caller has none, a throwaway code names it
+  /// instead, since the actual credentials travel in the offer either way. It
+  /// is not the sender's code and has nothing to do with it.
+  Future<DirectLinkOutcome> runReceiver(
+      {required String sessionId, SessionCode? code}) async {
+    if (sessionId.isEmpty) {
+      throw ArgumentError.value(sessionId, 'sessionId',
+          'a session without one cannot bind what it opens to anything');
+    }
     if (!await driver.ensureWifiReady()) {
       return const DirectLinkUnavailable(
           'Wi-Fi is turned off. The transfer builds a direct Wi-Fi link '
@@ -545,7 +565,8 @@ class DirectLinkCoordinator {
           if (pending.isEmpty) break;
         }
         heardAnything = true;
-        final outcome = await _actOn(pending.removeAt(0), code, secret);
+        final outcome =
+            await _actOn(pending.removeAt(0), code, secret, sessionId);
         if (outcome != null) return outcome;
       }
     } finally {
@@ -566,7 +587,7 @@ class DirectLinkCoordinator {
   /// One proposal. Null means "this device could not take that one" — the
   /// caller keeps listening rather than declaring the session dead.
   Future<DirectLinkOutcome?> _actOn(DirectLinkDirective directive,
-      SessionCode? code, LinkSecret secret) async {
+      SessionCode? code, LinkSecret secret, String sessionId) async {
     final peerLinkService = directive.peerLinkService;
     if (peerLinkService != null) {
       if (!driver.canPeerLink) return null;
@@ -587,12 +608,6 @@ class DirectLinkCoordinator {
     final peerKey = directive.senderPublicKey;
     if (peerKey == null) return null;
 
-    // Names this negotiation for the seal. Both sides derive it from the same
-    // digits; a receiver that has none takes the sender's word for it, which
-    // is the only thing binding the frame to a session at all on that path.
-    final sessionId =
-        code?.publicId ?? _sessionIdFrom(directive.codeDigits) ?? '';
-
     if (!directive.receiverHosts) {
       final sealed = directive.sealedCredentials;
       if (sealed == null) return null;
@@ -609,11 +624,7 @@ class DirectLinkCoordinator {
     // between two Apple devices, and it is not an answer this side can give.
     if (!driver.canHost) return null;
 
-    final naming = code ??
-        (directive.codeDigits != null
-            ? SessionCode.parse(directive.codeDigits!)
-            : null) ??
-        SessionCode.generate();
+    final naming = code ?? SessionCode.generate();
     for (var attempt = 0; attempt < hostAttempts; attempt++) {
       final creds = await _tryHost(naming);
       if (creds != null) {
@@ -633,14 +644,6 @@ class DirectLinkCoordinator {
       await Future<void>.delayed(retryPause);
     }
     return null;
-  }
-
-  /// The session's public identifier, derived from digits the directive
-  /// carried. Null when it carried none — an empty name still binds both
-  /// sides to the same value, which is all the seal needs of it.
-  static String? _sessionIdFrom(String? codeDigits) {
-    if (codeDigits == null || codeDigits.isEmpty) return null;
-    return SessionCode.parse(codeDigits)?.publicId;
   }
 
   /// One hosting attempt. Null means the ladder should climb, not stop: the

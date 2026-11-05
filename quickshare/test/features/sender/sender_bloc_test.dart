@@ -19,6 +19,52 @@ import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 
 class MockSenderRepository extends Mock implements SenderRepository {}
 
+/// How long a test waits for something it is certain will happen before it
+/// says so. This is not a delay anything depends on: a test that finds what it
+/// waits for goes on at once, and one that never does fails with a sentence
+/// instead of hanging until the runner's own limit.
+const _patience = Duration(seconds: 20);
+
+/// The first state of type [S] that [bloc] emits from here on, once [where]
+/// accepts it.
+///
+/// Call it *before* the thing that causes the state: the stream is a
+/// broadcast one, so a state emitted while nobody listens is gone.
+///
+/// The tests below used to wait a fixed 20 or 30 milliseconds after each step
+/// and then read what the bloc had written to disk. A bloc does not wait for
+/// its handlers when it closes (`Bloc.close` cancels the emitters, which
+/// completes their futures at once), so a report whose write took longer than
+/// the last of those pauses was read before it existed — an empty history —
+/// and one that landed late was written into the *next* test's folder. Waiting
+/// for the state a handler ends on has neither problem: `TransferComplete`,
+/// `SenderError` and `SenderInitial` are emitted only after the report is on
+/// disk.
+Future<S> _next<S extends SenderState>(SenderBloc bloc,
+        {bool Function(S state)? where}) =>
+    bloc.stream
+        .where((state) => state is S && (where?.call(state) ?? true))
+        .cast<S>()
+        .first
+        .timeout(_patience,
+            onTimeout: () => throw TimeoutException(
+                'no $S state came from the bloc within $_patience'));
+
+/// Starts a Wi-Fi send and returns once the offer is on screen: the server is
+/// up, the progress listener is subscribed and a progress event will be seen.
+Future<void> _startWifiSend(SenderBloc bloc) async {
+  final shown = _next<QRReady>(bloc);
+  bloc.add(const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
+  await shown;
+}
+
+/// A future for "the bloc has made this call", to be completed from inside a
+/// stub: waiting for the call itself instead of for a pause long enough that it
+/// has surely happened.
+Future<void> _within(Future<void> event) => event.timeout(_patience,
+    onTimeout: () =>
+        throw TimeoutException('the call never came within $_patience'));
+
 class _MockLocalHotspotService extends Mock implements LocalHotspotService {}
 
 /// Stands in for the native side and remembers whether it was asked to host.
@@ -291,8 +337,13 @@ void main() {
     late StreamController<double> progress;
 
     setUp(() {
-      diagDir = Directory.systemTemp.createTempSync('quickshare_diag_test_');
-      diagnostics = TransferDiagnostics(overrideDir: () => diagDir);
+      // Bound to the folder made *here*, not to the variable that the next
+      // test's setUp reassigns: a report written late by one test used to
+      // land in the following test's folder and be read there as its own.
+      final folder =
+          Directory.systemTemp.createTempSync('quickshare_diag_test_');
+      diagDir = folder;
+      diagnostics = TransferDiagnostics(overrideDir: () => folder);
       peerLink = _RecordingPeerLink();
       progress = StreamController<double>.broadcast();
       when(() => mockRepository.transferProgress)
@@ -341,13 +392,16 @@ void main() {
         return SenderBloc(repository: mockRepository, diagnostics: diagnostics);
       },
       act: (bloc) async {
-        bloc.add(
-            const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        // Each step waits for the state the bloc reaches because of the one
+        // before. `TransferComplete` is emitted after the report is written,
+        // so by the time it is seen the history can be read.
+        await _startWifiSend(bloc);
+        final moving = _next<Transferring>(bloc);
         progress.add(0.4);
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await moving;
+        final done = _next<TransferComplete>(bloc);
         progress.add(1.0);
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await done;
       },
       verify: (_) async {
         final recorded = await diagnostics.recent();
@@ -384,13 +438,15 @@ void main() {
               repository: mockRepository, diagnostics: diagnostics);
         },
         act: (bloc) async {
-          bloc.add(
-              const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
-          await Future<void>.delayed(const Duration(milliseconds: 30));
+          await _startWifiSend(bloc);
+          // The progress has been seen when the bloc shows it. Nothing is
+          // reported before that, so the failure below cannot overtake it.
+          final moving = _next<Transferring>(bloc);
           progress.add(progressFraction);
-          await Future<void>.delayed(const Duration(milliseconds: 30));
+          await moving;
+          final ended = _next<SenderError>(bloc);
           bloc.add(const TransferFailed('connection lost'));
-          await Future<void>.delayed(const Duration(milliseconds: 30));
+          await ended;
         },
         verify: (_) async {
           final recorded = await diagnostics.recent();
@@ -424,11 +480,11 @@ void main() {
           peerLinkService: peerLink,
         );
       },
-      act: (bloc) async {
-        bloc.add(
-            const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
-        await Future<void>.delayed(const Duration(milliseconds: 20));
-      },
+      // The offer on screen is the end of the start-up: the server is up and
+      // the QR is built, and a link raised on the way would have been raised
+      // before it. Nothing more is going to happen, so there is nothing more
+      // to wait for.
+      act: _startWifiSend,
       verify: (_) async {
         expect(peerLink.hosted, isEmpty,
             reason: 'the QR names the LAN address and that is the only route '
@@ -463,15 +519,15 @@ void main() {
         return SenderBloc(repository: mockRepository, diagnostics: diagnostics);
       },
       act: (bloc) async {
-        bloc.add(
-            const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await _startWifiSend(bloc);
+        final done = _next<TransferComplete>(bloc);
         progress.add(1.0);
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await done;
       },
       verify: (_) async {
-        final report = (await diagnostics.recent()).first;
-        expect(report.route, TransferRoute.directWifiLink);
+        final recorded = await diagnostics.recent();
+        expect(recorded, isNotEmpty);
+        expect(recorded.first.route, TransferRoute.directWifiLink);
       },
     );
 
@@ -507,19 +563,22 @@ void main() {
             hotspotService: hotspot);
       },
       act: (bloc) async {
-        bloc.add(
-            const StartQhtpSend(['/tmp/whatever'], mode: TransportType.wifi));
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await _startWifiSend(bloc);
         // A receiver has to have actually started pulling bytes for this to
         // count as a transfer worth recording — an untouched QR the user
         // dismisses is not a failed transfer, it is a change of mind.
+        final moving = _next<Transferring>(bloc);
         progress.add(0.2);
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await moving;
+        // The screen goes back to the start only after the record is filed.
+        final over = _next<SenderInitial>(bloc);
         bloc.add(CancelSending());
-        await Future<void>.delayed(const Duration(milliseconds: 20));
+        await over;
       },
       verify: (_) async {
-        final report = (await diagnostics.recent()).first;
+        final recorded = await diagnostics.recent();
+        expect(recorded, isNotEmpty);
+        final report = recorded.first;
         expect(report.succeeded, isFalse);
         expect(report.peerAddress, '192.168.1.77');
       },
@@ -527,8 +586,11 @@ void main() {
 
     test('guest teardown invokes leaveNetwork on cancel', () async {
       final mockHotspot = _MockLocalHotspotService();
+      final left = Completer<void>();
       when(() => mockHotspot.stopHosting()).thenAnswer((_) async {});
-      when(() => mockHotspot.leaveNetwork()).thenAnswer((_) async {});
+      when(() => mockHotspot.leaveNetwork()).thenAnswer((_) async {
+        if (!left.isCompleted) left.complete();
+      });
 
       final bloc = SenderBloc(
         repository: mockRepository,
@@ -539,7 +601,7 @@ void main() {
       expect(bloc.joinedAsGuestForTesting, isTrue);
 
       bloc.add(CancelSending());
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await _within(left.future);
 
       expect(bloc.joinedAsGuestForTesting, isFalse);
       verify(() => mockHotspot.leaveNetwork()).called(1);
@@ -549,8 +611,11 @@ void main() {
     test('guest teardown invokes leaveNetwork on completion and failure',
         () async {
       final mockHotspot = _MockLocalHotspotService();
+      var left = Completer<void>();
       when(() => mockHotspot.stopHosting()).thenAnswer((_) async {});
-      when(() => mockHotspot.leaveNetwork()).thenAnswer((_) async {});
+      when(() => mockHotspot.leaveNetwork()).thenAnswer((_) async {
+        if (!left.isCompleted) left.complete();
+      });
 
       final bloc = SenderBloc(
         repository: mockRepository,
@@ -559,14 +624,15 @@ void main() {
 
       bloc.setJoinedAsGuestForTesting(true);
       bloc.add(TransferCompleted());
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await _within(left.future);
 
       expect(bloc.joinedAsGuestForTesting, isFalse);
       verify(() => mockHotspot.leaveNetwork()).called(1);
 
+      left = Completer<void>();
       bloc.setJoinedAsGuestForTesting(true);
       bloc.add(const TransferFailed('failed'));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await _within(left.future);
 
       expect(bloc.joinedAsGuestForTesting, isFalse);
       verify(() => mockHotspot.leaveNetwork()).called(1);
@@ -574,8 +640,11 @@ void main() {
     });
 
     test('auto-declines invite approval when state is not QRReady', () async {
+      final declined = Completer<void>();
       when(() => mockRepository.respondToApproval(any(), any()))
-          .thenReturn(null);
+          .thenAnswer((_) {
+        if (!declined.isCompleted) declined.complete();
+      });
 
       final bloc = SenderBloc(
         repository: mockRepository,
@@ -590,7 +659,7 @@ void main() {
       );
 
       bloc.add(InviteApprovalReceived(req));
-      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await _within(declined.future);
 
       verify(() => mockRepository.respondToApproval('test-req-id', false))
           .called(1);

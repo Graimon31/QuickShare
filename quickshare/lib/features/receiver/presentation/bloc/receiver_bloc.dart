@@ -747,7 +747,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
 
       final result = await session.run(
         token: payload.token,
-        publicId: payload.sessionId ?? '',
+        locator: payload.sessionId ?? '',
         destination: dest,
         onProgress: (received, total, fileName) {
           if (attempt != _transferAttempt) return;

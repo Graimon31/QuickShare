@@ -284,7 +284,7 @@ void main() {
         UniversalBle.setInstance(FakeBleCentral());
         final transport = BluetoothTransferTransport();
         await transport.initialize();
-        await transport.startSharing(file, 'tok', publicId: 'ABCD1234');
+        await transport.startSharing(file, 'tok', locator: 'ABCD1234');
 
         final advert = radio.advertised.single;
         expect(advert.services.map(BleUuidParser.string),
@@ -329,7 +329,7 @@ void main() {
         UniversalBle.setInstance(FakeBleCentral());
         final transport = BluetoothTransferTransport();
         transport.initialize().then((_) => transport
-            .startSharing(file, 'tok', publicId: 'ABCD1234')
+            .startSharing(file, 'tok', locator: 'ABCD1234')
             .then<void>((_) => results.add('started'),
                 onError: (Object e) =>
                     results.add(e is BluetoothRadioException ? 'error' : '$e')));

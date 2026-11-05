@@ -162,7 +162,7 @@ void main() {
     void sessionFails(Object error) {
       when(() => session.run(
             token: any(named: 'token'),
-            publicId: any(named: 'publicId'),
+            locator: any(named: 'locator'),
             destination: any(named: 'destination'),
             onProgress: any(named: 'onProgress'),
             onVerifying: any(named: 'onVerifying'),

@@ -10,8 +10,8 @@ import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 void main() {
   group('capabilities', () {
     test('a receiver announces the generation it understands', () {
-      expect(BleControlProtocol.capabilities(), equals('CAPS:4'));
-      expect(BleControlProtocol.parseCapabilities('CAPS:4'), equals(4));
+      expect(BleControlProtocol.capabilities(), equals('CAPS:5'));
+      expect(BleControlProtocol.parseCapabilities('CAPS:5'), equals(5));
     });
 
     test('START is not mistaken for an announcement', () {
@@ -40,7 +40,18 @@ void main() {
     // checking its length. The softer rule this replaced — no folder to an
     // old peer, but one file to anyone — is gone with it.
     test('a peer that announced this generation is sent to', () {
-      expect(BleControlProtocol.peerSupportsDirectLink(4), isTrue);
+      expect(BleControlProtocol.peerSupportsDirectLink(5), isTrue);
+    });
+
+    test('a generation-4 peer is refused, at once and with a reason', () {
+      // It negotiates the direct link, but it binds what it seals and opens to
+      // a value worked out from the code's digits — digits this build no longer
+      // puts on the air — so nothing either side sends the other would open.
+      // Refused at START, with the update it needs, instead of letting both
+      // sit out the negotiation's budget and fail without saying why.
+      expect(BleControlProtocol.peerSupportsDirectLink(4), isFalse);
+      expect(BleControlProtocol.directLinkRequiredMessage, contains('Update'));
+      expect(BleControlProtocol.senderTooOldMessage, contains('Update'));
     });
 
     test('a newer peer is not refused for being newer', () {
@@ -166,13 +177,16 @@ void main() {
 
   group('the direct-link generation', () {
     test('a peer from this generation on can take part', () {
-      expect(BleControlProtocol.peerSupportsDirectLink(4), isTrue);
+      expect(BleControlProtocol.peerSupportsDirectLink(5), isTrue);
       expect(BleControlProtocol.peerSupportsDirectLink(7), isTrue);
     });
 
     test('a peer below it cannot, whatever it could once do', () {
-      // Generation 4 is where the bytes left this radio: a peer that only
-      // knows the old way gets told to update, not sent the file slowly.
+      // Generation 4 is where the bytes left this radio and generation 5 is
+      // where the code's digits left the frames: a peer that only knows an
+      // older way gets told to update, not negotiated with in a language only
+      // one of them speaks.
+      expect(BleControlProtocol.peerSupportsDirectLink(4), isFalse);
       expect(BleControlProtocol.peerSupportsDirectLink(3), isFalse);
       expect(BleControlProtocol.peerSupportsDirectLink(null), isFalse);
     });

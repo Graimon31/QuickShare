@@ -56,7 +56,7 @@ class LinuxBluetoothSender {
 
   Future<void> start(
     String token, {
-    String publicId = '',
+    String locator = '',
     required LinuxBluetoothStatus onStatus,
     LinuxBluetoothApOffer? onApOffer,
     LinuxBluetoothPeerKey? onPeerKey,
@@ -184,7 +184,7 @@ class LinuxBluetoothSender {
         DBusObjectPath('/com/directdrop/app_advertisement/instance'),
         serviceUuid: serviceUuid,
         localName:
-            'QuickShare-${publicId.isNotEmpty ? publicId : 'directdrop'}',
+            'QuickShare-${locator.isNotEmpty ? locator : 'directdrop'}',
       );
       _advertisement = advertisement;
       await bus.registerObject(advertisementRoot);

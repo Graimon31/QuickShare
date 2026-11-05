@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 
 /// The GATT layout and the advertisement every platform agrees on.
 ///
@@ -37,15 +38,45 @@ class BleAdvertisement {
   /// The local name starts with this when it carries a session locator.
   static const String namePrefix = 'QuickShare-';
 
-  /// The local name for a session whose public identifier is [publicId].
+  /// How many characters a locator has.
+  static const int locatorLength = 8;
+
+  /// The alphabet a locator is spelled in: Crockford's Base32 without `I`, `L`,
+  /// `O` and `U`. Thirty-two symbols, so a random index is a uniform one.
+  static const String _locatorAlphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+  /// A fresh locator for one session: [locatorLength] characters from a
+  /// cryptographic source, forty bits, **related to nothing**.
   ///
-  /// Carries the identifier and never the token or any slice of it. That is
-  /// not the same as safe: the identifier is a locator that can be searched
-  /// for the code (see `SessionCode.publicId`), which is why Android and
-  /// Windows senders do not broadcast it at all — see
-  /// `BluetoothTransferTransport.advertisedLocalName`.
-  static String nameFor(String publicId) =>
-      '$namePrefix${publicId.isNotEmpty ? publicId : 'directdrop'}';
+  /// This is what goes in the advertised name (Apple and Linux senders) and in
+  /// the QR the receiver scans, and that is the whole of its job: a receiver
+  /// that was shown the QR picks this sender out of several by it. It is not
+  /// derived from the session's code, its token, its network name or anything
+  /// else, so reading it off the air tells a listener nothing they could search
+  /// for — there is nothing for it to be searched against. The value that used
+  /// to be advertised here, `SessionCode.publicId`, was forty bits of a hash
+  /// over a space of about thirty-three: anybody in range could try all ten
+  /// billion codes against it in seconds and keep the one that matched.
+  ///
+  /// A new one for every session, which means every time the code changes.
+  static String newLocator([Random? random]) {
+    final source = random ?? Random.secure();
+    final buffer = StringBuffer();
+    for (var i = 0; i < locatorLength; i++) {
+      buffer.write(_locatorAlphabet[source.nextInt(_locatorAlphabet.length)]);
+    }
+    return buffer.toString();
+  }
+
+  /// The local name for a session whose locator is [locator].
+  ///
+  /// Carries the locator and never the token or any slice of it. The locator is
+  /// random and public by design (see [newLocator]) — which is also why
+  /// Android and Windows senders can leave it off the air without losing
+  /// anything: it does not authenticate, the `START:<token>` write after the
+  /// connection does. See `BluetoothTransferTransport.startSharing`.
+  static String nameFor(String locator) =>
+      '$namePrefix${locator.isNotEmpty ? locator : 'directdrop'}';
 
   /// Bytes in a legacy (Bluetooth 4.x) advertising packet or scan response.
   static const int legacyPacketLimit = 31;
@@ -56,7 +87,7 @@ class BleAdvertisement {
   /// flags for a connectable advertisement, then two bytes of header per field
   /// plus the field. This is what the old Android code got wrong — a 128-bit
   /// service UUID is 18 bytes and `QuickShare-` plus an eight-character
-  /// identifier is 21, which together with the flags is 42, and the platform
+  /// locator is 21, which together with the flags is 42, and the platform
   /// answers `ADVERTISE_FAILED_DATA_TOO_LARGE`.
   static int legacyPrimaryPacketBytes({
     bool connectable = true,
@@ -69,7 +100,7 @@ class BleAdvertisement {
     return size;
   }
 
-  /// Whether a receiver looking for the session with [publicId] (or, for a QR
+  /// Whether a receiver looking for the session with [locator] (or, for a QR
   /// from a build that carried none, [sessionToken]) connects to a peripheral
   /// that advertises [advertisedName].
   ///
@@ -84,17 +115,17 @@ class BleAdvertisement {
   /// (`didDiscover`); the contract test pins them to it.
   static bool accepts({
     String? advertisedName,
-    String? publicId,
+    String? locator,
     String? sessionToken,
   }) {
     final name = advertisedName ?? '';
     if (!name.startsWith(namePrefix)) return true;
-    if (publicId != null && publicId.isNotEmpty) {
-      return name.contains(publicId);
+    if (locator != null && locator.isNotEmpty) {
+      return name.contains(locator);
     }
     if (sessionToken != null && sessionToken.isNotEmpty) {
-      // Builds that predate the public identifier advertised a slice of the
-      // token. Only read here, never written.
+      // Builds that predate the locator advertised a slice of the token. Only
+      // read here, never written.
       final end = sessionToken.length < 8 ? sessionToken.length : 8;
       return name.contains(sessionToken.substring(0, end));
     }

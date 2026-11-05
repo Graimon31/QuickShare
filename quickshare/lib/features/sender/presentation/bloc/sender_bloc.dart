@@ -26,6 +26,7 @@ import 'package:quickshare/core/network/network_info_service.dart';
 import 'package:quickshare/core/network/peer_link_service.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/network/session_rotation.dart';
+import 'package:quickshare/core/transfer/ble_session.dart';
 import 'package:quickshare/features/sender/data/server/local_http_server.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
 import 'package:quickshare/core/signaling/code_mailbox.dart';
@@ -329,30 +330,33 @@ class BluetoothAdvertising extends SenderState {
   /// being flattened into an archive to fit this channel.
   final int itemCount;
 
-  /// The short numeric code for this session, for a receiver with no camera
-  /// pointed at the QR. Its public half is what this device advertises.
-  final SessionCode? code;
+  /// This session's locator: random, drawn for it alone, and the same one the
+  /// QR carries. It is what an Apple or Linux device advertises as its name;
+  /// an Android phone or a Windows PC advertises nothing. It is not a code, is
+  /// derived from no code, and is shown to nobody — there are no digits on a
+  /// Bluetooth screen, only the QR.
+  final String locator;
 
-  /// When the code and QR above are replaced, and the advertisement restarted
-  /// under the new code.
+  /// When the QR above is replaced, and the advertisement restarted under a new
+  /// locator and a new token.
   final DateTime? expiresAt;
 
   const BluetoothAdvertising(this.session,
       {required this.qrData,
       this.itemCount = 1,
-      this.code,
+      this.locator = '',
       this.expiresAt});
 
   BluetoothAdvertising withItemCount(int count) => BluetoothAdvertising(
         session,
         qrData: qrData,
         itemCount: count,
-        code: code,
+        locator: locator,
         expiresAt: expiresAt,
       );
 
   @override
-  List<Object?> get props => [session, qrData, itemCount, code, expiresAt];
+  List<Object?> get props => [session, qrData, itemCount, locator, expiresAt];
 }
 
 class Transferring extends SenderState {
@@ -445,6 +449,19 @@ class SenderError extends SenderState {
 }
 
 // BLoC
+/// What one Bluetooth session is made of, held while the link is negotiated.
+///
+/// [ids] is what the radio carries and the QR hands over: a random locator and a
+/// random token, related to nothing. [networkCode] names the Wi-Fi network this
+/// device raises if it is the one that does, and is not sent to the other device
+/// at all.
+class _BluetoothSession {
+  const _BluetoothSession({required this.ids, required this.networkCode});
+
+  final BleSession ids;
+  final SessionCode networkCode;
+}
+
 class SenderBloc extends Bloc<SenderEvent, SenderState> {
   final SenderRepository repository;
   StreamSubscription<double>? _progressSubscription;
@@ -498,9 +515,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// is connected and the link-building may begin.
   StreamSubscription<void>? _receiverReadySubscription;
 
-  /// The code the live Bluetooth session advertises, kept for the link
-  /// negotiation that follows the receiver's arrival.
-  SessionCode? _bluetoothSessionCode;
+  /// The live Bluetooth session's values, kept for the link negotiation that
+  /// follows the receiver's arrival.
+  _BluetoothSession? _bluetoothSession;
 
   /// One negotiation per session — [BluetoothTransferTransport.receiverReady]
   /// can fire again on a reconnect, and a second coordinator would raise a
@@ -1254,17 +1271,22 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         }
       });
 
-      // One code decides the session: the token that authorises the transfer
-      // and the identifier that goes out over the air are both derived from
-      // the same ten digits, so somebody who was read them can take the
-      // transfer without a QR code and without anything else travelling
-      // between the two devices. The local network no longer works this way
-      // — there the code only earns a request and the token is independent
-      // — which also means this path is as strong as ten digits that anyone
-      // in radio range can search for, and no stronger.
-      final sessionCode = SessionCode.generate();
-      final token = sessionCode.sessionToken;
-      _bluetoothSessionCode = sessionCode;
+      // Three values that have nothing to do with one another. The token that
+      // authorises the transfer and the locator that goes out over the air are
+      // random and independent; the code only names the Wi-Fi network this
+      // device raises, if it is the one that does, and is never sent.
+      //
+      // They used to be one thing: the token and the identifier were both
+      // hashes of the same ten digits, so everything the radio carries — the
+      // advertised name, the `START:<token>` write, the serve frame — could be
+      // searched backwards for the digits (about 33 bits, seconds of hashing),
+      // and the digits derive the network's name and passphrase. A Bluetooth
+      // session has no digits to type, so nothing needs them to be related.
+      // Each time the code changes (every few minutes) all three are new.
+      final ids = BleSession.generate();
+      final token = ids.token;
+      _bluetoothSession =
+          _BluetoothSession(ids: ids, networkCode: SessionCode.generate());
       _directLinkStarted = false;
       // Bounded, because there is no way out of the screen this runs
       // behind except killing the app. Raising an advertisement is a radio
@@ -1273,7 +1295,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       // spinner turning until the app was force-quit.
       await _activeBluetoothTransport!
           .startSharing(file, token,
-              files: _sessionFiles ?? [file], publicId: sessionCode.publicId)
+              files: _sessionFiles ?? [file], locator: ids.locator)
           .timeout(_bluetoothStartBudget);
       // The direct-link negotiation starts the moment a generation-4
       // receiver is connected — the Bluetooth channel is the rendezvous,
@@ -1301,14 +1323,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _makeDummySession(displayFile),
         qrData: BluetoothQrPayload(
           token: token,
-          publicId: sessionCode.publicId,
+          locator: ids.locator,
           fileName: displayFile.name,
           fileSize: displayFile.size,
           itemCount: totalCount,
           senderName: describeThisDevice(),
         ).encode(),
         itemCount: totalCount,
-        code: sessionCode,
+        locator: ids.locator,
         expiresAt: _newExpiry(),
       ));
     } catch (e) {
@@ -1547,18 +1569,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
     try {
       final transport = _activeBluetoothTransport;
-      final code = _bluetoothSessionCode;
+      final bt = _bluetoothSession;
       final paths = _currentPaths;
       // Every exit below this line used to be a bare `return`. A Bluetooth
       // transfer that stopped here left a spinner turning and a journal with
       // nothing in it — the same silence as a receiver that was never found,
       // which is a different problem entirely. Whichever piece went missing
       // is the whole diagnosis, so it is named.
-      if (transport == null || code == null || paths == null || paths.isEmpty) {
+      if (transport == null || bt == null || paths == null || paths.isEmpty) {
         AppLogger.warning(
             'Bluetooth rendezvous abandoned before it started: '
             '${transport == null ? 'no transport' : ''}'
-            '${code == null ? ' no session code' : ''}'
+            '${bt == null ? ' no session' : ''}'
             '${paths == null || paths.isEmpty ? ' nothing selected' : ''}',
             tag: 'SENDER');
         return;
@@ -1577,7 +1599,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       // to the one device it exists to serve.
       final started = await repository.startQhtpTransfer(
         paths,
-        authToken: code.sessionToken,
+        authToken: bt.ids.token,
         // This screen already knows the counts — `expandSelection` walked the
         // same selection before the radio started advertising — so only the
         // two facts it does not have are wired up: the real size for the
@@ -1618,7 +1640,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         offerRounds: isApplePeer ? 0 : 1,
         apOfferTimeout: const Duration(milliseconds: 1200),
         retryPause: const Duration(milliseconds: 200),
-      ).runSender(code, servingPort: session.serverPort);
+      ).runSender(bt.networkCode,
+          sessionId: bt.ids.locator, servingPort: session.serverPort);
 
       // The session may have been cancelled while the ladder climbed.
       if (!identical(transport, _activeBluetoothTransport)) {
@@ -1672,7 +1695,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           'serve': LinkServeInfo(
             ip: ip,
             port: session.serverPort,
-            token: code.sessionToken,
+            token: bt.ids.token,
             tlsFingerprint: fingerprint,
             fileName: displayFile?.name ?? '',
             fileSize: totalBytes,
@@ -2055,7 +2078,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _statusSubscription = null;
     _progressSubscription?.cancel();
     _progressSubscription = null;
-    _bluetoothSessionCode = null;
+    _bluetoothSession = null;
     final old = _activeBluetoothTransport;
     _activeBluetoothTransport = null;
     try {
@@ -2171,7 +2194,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _receiverReadySubscription = null;
     unawaited(_noPathSubscription?.cancel());
     _noPathSubscription = null;
-    _bluetoothSessionCode = null;
+    _bluetoothSession = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -2323,7 +2346,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _receiverReadySubscription = null;
     await _noPathSubscription?.cancel();
     _noPathSubscription = null;
-    _bluetoothSessionCode = null;
+    _bluetoothSession = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;
@@ -2373,7 +2396,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     _receiverReadySubscription = null;
     await _noPathSubscription?.cancel();
     _noPathSubscription = null;
-    _bluetoothSessionCode = null;
+    _bluetoothSession = null;
     await _closeAnswerChannel();
     await _activeWebRtcTransport?.stopSharing();
     _activeWebRtcTransport = null;

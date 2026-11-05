@@ -92,10 +92,10 @@ class UniversalBleReceiverTransport {
   String? _targetDeviceId;
   String? _sessionToken;
 
-  /// The session's public identifier, which is what an Apple or Linux sender
-  /// advertises. Android and Windows senders advertise none; see
+  /// The session's locator, which is what an Apple or Linux sender advertises.
+  /// Android and Windows senders advertise none; see
   /// [BleAdvertisement.accepts].
-  String? _publicId;
+  String? _locator;
   bool _cancelled = false;
   bool _failedReported = false;
 
@@ -103,19 +103,19 @@ class UniversalBleReceiverTransport {
   ///
   /// The scan is filtered to [BleGatt.service], so every device that arrives
   /// is a DirectDrop sender. Among those, one that advertises a `QuickShare-`
-  /// name has to carry this session's identifier; one that advertises none is
+  /// name has to carry this session's locator; one that advertises none is
   /// accepted, because the Windows and Android senders cannot (see
   /// [BleAdvertisement.accepts]).
-  Future<void> startScanning({String? sessionToken, String? publicId}) async {
+  Future<void> startScanning({String? sessionToken, String? locator}) async {
     _sessionToken = sessionToken;
-    _publicId = publicId;
+    _locator = locator;
 
     await UniversalBle.requestPermissions(withAndroidFineLocation: false);
 
     _scanSub = UniversalBle.scanStream.listen((device) {
       if (BleAdvertisement.accepts(
         advertisedName: device.name,
-        publicId: _publicId,
+        locator: _locator,
         sessionToken: _sessionToken,
       )) {
         _devicesController.add(device);
@@ -257,6 +257,14 @@ class UniversalBleReceiverTransport {
     if (decoded is Map<String, dynamic>) {
       final link = decoded['link'];
       if (link is Map<String, dynamic>) {
+        // A sender of generation 4 or below, still putting the code's digits
+        // in the frame. Refused here, at the first frame, with the update it
+        // needs: nothing it seals would open, and the negotiation would only
+        // say so after running out its whole budget.
+        if (DirectLinkDirective.fromOlderGeneration(link)) {
+          _failSenderTooOld();
+          return;
+        }
         final directive = DirectLinkDirective.fromJson(link);
         if (directive != null) _linkDirectiveController.add(directive);
         return;
@@ -280,9 +288,7 @@ class UniversalBleReceiverTransport {
   }
 
   void _failSenderTooOld() => _fail(
-        'The sending device is on an older version that sends files over '
-        'Bluetooth itself. This version receives them over a direct Wi-Fi '
-        'link only. Update the sending device.',
+        BleControlProtocol.senderTooOldMessage,
         FailureCode.senderTooOldForDirectLink,
       );
 

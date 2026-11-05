@@ -136,15 +136,14 @@ class DurableFile {
       await raf?.close();
     } catch (_) {}
     if (_committedPath != null) return;
-    try {
-      // Whatever is at this path now — a file, or a link someone put there —
-      // goes: `delete` unlinks a link, it never reaches the target.
-      final type = FileSystemEntity.typeSync(partialPath, followLinks: false);
-      if (type == FileSystemEntityType.file ||
-          type == FileSystemEntityType.link) {
-        await File(partialPath).delete();
-      }
-    } catch (_) {}
+    // Whatever is at this path now — a file, or a link someone put there —
+    // goes: a link is unlinked, its target is never reached. But only if no
+    // folder above it has become a link in the meantime: the delete would
+    // follow it and remove a file of that name from wherever it points. When
+    // one has, the file stays, the log says so, and this still returns
+    // normally — the caller is reporting an error of its own, and a failed
+    // cleanup must not replace it. See [SafePath.discard].
+    SafePath.discard(_root, partialPath);
   }
 }
 

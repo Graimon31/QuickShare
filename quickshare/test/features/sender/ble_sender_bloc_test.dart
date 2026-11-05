@@ -205,7 +205,9 @@ void main() {
 
         expect(radio.advertised, hasLength(1));
         final qr = BluetoothQrPayload.tryDecode(offer.qrData)!;
-        expect(qr.token, offer.code!.sessionToken);
+        expect(qr.locator, offer.locator,
+            reason: 'the state and the QR name the same session');
+        expect(qr.locator, isNotEmpty);
         // The radio answers to this session's token and to no other.
         expect(
             radio
@@ -221,15 +223,20 @@ void main() {
         expect(radio.advertised, hasLength(1));
 
         final second = b.stream
-            .firstWhere((s) => s is BluetoothAdvertising && s.code != first.code)
+            .firstWhere(
+                (s) => s is BluetoothAdvertising && s.locator != first.locator)
             .timeout(const Duration(seconds: 20));
         clock = clock.add(const Duration(minutes: 6));
         b.add(OfferResumed());
         final rotated = await second as BluetoothAdvertising;
 
         expect(rotated.qrData, isNot(first.qrData));
-        expect(BluetoothQrPayload.tryDecode(rotated.qrData)!.token,
-            rotated.code!.sessionToken);
+        final firstQr = BluetoothQrPayload.tryDecode(first.qrData)!;
+        final rotatedQr = BluetoothQrPayload.tryDecode(rotated.qrData)!;
+        expect(rotatedQr.locator, rotated.locator);
+        expect(rotatedQr.locator, isNot(firstQr.locator),
+            reason: 'a new locator every time the code changes');
+        expect(rotatedQr.token, isNot(firstQr.token));
         expect(radio.stopAdvertisingCalls, greaterThanOrEqualTo(1),
             reason: 'the old advertisement was left running');
         expect(radio.advertised, hasLength(2),
@@ -240,13 +247,13 @@ void main() {
         expect(
             radio
                 .write('phone', BleGatt.control,
-                    BleControlProtocol.start(rotated.code!.sessionToken))
+                    BleControlProtocol.start(rotatedQr.token))
                 ?.status,
             isNull);
         expect(
             radio
                 .write('phone', BleGatt.control,
-                    BleControlProtocol.start(first.code!.sessionToken))
+                    BleControlProtocol.start(firstQr.token))
                 ?.status,
             BleControlProtocol.attInsufficientAuthentication,
             reason: 'a receiver holding the old QR must not get in');
@@ -306,7 +313,8 @@ void main() {
       radio.subscribe('phone', BleGatt.metadata);
       radio.subscribe('phone', BleGatt.data);
       radio.write('phone', BleGatt.control,
-          BleControlProtocol.start(offer.code!.sessionToken));
+          BleControlProtocol.start(
+              BluetoothQrPayload.tryDecode(offer.qrData)!.token));
     }
 
     List<Map<String, Object?>> frames() => [

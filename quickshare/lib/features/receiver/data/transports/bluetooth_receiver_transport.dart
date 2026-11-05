@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
+import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'ble_receiver_failure.dart';
 import 'universal_ble_receiver_transport.dart';
@@ -39,7 +40,7 @@ abstract interface class BleReceiver {
   /// matters is the session's call — after the serve frame, none does.
   Stream<BleReceiverFailure> get failures;
 
-  Future<void> startScanning({String? sessionToken, String? publicId});
+  Future<void> startScanning({String? sessionToken, String? locator});
   Future<void> stopScanning();
 
   /// Connects to [deviceId] and starts the handshake. [token] authorises the
@@ -143,7 +144,7 @@ class BluetoothReceiverTransport implements BleReceiver {
   // -------------------------------------------------------------------------
 
   @override
-  Future<void> startScanning({String? sessionToken, String? publicId}) async {
+  Future<void> startScanning({String? sessionToken, String? locator}) async {
     _eventSub ??= _events.receiveBroadcastStream().listen(
           _handleEvent,
           onError: (Object e) =>
@@ -152,10 +153,11 @@ class BluetoothReceiverTransport implements BleReceiver {
     try {
       await _method.invokeMethod('startScanning', {
         if (sessionToken != null) 'sessionToken': sessionToken,
-        // What the sender actually advertises. Matching on the token's first
-        // characters is what earlier builds did, and it only worked because
-        // the sender was broadcasting part of its own secret.
-        if (publicId != null && publicId.isNotEmpty) 'publicId': publicId,
+        // What the sender actually advertises: the session's random locator,
+        // which the QR carries. Matching on the token's first characters is
+        // what earlier builds did, and it only worked because the sender was
+        // broadcasting part of its own secret.
+        if (locator != null && locator.isNotEmpty) 'locator': locator,
       });
     } on MissingPluginException {
       throw Exception('Bluetooth is unavailable in this build.');
@@ -192,8 +194,17 @@ class BluetoothReceiverTransport implements BleReceiver {
       case 'linkDirective':
         final link = map['link'];
         if (link is Map) {
-          final directive = DirectLinkDirective.fromJson(
-              Map<String, Object?>.from(link));
+          final json = Map<String, Object?>.from(link);
+          // A sender of generation 4 or below, still putting the code's digits
+          // in the frame: refused at the first frame with the update it needs,
+          // not after the negotiation has run out its budget.
+          if (DirectLinkDirective.fromOlderGeneration(json)) {
+            _failureController.add(const BleReceiverFailure(
+                BleControlProtocol.senderTooOldMessage,
+                FailureCode.senderTooOldForDirectLink));
+            break;
+          }
+          final directive = DirectLinkDirective.fromJson(json);
           if (directive != null) _linkDirectiveController.add(directive);
         }
         break;
@@ -268,8 +279,8 @@ class _UniversalBleReceiverAdapter implements BleReceiver {
   Stream<BleReceiverFailure> get failures => _inner.failures;
 
   @override
-  Future<void> startScanning({String? sessionToken, String? publicId}) =>
-      _inner.startScanning(sessionToken: sessionToken, publicId: publicId);
+  Future<void> startScanning({String? sessionToken, String? locator}) =>
+      _inner.startScanning(sessionToken: sessionToken, locator: locator);
 
   @override
   Future<void> stopScanning() => _inner.stopScanning();

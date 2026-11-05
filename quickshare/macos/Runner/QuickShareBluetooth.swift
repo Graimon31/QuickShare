@@ -32,7 +32,11 @@ enum BTControl {
     /// 3 — START must carry the session token; a bare START is refused.
     /// 4 — the direct-link generation: the file never travels this channel;
     /// after the rendezvous the two devices raise a Wi-Fi link of their own.
-    static let generation = 4
+    /// 5 — nothing derived from a session code goes on the air: the link
+    /// directive carries no digits, the sealed credentials are bound to the
+    /// locator in the QR, and the token and locator are random. A generation-4
+    /// peer cannot take part; see `BleControlProtocol.generation` in Dart.
+    static let generation = 5
 
     static func capabilities() -> String { "CAPS:\(generation)" }
 
@@ -88,12 +92,13 @@ enum BTControl {
         return key
     }
 
-    /// Shown when a receiver below generation 4 asks for a transfer: it only
-    /// knows this channel, which no longer carries files.
+    /// Shown when a receiver below the current generation asks for a transfer.
+    /// True of every older generation, so it does not say what that build
+    /// could do. Mirrors BleControlProtocol.directLinkRequiredMessage.
     static let directLinkRequiredMessage =
-        "The receiving device is on an older version that can only receive "
-        + "over Bluetooth. Update it, and the transfer moves to a direct "
-        + "Wi-Fi link."
+        "The receiving device is on an older version of DirectDrop that "
+        + "cannot set up the transfer with this one. Update it, and the "
+        + "transfer moves to a direct Wi-Fi link."
 
     /// The generation a command announces, or nil if it is not a CAPS write.
     static func parseCapabilities(_ command: String) -> Int? {
@@ -154,7 +159,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
     private var metadataSubscribed = false
     private var dataSubscribed = false
     private var expectedSessionToken: String?
-    private var expectedPublicId: String?
+    private var expectedLocator: String?
     private var centralConnectTimeoutTimer: Timer?
 
     /// A sender that is pushing a file over this channel is an older build.
@@ -199,7 +204,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
                 return
             }
             startAdvertising(sessionToken: args["sessionToken"] as? String,
-                             publicId: args["publicId"] as? String)
+                             locator: args["locator"] as? String)
             result(nil)
 
         case "stopAdvertising":
@@ -250,7 +255,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         case "startScanning":
             let scanArgs = call.arguments as? [String: Any]
             startScanning(sessionToken: scanArgs?["sessionToken"] as? String,
-                          publicId: scanArgs?["publicId"] as? String)
+                          locator: scanArgs?["locator"] as? String)
             result(nil)
 
         case "stopScanning":
@@ -278,7 +283,7 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
 
     // MARK: - Sender (Peripheral)
 
-    private func startAdvertising(sessionToken: String?, publicId: String? = nil) {
+    private func startAdvertising(sessionToken: String?, locator: String? = nil) {
         stopAdvertising()
         transferStarted = false
         sendSessionToken = sessionToken
@@ -312,8 +317,13 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         service.characteristics = [control, metadata, data]
 
         pendingServiceToAdd = service
-        if let publicId, !publicId.isEmpty {
-            pendingDeviceName = "QuickShare-\(publicId)"
+        // The session's locator: random, drawn for this session, the same one
+        // the QR carries, and related to no code and no token. It only lets a
+        // receiver that scanned the QR pick this device out of several. Never
+        // anything derived from a session code: that can be searched for the
+        // code by anyone in range.
+        if let locator, !locator.isEmpty {
+            pendingDeviceName = "QuickShare-\(locator)"
         } else {
             pendingDeviceName = "QuickShare-directdrop"
         }
@@ -363,10 +373,10 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         result(nil)
     }
 
-    private func startScanning(sessionToken: String? = nil, publicId: String? = nil) {
+    private func startScanning(sessionToken: String? = nil, locator: String? = nil) {
         discovered.removeAll()
         expectedSessionToken = sessionToken
-        expectedPublicId = publicId
+        expectedLocator = locator
         let manager = centralManager ?? CBCentralManager(delegate: self, queue: nil)
         centralManager = manager
         let options: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: true]
@@ -441,8 +451,8 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         guard !reportedStaleSender else { return }
         reportedStaleSender = true
         emit(["type": "receiverFailed",
-              "error": "The sending device is on an older version that sends files over Bluetooth itself. "
-                  + "This version receives them over a direct Wi-Fi link only. Update the sending device.",
+              "error": "The sending device is on an older version of DirectDrop that cannot set up the transfer with this one. "
+                  + "Update the sending device and scan its new code.",
               "code": "senderTooOldForDirectLink"])
     }
 }
@@ -592,8 +602,8 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
 
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         let advertisedName = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? "Unknown device"
-        // What a sender advertises is the session's public identifier, derived
-        // from the code and carrying nothing secret. A device with no
+        // What a sender advertises is the session's locator: random, the one
+        // the QR carries, and related to no code. A device with no
         // `QuickShare-` name at all — a Windows PC or an Android phone, which
         // cannot carry one beside the service UUID — is accepted: the scan is
         // already filtered to our service, and the START token is what
@@ -601,8 +611,8 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
         // of the token instead, so that match stays as the fallback —
         // dropping it would make this build unable to see them.
         if advertisedName.hasPrefix("QuickShare-") {
-            if let expectedPublicId, !expectedPublicId.isEmpty {
-                if !advertisedName.contains(expectedPublicId) { return }
+            if let expectedLocator, !expectedLocator.isEmpty {
+                if !advertisedName.contains(expectedLocator) { return }
             } else if let expectedSessionToken,
                       !advertisedName.contains(String(expectedSessionToken.prefix(8))) {
                 return

@@ -22,9 +22,9 @@ import 'package:universal_ble/universal_ble.dart';
 
 import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
-import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
 import 'package:quickshare/core/transfer/ble_gatt.dart';
+import 'package:quickshare/core/transfer/ble_session.dart';
 import 'package:quickshare/features/receiver/data/transports/universal_ble_receiver_transport.dart';
 import 'package:quickshare/features/sender/data/transports/bluetooth_transfer_transport.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
@@ -56,26 +56,26 @@ void main() {
   });
 
   Future<BluetoothTransferTransport> started(
-    SessionCode code, {
+    BleSession session, {
     List<TransferStatus>? statuses,
   }) async {
     final transport = BluetoothTransferTransport();
     if (statuses != null) transport.statusStream.listen(statuses.add);
     await transport.initialize();
-    await transport.startSharing(_file, code.sessionToken,
-        publicId: code.publicId);
+    await transport.startSharing(_file, session.token,
+        locator: session.locator);
     return transport;
   }
 
   for (final platform in [TargetPlatform.android, TargetPlatform.windows]) {
     group('on ${platform.name}', () {
-      final code = SessionCode.generate();
+      final session = BleSession.generate();
 
       setUp(() => debugDefaultTargetPlatformOverride = platform);
 
       test('startSharing registers the service and advertises it', () async {
         final statuses = <TransferStatus>[];
-        await started(code, statuses: statuses);
+        await started(session, statuses: statuses);
         await Future<void>.delayed(Duration.zero);
 
         expect(radio.registered, hasLength(1),
@@ -108,20 +108,20 @@ void main() {
       });
 
       test('asks for the Bluetooth permissions before it starts', () async {
-        await started(code);
+        await started(session);
 
         expect(central.permissionRequests, 1);
       });
 
       test('what it advertises is found by the real receiver', () async {
-        await started(code);
+        await started(session);
         final advert = radio.advertised.single;
 
         final receiver = UniversalBleReceiverTransport();
         final found = <BleDevice>[];
         receiver.devices.listen(found.add);
         await receiver.startScanning(
-            sessionToken: code.sessionToken, publicId: code.publicId);
+            sessionToken: session.token, locator: session.locator);
 
         central.discover(
           id: 'AA:BB:CC:DD:EE:FF',
@@ -132,7 +132,7 @@ void main() {
 
         expect(found, hasLength(1),
             reason: 'advertised ${advert.localName}, receiver is looking for '
-                '${code.publicId}');
+                '${session.locator}');
         expect(central.scans.single!.withServices.map(BleUuidParser.string),
             contains(BleUuidParser.string(BleGatt.service)));
         await receiver.dispose();
@@ -142,7 +142,7 @@ void main() {
         // Not a test of the radio; of the arithmetic that went wrong. A
         // 128-bit service UUID and `QuickShare-` plus eight characters are 42
         // bytes beside the flags, and a legacy packet holds 31.
-        return started(code).then((_) {
+        return started(session).then((_) {
           final advert = radio.advertised.single;
           final primary = BleAdvertisement.legacyPrimaryPacketBytes(
             serviceUuids128: advert.services.length,
@@ -155,7 +155,7 @@ void main() {
 
       test('the service stays out of the scan response, where a scan filter '
           'may not look', () async {
-        await started(code);
+        await started(session);
 
         final options = radio.advertised.single.platformConfig?.android;
         expect(options?.addServicesInScanResponse ?? false, isFalse);
@@ -163,12 +163,12 @@ void main() {
 
       test('the session is answerable: START with the token begins it',
           () async {
-        final transport = await started(code);
+        final transport = await started(session);
         final ready = <void>[];
         transport.receiverReady.listen(ready.add);
 
         radio.write('central-1', BleGatt.control, BleControlProtocol.capabilities());
-        radio.write('central-1', BleGatt.control, BleControlProtocol.start(code.sessionToken));
+        radio.write('central-1', BleGatt.control, BleControlProtocol.start(session.token));
         radio.subscribe('central-1', BleGatt.data);
         await Future<void>.delayed(Duration.zero);
 
@@ -176,7 +176,7 @@ void main() {
       });
 
       test('a START without the token is refused at the ATT layer', () async {
-        await started(code);
+        await started(session);
 
         final answer =
             radio.write('central-1', BleGatt.control, BleControlProtocol.start('wrong'));
@@ -185,7 +185,7 @@ void main() {
       });
 
       test('stopSharing stops the advertisement and the handlers', () async {
-        final transport = await started(code);
+        final transport = await started(session);
 
         await transport.stopSharing();
 
@@ -198,9 +198,9 @@ void main() {
         // The Android plugin keeps a cache of characteristic objects by UUID
         // and never clears it on clearServices(), so the second registration
         // of the same service would notify through the first one's objects.
-        final first = await started(code);
+        final first = await started(session);
         await first.stopSharing();
-        await started(SessionCode.generate());
+        await started(BleSession.generate());
 
         expect(radio.serviceRegistrations, hasLength(1));
         expect(radio.advertised, hasLength(2));
@@ -211,8 +211,8 @@ void main() {
   group('what is on the air differs by platform, and why', () {
     test('Android puts the service UUID in the packet and no name', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      final code = SessionCode.generate();
-      await started(code);
+      final session = BleSession.generate();
+      await started(session);
 
       expect(radio.advertised.single.localName, isNull,
           reason: 'a name would not fit beside the UUID, and setting one '
@@ -221,7 +221,7 @@ void main() {
 
     test('Windows cannot set a name at all', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.windows;
-      await started(SessionCode.generate());
+      await started(BleSession.generate());
 
       expect(radio.advertised.single.localName, isNull);
     });
@@ -232,7 +232,7 @@ void main() {
 
     Future<BluetoothRadioException> failure() async {
       try {
-        await started(SessionCode.generate());
+        await started(BleSession.generate());
       } on BluetoothRadioException catch (e) {
         return e;
       }
@@ -317,7 +317,7 @@ void main() {
       await transport.initialize();
 
       await expectLater(
-        transport.startSharing(_file, 'tok', publicId: 'abcd1234'),
+        transport.startSharing(_file, 'tok', locator: 'abcd1234'),
         throwsA(isA<BluetoothRadioException>()),
       );
 
@@ -332,7 +332,7 @@ void main() {
         Object? error;
         final transport = BluetoothTransferTransport();
         transport.initialize().then((_) => transport
-            .startSharing(_file, 'tok', publicId: 'abcd1234')
+            .startSharing(_file, 'tok', locator: 'abcd1234')
             .then<void>((_) {}, onError: (Object e) => error = e));
 
         async.elapse(const Duration(seconds: 60));
@@ -350,7 +350,7 @@ void main() {
     test('on Android they are addressed to the receiver that connected',
         () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      final transport = await started(SessionCode.generate());
+      final transport = await started(BleSession.generate());
       radio.subscribe('client-7', BleGatt.data);
       await Future<void>.delayed(Duration.zero);
 
@@ -367,7 +367,7 @@ void main() {
       // specific device for notifications" to any updateCharacteristicValue
       // that names one, so every frame this sender wrote would have failed.
       debugDefaultTargetPlatformOverride = TargetPlatform.windows;
-      final transport = await started(SessionCode.generate());
+      final transport = await started(BleSession.generate());
       radio.subscribe('client-7', BleGatt.data);
       await Future<void>.delayed(Duration.zero);
 
@@ -382,7 +382,7 @@ void main() {
       // saying so, and the receiver then fails to read half a JSON document.
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       radio.maxNotifyLength = 20;
-      final transport = await started(SessionCode.generate());
+      final transport = await started(BleSession.generate());
       radio.subscribe('client-7', BleGatt.data);
       await Future<void>.delayed(Duration.zero);
 
@@ -399,7 +399,7 @@ void main() {
       () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     radio.maxNotifyLength = null;
-    final transport = await started(SessionCode.generate());
+    final transport = await started(BleSession.generate());
     radio.subscribe('client-7', BleGatt.data);
     await Future<void>.delayed(Duration.zero);
 
@@ -412,7 +412,7 @@ void main() {
   test('on Windows an unknown limit is not a small one', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
     radio.maxNotifyLength = null;
-    final transport = await started(SessionCode.generate());
+    final transport = await started(BleSession.generate());
     radio.subscribe('client-7', BleGatt.data);
     await Future<void>.delayed(Duration.zero);
 
@@ -425,7 +425,7 @@ void main() {
       'too long', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     radio.maxNotifyLength = 182; // an iPhone
-    final transport = await started(SessionCode.generate());
+    final transport = await started(BleSession.generate());
     radio.subscribe('client-7', BleGatt.data);
     await Future<void>.delayed(Duration.zero);
     final serve = {
@@ -452,12 +452,14 @@ void main() {
 
   test('a hosting directive is longer than an iPhone takes, and says so',
       () async {
-    // The finding the device check has to settle: the sealed credentials, the
-    // sender's key and the code make a frame of about 220 bytes, and an iPhone
-    // negotiates 182. It cannot be made smaller by dropping something optional.
+    // The finding the device check has to settle: the sealed credentials and
+    // the sender's key make a frame of 203 bytes, and an iPhone negotiates 182.
+    // It cannot be made smaller by dropping something optional. (It was 223
+    // while the frame also carried the ten digits of the code — 20 bytes that
+    // did not fit either, and that no longer cross at all.)
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     radio.maxNotifyLength = 182;
-    final transport = await started(SessionCode.generate());
+    final transport = await started(BleSession.generate());
     radio.subscribe('client-7', BleGatt.data);
     await Future<void>.delayed(Duration.zero);
 
@@ -467,17 +469,16 @@ void main() {
           'host': 'sender',
           'sealed': 's' * 112,
           'kex': 'k' * 44,
-          'code': '4081726359',
         }
       }),
       throwsA(isA<BluetoothRadioException>().having(
-          (e) => e.message, 'message', allOf(contains('223'), contains('182')))),
+          (e) => e.message, 'message', allOf(contains('203'), contains('182')))),
     );
   });
 
   test('a HELLO is read, so the sender knows who it is talking to', () async {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
-    final transport = await started(SessionCode.generate());
+    final transport = await started(BleSession.generate());
 
     radio.write('c', BleGatt.control, BleControlProtocol.hello("Anna's iPhone"));
 

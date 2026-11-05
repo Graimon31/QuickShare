@@ -1524,7 +1524,7 @@ abstract class AppLocalizations {
   /// No description provided for @errorSenderTooOldForDirectLink.
   ///
   /// In en, this message translates to:
-  /// **'The sending device is on an older version that sends files over Bluetooth itself, which this version no longer receives. Update DirectDrop on the sending device and scan its new code.'**
+  /// **'The sending device is on an older version of DirectDrop that cannot set up the transfer with this one. Update DirectDrop on the sending device and scan its new code.'**
   String get errorSenderTooOldForDirectLink;
 
   /// No description provided for @errorBluetoothOff.
@@ -1590,7 +1590,7 @@ abstract class AppLocalizations {
   /// No description provided for @errorReceiverTooOldForDirectLink.
   ///
   /// In en, this message translates to:
-  /// **'The receiving device is on an older version that can only receive over Bluetooth. Update it, and the transfer moves to a direct Wi-Fi link.'**
+  /// **'The receiving device is on an older version of DirectDrop that cannot set up the transfer with this one. Update it, and the transfer moves to a direct Wi-Fi link.'**
   String get errorReceiverTooOldForDirectLink;
 
   /// No description provided for @errorReceiverTooOldToPair.

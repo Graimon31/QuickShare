@@ -46,7 +46,15 @@ class BleControlProtocol {
   /// 4 — the direct-link generation. The file never travels this channel:
   ///     after the rendezvous the two devices raise a Wi-Fi link of their
   ///     own and the bytes cross there.
-  static const int generation = 4;
+  /// 5 — nothing derived from a session code goes on the air. The link
+  ///     directive no longer carries the code's digits, the sealed credentials
+  ///     are bound to the locator in the QR instead of a value worked out from
+  ///     those digits, and the session token and locator are random. A
+  ///     generation-4 peer cannot open what a generation-5 one seals (it binds
+  ///     to something else), so the two do not take part in a session together:
+  ///     see [peerSupportsDirectLink] for the sender's side of that refusal and
+  ///     [DirectLinkDirective.fromOlderGeneration] for the receiver's.
+  static const int generation = 5;
 
   /// Sent before [startCommand], never instead of it.
   static String capabilities([int gen = generation]) => 'CAPS:$gen';
@@ -141,11 +149,14 @@ class BleControlProtocol {
 
   /// Whether a peer can take part in a session at all.
   ///
-  /// Generation 4 is where the bytes left this radio: a peer below it only
-  /// knows how to receive over Bluetooth itself, a path this build never
-  /// takes — so the session does not begin, whatever it could once have
-  /// carried. The person sending gets [directLinkRequiredMessage] instead of
-  /// a transfer that crawls.
+  /// Generation 4 is where the bytes left this radio, and generation 5 is where
+  /// the code's digits left the frames it negotiates with; a peer below the
+  /// current one either only knows how to receive over Bluetooth itself (a path
+  /// this build never takes) or seals and opens credentials against a value
+  /// this build no longer sends — so the session does not begin, whatever it
+  /// could once have carried. The person sending gets
+  /// [directLinkRequiredMessage] at once instead of a transfer that waits out
+  /// the negotiation's whole budget and then fails without saying why.
   ///
   /// This replaced a softer rule, deliberately. That one refused a folder to
   /// an older peer — which would have taken the first file and reported the
@@ -158,12 +169,24 @@ class BleControlProtocol {
       (peerGeneration ?? 1) >= generation;
 
   /// Shown to the person sending when [peerSupportsDirectLink] says no.
-  /// Names the fix, and the reason is in the same breath so the update does
+  /// Names the fix and the reason is in the same breath so the update does
   /// not feel arbitrary.
+  ///
+  /// True of every older generation, which is why it does not say what that
+  /// build could do: "can only receive over Bluetooth" was right for
+  /// generation 3 and is wrong for 4.
   static const String directLinkRequiredMessage =
-      'The receiving device is on an older version that can only receive '
-      'over Bluetooth. Update it, and the transfer moves to a direct Wi-Fi '
-      'link.';
+      'The receiving device is on an older version of DirectDrop that cannot '
+      'set up the transfer with this one. Update it, and the transfer moves to '
+      'a direct Wi-Fi link.';
+
+  /// Shown to the person receiving when the sender is a build that negotiates
+  /// the way generation 4 and below did, and so cannot agree on a session with
+  /// this one. The mirror image of [directLinkRequiredMessage].
+  static const String senderTooOldMessage =
+      'The sending device is on an older version of DirectDrop that cannot set '
+      'up the transfer with this one. Update the sending device and scan its '
+      'new code.';
 
   /// Whether [command] is a valid start for a session opened with [token].
   ///

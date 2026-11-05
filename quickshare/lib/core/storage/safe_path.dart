@@ -519,6 +519,79 @@ class SafePath {
     }
   }
 
+  // --- cleaning up -----------------------------------------------------------
+
+  /// Removes what a failed attempt left at [path] — and, whatever it finds,
+  /// nothing outside [base].
+  ///
+  /// `FileSystemEntity.typeSync(path, followLinks: false)` looks at the *last*
+  /// component without following a link. The folders above it are followed like
+  /// any others, and so is the delete that comes after: a folder swapped for a
+  /// link while the partial was being written makes `File(path).delete()`
+  /// remove the file of that name from wherever the link points. All it takes
+  /// is the same file name — a `.qs.partial` of another transfer, say, which is
+  /// exactly what a sender-chosen name can aim at.
+  ///
+  /// So every folder between [base] and [path] is looked at first, without
+  /// following links, the way the rest of this class looks before it writes or
+  /// renames. When one of them is a link, or [path] is not under [base] at all,
+  /// nothing is deleted: the file stays where it is, a line in the log says
+  /// which and why, and [false] comes back. A leftover partial is debris — the
+  /// startup sweep only looks at the top level of the destination, so one in a
+  /// subfolder can stay until somebody removes it — but deleting a stranger's
+  /// file to get rid of it would be a much worse thing to have done.
+  ///
+  /// What is at [path] itself may be a file or a link — a link is removed as a
+  /// link, never its target. A folder is left alone (this is for files).
+  ///
+  /// **Never throws.** This runs after something has already gone wrong, and the
+  /// error that reaches the person has to be that one, not a complaint about
+  /// the tidying. A delete the system refuses (Windows holding a file an
+  /// indexer is reading) is logged and the file stays, like the case above.
+  ///
+  /// The check and the delete are two calls, made one after the other with
+  /// nothing between them; like every check in this class they cannot out-run
+  /// somebody who already controls the folder and wins a race of microseconds
+  /// (see the class comment).
+  ///
+  /// [base] null stands for the folder that holds [path], as in `DurableFile`:
+  /// the file itself is protected, the folders above it are not looked at.
+  ///
+  /// Returns whether the name is free afterwards.
+  static bool discard(String? base, String path) {
+    try {
+      final root = (base == null || base.isEmpty) ? p.dirname(path) : base;
+      assertNoLinksBelow(root, path);
+      switch (FileSystemEntity.typeSync(path, followLinks: false)) {
+        case FileSystemEntityType.notFound:
+          return true;
+        case FileSystemEntityType.file:
+          File(path).deleteSync();
+          return true;
+        case FileSystemEntityType.link:
+          Link(path).deleteSync();
+          return true;
+        default:
+          AppLogger.warning(
+              'Left "$path" in place: it is not a file, so it is not a '
+              'partial of ours',
+              tag: 'DISK');
+          return false;
+      }
+    } on UnsafePathException catch (e) {
+      AppLogger.warning(
+          'Left "$path" in place instead of deleting it: ${e.reason}. '
+          'Nothing outside the destination was touched; the file stays on '
+          'disk until it is removed by hand',
+          tag: 'DISK');
+      return false;
+    } catch (e) {
+      AppLogger.warning('Could not remove "$path": $e — it stays where it is',
+          tag: 'DISK');
+      return false;
+    }
+  }
+
   // --- the last step ---------------------------------------------------------
 
   static const int _maxCommitAttempts = 64;

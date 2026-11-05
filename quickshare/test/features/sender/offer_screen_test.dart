@@ -309,15 +309,18 @@ void main() {
         _session(),
         qrData: 'BT-QR',
         itemCount: 3,
-        code: code,
+        locator: 'K3M9Q2TV',
         expiresAt: DateTime.now().add(const Duration(minutes: 3, seconds: 10)),
       ));
       await _mount(tester, bloc, const BluetoothSendPage());
 
       expect(find.byType(QrImageView), findsOneWidget);
-      expect(find.text(code.display), findsNothing,
+      // Not "this code is absent" — the state holds none any more — but no
+      // run of ten digits, grouped or not, anywhere on the screen.
+      expect(find.textContaining(RegExp(r'\d{5}\s?\d{5}')), findsNothing,
           reason: 'there is nowhere to type it');
-      expect(find.textContaining(code.code), findsNothing);
+      expect(find.textContaining('K3M9Q2TV'), findsNothing,
+          reason: 'the locator is for the radio and the QR, not for a person');
       expect(find.byType(CopyValueRow), findsNothing,
           reason: 'neither the digits nor a link to copy');
       expect(find.byType(OfferCountdown), findsOneWidget);
@@ -332,13 +335,13 @@ void main() {
       final first = BluetoothAdvertising(
         _session(),
         qrData: 'BT-QR-FIRST',
-        code: code,
+        locator: 'K3M9Q2TV',
         expiresAt: DateTime.now().add(const Duration(minutes: 3)),
       );
       final second = BluetoothAdvertising(
         _session(),
         qrData: 'BT-QR-SECOND',
-        code: const SessionCode('1122334455'),
+        locator: 'W8N4P6XA',
         expiresAt: DateTime.now().add(const Duration(minutes: 5)),
       );
       final changes = StreamController<SenderState>();
@@ -366,7 +369,7 @@ void main() {
         _session(),
         qrData: 'BT-QR',
         itemCount: 3,
-        code: code,
+        locator: 'K3M9Q2TV',
         expiresAt: DateTime.now().add(const Duration(minutes: 3)),
       ));
       await _mount(tester, bloc, const BluetoothSendPage());
@@ -392,7 +395,7 @@ void main() {
       showing(BluetoothAdvertising(
         _session(),
         qrData: 'BT-QR',
-        code: code,
+        locator: 'K3M9Q2TV',
         expiresAt: DateTime.now().add(const Duration(minutes: 3)),
       ));
       await _mount(tester, bloc, const BluetoothSendPage());
@@ -408,7 +411,7 @@ void main() {
       showing(BluetoothAdvertising(
         _session(),
         qrData: 'BT-QR',
-        code: code,
+        locator: 'K3M9Q2TV',
         expiresAt: DateTime.now().add(const Duration(minutes: 3)),
       ));
       await _mount(tester, bloc, const BluetoothSendPage());

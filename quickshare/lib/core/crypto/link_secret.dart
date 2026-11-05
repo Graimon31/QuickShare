@@ -68,7 +68,12 @@ class LinkSecret {
   ///
   /// [sessionId] is bound in as associated data, so credentials captured from
   /// one session do not authenticate in another even if the same pair of
-  /// devices negotiates again.
+  /// devices negotiates again. It is not secret and is not treated as one — an
+  /// Apple or Linux sender advertises it — so it must be something both sides
+  /// hold without anything having been sent for the purpose, and **never a
+  /// value worked out from a session code**: that is exactly what used to be
+  /// bound here, and the code's digits had to cross the air for the far side to
+  /// work it out too. The Bluetooth session binds to the locator in its QR.
   Future<String> seal({
     required String ssid,
     required String passphrase,

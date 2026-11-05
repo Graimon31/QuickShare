@@ -11,6 +11,8 @@ import 'package:path/path.dart' as p;
 import 'package:quickshare/core/storage/durable_file.dart';
 import 'package:quickshare/core/storage/safe_path.dart';
 
+import '../../support/links.dart';
+
 void main() {
   late Directory root;
   late Directory base;
@@ -764,6 +766,82 @@ void main() {
       expect(used, p.join(base.path, 'a (1).bin'));
       expect(File(p.join(base.path, 'a.bin')).readAsStringSync(), 'mine');
       expect(File(used).readAsBytesSync(), [1, 2, 3]);
+    });
+  });
+
+  group('discard', () {
+    test('removes a partial that is where it should be', () {
+      final partial = File(p.join(base.path, 'a', 'x.bin.qs.partial'))
+        ..createSync(recursive: true);
+
+      expect(SafePath.discard(base.path, partial.path), isTrue);
+
+      expect(partial.existsSync(), isFalse);
+    });
+
+    test('a name that is not there is already clear', () {
+      expect(SafePath.discard(base.path, p.join(base.path, 'nope', 'x')),
+          isTrue);
+    });
+
+    test('a link at the name goes, and what it pointed at stays', () {
+      final keep = File(p.join(outside.path, 'keep.txt'))
+        ..writeAsStringSync('keep');
+      final name = p.join(base.path, 'x.bin.qs.partial');
+      if (!linkOrSkip(name, keep.path)) return;
+
+      expect(SafePath.discard(base.path, name), isTrue);
+
+      expect(FileSystemEntity.typeSync(name, followLinks: false),
+          FileSystemEntityType.notFound);
+      expect(keep.readAsStringSync(), 'keep');
+    });
+
+    test('a folder above it that is a link: nothing is deleted, and it says '
+        'so', () {
+      Directory(p.join(base.path, 'a')).createSync();
+      final here = File(p.join(base.path, 'a', 'x.bin.qs.partial'))
+        ..writeAsStringSync('ours');
+      Directory(p.join(base.path, 'a')).renameSync(p.join(base.path, 'moved'));
+      if (!linkOrSkip(p.join(base.path, 'a'), outside.path)) return;
+      File(p.join(outside.path, 'x.bin.qs.partial'))
+          .writeAsStringSync('theirs');
+      final before = snapshot(outside);
+
+      expect(SafePath.discard(base.path, here.path), isFalse);
+
+      expect(snapshot(outside), before);
+      expect(File(p.join(base.path, 'moved', 'x.bin.qs.partial'))
+          .readAsStringSync(), 'ours');
+    });
+
+    test('a path that is not under the destination at all is left alone', () {
+      final stranger = File(p.join(outside.path, 'x.bin.qs.partial'))
+        ..writeAsStringSync('theirs');
+
+      expect(SafePath.discard(base.path, stranger.path), isFalse);
+
+      expect(stranger.readAsStringSync(), 'theirs');
+    });
+
+    test('a folder at the name is not a partial, and is left', () {
+      final folder = Directory(p.join(base.path, 'x.bin.qs.partial'))
+        ..createSync();
+      File(p.join(folder.path, 'inside')).writeAsStringSync('keep');
+
+      expect(SafePath.discard(base.path, folder.path), isFalse);
+
+      expect(File(p.join(folder.path, 'inside')).readAsStringSync(), 'keep');
+    });
+
+    test('with no destination named, the folder that holds it stands in', () {
+      final partial = File(p.join(base.path, 'x.bin.qs.partial'))
+        ..writeAsStringSync('ours');
+
+      expect(SafePath.discard(null, partial.path), isTrue);
+      expect(SafePath.discard('', partial.path), isTrue);
+
+      expect(partial.existsSync(), isFalse);
     });
   });
 }

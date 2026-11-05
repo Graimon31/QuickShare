@@ -70,7 +70,7 @@ void main() {
     // sender put in it.
     final raw = const BluetoothQrPayload(
       token: 'token-from-the-qr',
-      publicId: 'id-from-the-qr',
+      locator: 'id-from-the-qr',
       fileName: 'Holiday photos',
       fileSize: 4096,
       itemCount: 2,
@@ -81,7 +81,7 @@ void main() {
         .thenAnswer((_) async => Right(payload));
     when(() => session.run(
           token: any(named: 'token'),
-          publicId: any(named: 'publicId'),
+          locator: any(named: 'locator'),
           destination: any(named: 'destination'),
           onProgress: any(named: 'onProgress'),
           onVerifying: any(named: 'onVerifying'),
@@ -98,7 +98,7 @@ void main() {
         reason: 'reading a QR is not yet a reason to touch the radio');
     verifyNever(() => session.run(
           token: any(named: 'token'),
-          publicId: any(named: 'publicId'),
+          locator: any(named: 'locator'),
           destination: any(named: 'destination'),
           onProgress: any(named: 'onProgress'),
           onVerifying: any(named: 'onVerifying'),
@@ -111,7 +111,7 @@ void main() {
 
     verify(() => session.run(
           token: 'token-from-the-qr',
-          publicId: 'id-from-the-qr',
+          locator: 'id-from-the-qr',
           destination: any(named: 'destination'),
           onProgress: any(named: 'onProgress'),
           onVerifying: any(named: 'onVerifying'),

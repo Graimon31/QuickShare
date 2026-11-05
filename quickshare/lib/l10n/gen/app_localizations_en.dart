@@ -845,7 +845,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get errorSenderTooOldForDirectLink =>
-      'The sending device is on an older version that sends files over Bluetooth itself, which this version no longer receives. Update DirectDrop on the sending device and scan its new code.';
+      'The sending device is on an older version of DirectDrop that cannot set up the transfer with this one. Update DirectDrop on the sending device and scan its new code.';
 
   @override
   String get errorBluetoothOff =>
@@ -887,7 +887,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get errorReceiverTooOldForDirectLink =>
-      'The receiving device is on an older version that can only receive over Bluetooth. Update it, and the transfer moves to a direct Wi-Fi link.';
+      'The receiving device is on an older version of DirectDrop that cannot set up the transfer with this one. Update it, and the transfer moves to a direct Wi-Fi link.';
 
   @override
   String get errorReceiverTooOldToPair =>

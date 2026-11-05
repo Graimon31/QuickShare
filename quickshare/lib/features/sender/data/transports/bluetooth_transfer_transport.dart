@@ -49,15 +49,16 @@ class BluetoothTransferTransport implements TransferTransport {
 
   /// The peripheral local name Apple and Linux senders advertise.
   ///
-  /// Carries [SessionCode.publicId] and never the authorization token or its
-  /// prefix. That is not the same as safe: the identifier is forty bits of a
-  /// hash over a 33-bit space, so anyone in radio range can search it for the
-  /// code, which derives the token. The LAN announcement stopped carrying it
-  /// for that reason; this one still does, and needs the same treatment as the
-  /// transfer it belongs to (see `SessionCode.discoveryHint`). Android and
-  /// Windows senders do not advertise a name — see [_startUniversalSession].
-  static String bleAdvertisedName({String publicId = ''}) =>
-      BleAdvertisement.nameFor(publicId);
+  /// Carries the session's locator and never the authorization token or any
+  /// slice of it. The locator is random (see [BleAdvertisement.newLocator]) and
+  /// related to no code, token or network name, so reading it off the air gives
+  /// a listener nothing to search with — it exists only so that a receiver that
+  /// was shown the QR can tell this sender from another one in range. It used to
+  /// be `SessionCode.publicId`: forty bits of a hash over a 33-bit space, which
+  /// anyone in range could search for the code. Android and Windows senders do
+  /// not advertise a name — see [_startUniversalSession].
+  static String bleAdvertisedName({String locator = ''}) =>
+      BleAdvertisement.nameFor(locator);
 
   final _statusController = StreamController<TransferStatus>.broadcast();
   final _universalSubscriptions = <StreamSubscription<dynamic>>[];
@@ -388,19 +389,22 @@ class BluetoothTransferTransport implements TransferTransport {
   /// learns what it is getting from the QHTP manifest on the Wi-Fi link, and
   /// a folder no longer has to be described to a radio that cannot carry it.
   ///
-  /// [publicId] is what goes out over the air on Apple and Linux, when there
-  /// is one. Derived from the session's digits, so a receiver who scanned the
-  /// QR can pick this device out of several. It can be reversed by searching
-  /// the ten billion codes, so it is a locator and not a secret. Advertising a
-  /// slice of [token] instead — which is what every earlier build did — puts
-  /// the first eight characters of the session's secret in a packet anyone in
-  /// radio range can read. Android and Windows do not advertise it at all.
+  /// [locator] is what goes out over the air on Apple and Linux, when there is
+  /// one: random, drawn for this session, and the same one the QR carries, so a
+  /// receiver that scanned the QR can pick this device out of several. It is
+  /// public by design and tied to nothing — not to [token], not to a code, not
+  /// to a network name. Advertising a slice of [token] instead, which is what
+  /// every earlier build did, puts the first eight characters of the session's
+  /// secret in a packet anyone in radio range can read; advertising a value
+  /// worked out from the session's digits, which the build before this one did,
+  /// puts something in range that can be searched for them. Android and Windows
+  /// do not advertise it at all.
   ///
   /// Throws [BluetoothRadioException] on Android and Windows when the radio
   /// cannot advertise, with a code the screen can say in the person's own
   /// language. Never completes without the platform's answer.
   Future<String> startSharing(FileMetadata file, String token,
-      {List<FileMetadata>? files, String publicId = ''}) async {
+      {List<FileMetadata>? files, String locator = ''}) async {
     lastFailureReason = null;
     lastFailureCode = null;
     _receiverName = null;
@@ -412,7 +416,7 @@ class BluetoothTransferTransport implements TransferTransport {
         // This device does not scan: it has nothing to look for.
         await _method.invokeMethod('startAdvertising', {
           'sessionToken': token,
-          if (publicId.isNotEmpty) 'publicId': publicId,
+          if (locator.isNotEmpty) 'locator': locator,
         });
         _statusController.add(TransferStatus.serving);
       } on PlatformException catch (e) {
@@ -427,7 +431,7 @@ class BluetoothTransferTransport implements TransferTransport {
       _linuxSender = LinuxBluetoothSender();
       await _linuxSender!.start(
         token,
-        publicId: publicId,
+        locator: locator,
         onStatus: (status, [error, code]) {
           switch (status) {
             case 'advertising':
@@ -467,7 +471,7 @@ class BluetoothTransferTransport implements TransferTransport {
   ///
   /// A legacy advertising packet holds 31 bytes. Three go to the flags, a
   /// 128-bit service UUID takes 18, and `QuickShare-` plus the eight-character
-  /// identifier would take 21 more — 42 in all, which Android refuses with
+  /// locator would take 21 more — 42 in all, which Android refuses with
   /// `ADVERTISE_FAILED_DATA_TOO_LARGE`. That is what the first version of this
   /// code asked for, and it could not have started on a phone. The plugin can
   /// move the UUID to the scan response and keep the name in the primary
@@ -478,14 +482,14 @@ class BluetoothTransferTransport implements TransferTransport {
   /// long as the advertisement lasts, which a killed app would leave behind.
   ///
   /// Windows cannot set a name at all (`GattServiceProvider` does not take
-  /// one), so it was never going to carry a locator.
+  /// one), so it was never going to carry a locator. Neither does it need
+  /// to: the locator is random and public, so leaving it off the air costs
+  /// nothing and hides nothing.
   ///
   /// What the receivers do with an advertisement that has no `QuickShare-`
   /// name is accept it: the service UUID is the proof that it is a DirectDrop
   /// sender, and the `START:<token>` write after the connection is what proves
-  /// it is the one the QR named (see [BleAdvertisement.accepts]). As a side
-  /// effect this sender does not broadcast the locator that can be searched
-  /// for the session's code.
+  /// it is the one the QR named (see [BleAdvertisement.accepts]).
   Future<void> _startUniversalSession(String token) async {
     _universalSessionToken = null;
     _lastPeerKey = null;

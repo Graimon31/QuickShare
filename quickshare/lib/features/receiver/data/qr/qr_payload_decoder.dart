@@ -36,7 +36,7 @@ class QRPayloadDecoder {
         ip: 'bt',
         port: 0,
         token: bt.token,
-        sessionId: bt.publicId.isNotEmpty ? bt.publicId : bt.token,
+        sessionId: bt.locator.isNotEmpty ? bt.locator : bt.token,
         mode: bluetoothMode,
         fileName: bt.fileName,
         fileSize: bt.fileSize,

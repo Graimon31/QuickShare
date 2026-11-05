@@ -103,18 +103,26 @@ class SessionCode {
     return buffer.toString();
   }
 
-  /// A locator derived from the code. **Never announce it.**
+  /// A locator derived from the code. **Nothing sends it, and nothing may.**
   ///
-  /// Forty bits of a hash over a space of about 33: anybody who reads this off
-  /// the air can hash all ten billion codes and keep the one that matches,
-  /// which takes seconds, and the code derives the session token, the network
-  /// name and the passphrase. It used to be announced over mDNS on the
-  /// understanding that it could not be reversed. It can.
+  /// Forty bits of a hash over a space of about thirty-three: anybody who
+  /// reads this off the air can hash all ten billion codes and keep the one
+  /// that matches, which takes seconds, and the code derives the session token,
+  /// the network name and the passphrase. It used to be announced over mDNS on
+  /// the understanding that it could not be reversed. It can.
   ///
-  /// What goes to a multicast group or a radio is [discoveryHint]. This one
-  /// remains for values that only ever travel inside something already
-  /// secret — the QR code, a sealed frame — and for the Bluetooth
-  /// advertisement, which still carries it.
+  /// It then went into the Bluetooth advertisement (Apple and Linux senders)
+  /// and the QR beside it, and into the sealed link credentials as the value
+  /// they were bound to, on the same understanding: the advertisement was said
+  /// to carry nothing secret, and the code it was derived from was read from the
+  /// digits the link directive carried. None of that is true any more. A
+  /// Bluetooth session's locator is `BleAdvertisement.newLocator` — random and
+  /// related to no code — and its seal is bound to that.
+  ///
+  /// What is left is the getter, kept as the example of exactly what must not go
+  /// to a multicast group or a radio: the tests search for it, to show that the
+  /// search works and that nothing on the air can be found by it. What does
+  /// travel to a group is [discoveryHint].
   String get publicId => _deriveString('cid', 8);
 
   /// One byte of the code's hash, as two hex digits: what a sender announces

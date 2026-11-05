@@ -262,6 +262,78 @@ void main() {
   });
 
   // ===========================================================================
+  group('cleaning up after a failure', () {
+    // Throwing away a half-written file is a delete by path, and a delete by
+    // path follows every folder above the file. A junction is the link Windows
+    // lets anybody make, so it is the one that matters here.
+    test('abort does not delete through a junction in the chain', () async {
+      final base = Directory(at('dest'))..createSync();
+      final target = Directory(at('elsewhere'))..createSync();
+      junction(p.join(base.path, 'Trip'), target.path);
+      final foreign = put(p.join(target.path, 'a.bin.qs.partial'), 'not ours');
+      final inner = put(p.join(target.path, 'b.bin'), 'not ours either');
+
+      // Never opened: Windows will not move a folder that holds an open file,
+      // so the state to test is "the chain has a link in it when the delete
+      // comes", and a file that was never opened is in exactly that state.
+      await DurableFile(p.join(base.path, 'Trip', 'a.bin'), base: base.path)
+          .abort();
+      await DurableFile(p.join(base.path, 'Trip', 'b.bin'),
+              staged: false, base: base.path)
+          .abort();
+
+      expect(foreign.readAsStringSync(), 'not ours');
+      expect(inner.readAsStringSync(), 'not ours either');
+    });
+
+    test('SafePath.discard leaves the file and says so, and never throws', () {
+      final base = Directory(at('dest'))..createSync();
+      final target = Directory(at('elsewhere'))..createSync();
+      junction(p.join(base.path, 'Trip'), target.path);
+      final foreign = put(p.join(target.path, 'a.bin.qs.partial'), 'not ours');
+
+      final cleared = SafePath.discard(
+          base.path, p.join(base.path, 'Trip', 'a.bin.qs.partial'));
+
+      expect(cleared, isFalse);
+      expect(foreign.readAsStringSync(), 'not ours');
+    });
+
+    test('a directory symlink in the chain is treated the same way', () {
+      final base = Directory(at('dest'))..createSync();
+      final target = Directory(at('elsewhere'))..createSync();
+      if (!trySymlink(p.join(base.path, 'Trip'), target.path,
+          directory: true)) {
+        markTestSkipped('this machine cannot create symbolic links '
+            '(see SYMLINK_SKIPPED above)');
+        return;
+      }
+      final foreign = put(p.join(target.path, 'a.bin.qs.partial'), 'not ours');
+
+      expect(
+          SafePath.discard(
+              base.path, p.join(base.path, 'Trip', 'a.bin.qs.partial')),
+          isFalse);
+      expect(foreign.readAsStringSync(), 'not ours');
+    });
+
+    test('a junction standing where the partial goes is removed as a junction, '
+        'and what it points at is left', () {
+      final base = Directory(at('dest'))..createSync();
+      final target = Directory(at('elsewhere'))..createSync();
+      final keep = put(p.join(target.path, 'keep.txt'), 'keep');
+      final partial = p.join(base.path, 'a.bin.qs.partial');
+      junction(partial, target.path);
+
+      expect(SafePath.discard(base.path, partial), isTrue);
+
+      expect(FileSystemEntity.typeSync(partial, followLinks: false),
+          FileSystemEntityType.notFound);
+      expect(keep.readAsStringSync(), 'keep');
+    });
+  });
+
+  // ===========================================================================
   group('renaming without replacing', () {
     test('an ordinary rename onto a free name works', () {
       final from = put(at('src.bin'), 'payload');

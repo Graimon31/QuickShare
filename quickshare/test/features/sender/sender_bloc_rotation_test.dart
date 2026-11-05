@@ -1043,15 +1043,20 @@ void main() {
         t.pass(const Duration(milliseconds: 1));
 
         final second = adv(t);
-        expect(second.code, isNot(first.code));
+        expect(second.locator, isNot(first.locator));
         expect(second.qrData, isNot(first.qrData));
         expect(radios, hasLength(2));
         expect(radios.first.stopped, isTrue, reason: 'the old advertisement');
-        expect(radios.last.started.single.publicId, second.code!.publicId,
-            reason: 'what is on the air now is derived from the new code');
-        expect(radios.last.started.single.token, second.code!.sessionToken);
-        expect(BluetoothQrPayload.tryDecode(second.qrData)!.token,
-            second.code!.sessionToken);
+        final firstQr = BluetoothQrPayload.tryDecode(first.qrData)!;
+        final qr = BluetoothQrPayload.tryDecode(second.qrData)!;
+        expect(radios.last.started.single.locator, second.locator,
+            reason: 'what is on the air now is the new session\'s locator');
+        expect(radios.last.started.single.locator, qr.locator,
+            reason: 'and it is the one the QR hands to the receiver');
+        expect(radios.last.started.single.token, qr.token);
+        expect(qr.locator, isNot(firstQr.locator));
+        expect(qr.token, isNot(firstQr.token),
+            reason: 'nothing of the old session survives the change');
       });
     });
 
@@ -1160,7 +1165,7 @@ a=candidate:0 1 udp 2122260223 192.168.3.1 40000 typ host generation 0
 
 class _FakeBluetooth extends BluetoothTransferTransport {
   bool stopped = false;
-  final List<({String token, String publicId})> started = [];
+  final List<({String token, String locator})> started = [];
   final ready = StreamController<void>.broadcast();
   final status = StreamController<TransferStatus>.broadcast();
   final progress = StreamController<double>.broadcast();
@@ -1177,8 +1182,8 @@ class _FakeBluetooth extends BluetoothTransferTransport {
 
   @override
   Future<String> startSharing(FileMetadata file, String token,
-      {List<FileMetadata>? files, String publicId = ''}) async {
-    started.add((token: token, publicId: publicId));
+      {List<FileMetadata>? files, String locator = ''}) async {
+    started.add((token: token, locator: locator));
     return file.name;
   }
 

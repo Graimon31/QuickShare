@@ -4,7 +4,9 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:quickshare/core/storage/durable_file.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
 
+import '../../support/links.dart';
 import '../../support/open_files.dart';
 
 void main() {
@@ -111,6 +113,142 @@ void main() {
       await f.abort();
 
       expect(File(f.finalPath).readAsBytesSync(), [7, 7]);
+    });
+
+    // ---- cleaning up after a failure never goes through a link -------------
+    //
+    // `abort` looked at the last component of the path without following a
+    // link and deleted by the whole path. The folders above it were followed
+    // like any others, so a folder that had been swapped for a link made the
+    // delete land in whatever the link pointed at, on a file that only had to
+    // carry the same name.
+    group('abort, when a folder above the file is a link', () {
+      late Directory dest;
+      late Directory outside;
+
+      setUp(() {
+        dest = Directory(p.join(root.path, 'dest'))..createSync();
+        outside = Directory(p.join(root.path, 'outside'))..createSync();
+      });
+
+      Map<String, String> contents(Directory d) => {
+            for (final e in d.listSync(recursive: true, followLinks: false))
+              p.relative(e.path, from: d.path):
+                  e is File ? e.readAsStringSync() : e is Link ? 'link' : 'dir',
+          };
+
+      test('a staged partial: what is on the far side of the link survives',
+          () async {
+        // Never opened, so there is no handle to hold the folder in place and
+        // the state is the same on every platform: the chain has a link in it
+        // when the delete comes.
+        final f = DurableFile(p.join(dest.path, 'sub', 'x.bin'),
+            base: dest.path);
+        if (!linkOrSkip(p.join(dest.path, 'sub'), outside.path)) return;
+        File(p.join(outside.path, 'x.bin$kPartialSuffix'))
+            .writeAsStringSync('belongs to somebody else');
+        final before = contents(outside);
+
+        await f.abort();
+
+        expect(contents(outside), before,
+            reason: 'the delete went through the link and removed a file '
+                'outside the destination');
+      });
+
+      test('a file inside a staged folder: the same', () async {
+        // `staged: false` is how a folder's files are written, straight to
+        // their real names inside `Trip.qs.partial/`.
+        final f = DurableFile(
+            p.join(dest.path, 'Trip.qs.partial', 'sub', 'b.bin'),
+            staged: false,
+            base: dest.path);
+        Directory(p.join(dest.path, 'Trip.qs.partial')).createSync();
+        if (!linkOrSkip(
+            p.join(dest.path, 'Trip.qs.partial', 'sub'), outside.path)) {
+          return;
+        }
+        File(p.join(outside.path, 'b.bin')).writeAsStringSync('not ours');
+        final before = contents(outside);
+
+        await f.abort();
+
+        expect(contents(outside), before);
+      });
+
+      test('a folder swapped for a link after the file was opened: the file '
+          'stays, and nothing else is touched', () async {
+        // Windows refuses to move a folder that holds an open file, so the
+        // swap cannot be made to an open partial there; the case above is the
+        // portable one, and `windows_native_test.dart` covers junctions.
+        if (Platform.isWindows) {
+          markTestSkipped('Windows cannot move a folder that holds an open '
+              'file, so an open partial cannot be swapped out from under '
+              'its writer there');
+          return;
+        }
+        final f = DurableFile(p.join(dest.path, 'sub', 'x.bin'),
+            base: dest.path);
+        await f.open();
+        await f.add([1, 2, 3]);
+        Directory(p.join(dest.path, 'sub'))
+            .renameSync(p.join(dest.path, 'moved'));
+        if (!linkOrSkip(p.join(dest.path, 'sub'), outside.path)) return;
+        File(p.join(outside.path, 'x.bin$kPartialSuffix'))
+            .writeAsStringSync('belongs to somebody else');
+        final before = contents(outside);
+
+        await f.abort();
+
+        expect(contents(outside), before);
+        expect(File(p.join(dest.path, 'moved', 'x.bin$kPartialSuffix'))
+            .existsSync(), isTrue,
+            reason: 'it cannot be reached without going through the link, so '
+                'it is left in place rather than removed blind');
+      });
+
+      test('says what it left, so the debris can be found', () async {
+        final f = DurableFile(p.join(dest.path, 'sub', 'x.bin'),
+            base: dest.path);
+        if (!linkOrSkip(p.join(dest.path, 'sub'), outside.path)) return;
+        File(p.join(outside.path, 'x.bin$kPartialSuffix'))
+            .writeAsStringSync('belongs to somebody else');
+
+        await f.abort();
+
+        expect(
+            AppLogger.getInMemoryLogs().where((line) =>
+                line.contains('[DISK]') &&
+                line.contains('x.bin$kPartialSuffix') &&
+                line.contains('symbolic link')),
+            isNotEmpty,
+            reason: 'a file left in place on purpose is written to the log');
+      });
+
+      test('does not throw, and does not hide a failure that came first',
+          () async {
+        final f = DurableFile(p.join(dest.path, 'sub', 'x.bin'),
+            base: dest.path);
+        if (!linkOrSkip(p.join(dest.path, 'sub'), outside.path)) return;
+
+        // The caller is already reporting an error of its own. A cleanup that
+        // throws would replace it with one about the cleanup.
+        await expectLater(f.abort(), completes);
+      });
+    });
+
+    test('abort removes a link that stands where the partial goes — the link, '
+        'not what it points at', () async {
+      final precious = File(p.join(root.path, 'precious.bin'))
+        ..writeAsStringSync('keep me');
+      final f = DurableFile(p.join(root.path, 'e.bin'));
+      if (!linkOrSkip(f.partialPath, precious.path)) return;
+
+      await f.abort();
+
+      expect(FileSystemEntity.typeSync(f.partialPath, followLinks: false),
+          FileSystemEntityType.notFound);
+      expect(precious.readAsStringSync(), 'keep me');
     });
 
     test('open truncates a stale partial from a previous attempt', () async {

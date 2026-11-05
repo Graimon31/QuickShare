@@ -291,13 +291,16 @@ void main() {
         reason: 'both halves of one session have to agree on its token');
   });
 
-  test('the sender advertises its session under the code and scans for nobody',
+  test('the sender advertises its session under a locator and scans for nobody',
       () async {
     final files = [write('one.txt'), write('two.txt')];
     final args = await startedAdvertising([for (final f in files) f.path]);
     expect(args['sessionToken'], isNotEmpty);
-    expect(args['publicId'], isNotEmpty,
+    expect(args['locator'], isNotEmpty,
         reason: 'what a receiver that scanned the QR looks for on the air');
+    expect(args.containsKey('publicId'), isFalse,
+        reason: 'the value this used to be sent as was worked out from the '
+            'session code');
     expect(args.containsKey('forReceivers'), isFalse);
   });
 

@@ -105,6 +105,30 @@ void main() {
       expect(failures, isEmpty);
     });
 
+    test('a directive that still carries the code\'s digits is an older '
+        'sender: told to update, not acted on', () async {
+      // Generation 4 and below put the ten digits in every directive. The
+      // frame is refused at once, with the update it needs, instead of being
+      // handed to a negotiation whose seal could not open — which would only
+      // say so after waiting out its whole budget.
+      radio.notify(
+          'sender-1',
+          BleGatt.metadata,
+          jsonEncode({
+            'link': {
+              ...const DirectLinkDirective.hostByReceiver(senderPublicKey: 'k')
+                  .toJson(),
+              'code': '0123456789',
+            }
+          }));
+      await settle();
+
+      expect(directives, isEmpty);
+      expect(failures, hasLength(1));
+      expect(failures.single.code, FailureCode.senderTooOldForDirectLink);
+      expect(failures.single.message, BleControlProtocol.senderTooOldMessage);
+    });
+
     test('and so does a serve frame', () async {
       radio.notify(
           'sender-1',
@@ -175,7 +199,7 @@ void main() {
 
   group('scanning', () {
     test('filters on the service and nothing else', () async {
-      await receiver.startScanning(sessionToken: 'tok', publicId: 'ABCD1234');
+      await receiver.startScanning(sessionToken: 'tok', locator: 'ABCD1234');
 
       expect(radio.scans.single!.withServices,
           [BleGatt.service]);
@@ -184,7 +208,7 @@ void main() {
     test('a QuickShare name for another session is not offered', () async {
       final seen = <BleDevice>[];
       receiver.devices.listen(seen.add);
-      await receiver.startScanning(sessionToken: 'tok', publicId: 'ABCD1234');
+      await receiver.startScanning(sessionToken: 'tok', locator: 'ABCD1234');
 
       radio.discover(id: 'a', name: 'QuickShare-ZZZZ9999');
       radio.discover(id: 'b', name: 'QuickShare-ABCD1234');

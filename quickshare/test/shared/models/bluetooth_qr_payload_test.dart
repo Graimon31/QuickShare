@@ -5,7 +5,7 @@ void main() {
   test('Bluetooth QR payload round-trips its session token and metadata', () {
     const original = BluetoothQrPayload(
       token: 'session-token-123',
-      publicId: 'cid-abc',
+      locator: 'ABCD2345',
       fileName: 'Photos',
       fileSize: 456789,
       itemCount: 4,
@@ -14,7 +14,7 @@ void main() {
     final decoded = BluetoothQrPayload.tryDecode(original.encode());
 
     expect(decoded?.token, original.token);
-    expect(decoded?.publicId, original.publicId);
+    expect(decoded?.locator, original.locator);
     expect(decoded?.fileName, original.fileName);
     expect(decoded?.fileSize, original.fileSize);
     expect(decoded?.itemCount, original.itemCount);

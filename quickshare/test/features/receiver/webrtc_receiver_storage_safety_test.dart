@@ -13,8 +13,11 @@ import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/storage/disk_space.dart';
 import 'package:quickshare/core/storage/durable_file.dart';
+import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
+
+import '../../support/links.dart';
 
 class _Fixed extends DiskSpaceProbe {
   _Fixed(this.answer);
@@ -341,6 +344,109 @@ void main() {
 
       expect(Directory(p.join(dest.path, 'Trip.qs.partial')).existsSync(), isFalse);
       expect(Directory(p.join(dest.path, 'Trip')).existsSync(), isFalse);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Cleaning up after a failure goes through the same checks as writing.
+  //
+  // A transfer that fails throws its half-written files away. The folders above
+  // them are the user's, and somebody who can write there can swap one for a
+  // link while the transfer runs; the throwing-away must not follow it.
+  group('a failure cleans up without going through a link', () {
+    // Windows refuses to move a folder that holds an open file, so the swap
+    // cannot be made to a partial that is open there. `windows_native_test.dart`
+    // covers the junction on the platform that has them.
+    final canSwap = !Platform.isWindows;
+    const why = 'Windows cannot move a folder that holds an open file, so a '
+        'partial that is being written cannot be swapped out from under it';
+
+    /// Something the sender can do to fail the session at a moment of the test's
+    /// choosing: send more bytes than the item announced.
+    Future<void> overrun(WebRtcReceiverTransport t) =>
+        t.deliverForTest(binary(List.filled(64, 9)), baseDir: dest.path);
+
+    test('a single file whose folder was swapped: the stranger\'s file '
+        'survives, the error is the transfer\'s own', () async {
+      final t = WebRtcReceiverTransport();
+      final settled = expectLater(
+          t.completionForTest,
+          throwsA(isA<Exception>().having(
+              (e) => e.toString(), 'message', contains('sent more than'))));
+
+      await announce(t, [item('a/x.bin', 3), item('b/y.bin', 2)]);
+      await t.deliverForTest(text(TransferProtocol.buildFileStart(0)),
+          baseDir: dest.path);
+      await t.deliverForTest(binary([1]), baseDir: dest.path);
+
+      Directory(p.join(dest.path, 'a')).renameSync(p.join(dest.path, 'moved'));
+      if (!linkOrSkip(p.join(dest.path, 'a'), outside.path)) return;
+      File(p.join(outside.path, 'x.bin$kPartialSuffix'))
+          .writeAsStringSync('belongs to somebody else');
+      final before = snapshot(outside);
+
+      await overrun(t);
+      await settled;
+      await t.discardInFlightForTesting();
+
+      expect(snapshot(outside), before,
+          reason: 'the cleanup went through the link and removed a file '
+              'outside the destination');
+      expect(
+          AppLogger.getInMemoryLogs().where((l) =>
+              l.contains('[DISK]') && l.contains('symbolic link')),
+          isNotEmpty,
+          reason: 'a file left in place on purpose is written to the log');
+    }, skip: canSwap ? false : why);
+
+    test('a folder whose inner folder was swapped: nothing outside is touched, '
+        'and the staging folder is not followed into the link', () async {
+      final t = WebRtcReceiverTransport();
+      final settled = expectLater(
+          t.completionForTest,
+          throwsA(isA<Exception>().having(
+              (e) => e.toString(), 'message', contains('sent more than'))));
+
+      await announce(t, [item('Trip/a.bin', 3), item('Trip/sub/b.bin', 2)]);
+      await sendFile(t, 0, [1, 2, 3]);
+      await t.deliverForTest(text(TransferProtocol.buildFileStart(1)),
+          baseDir: dest.path);
+      await t.deliverForTest(binary([4]), baseDir: dest.path);
+
+      final staged = p.join(dest.path, 'Trip.qs.partial');
+      Directory(p.join(staged, 'sub')).renameSync(p.join(staged, 'moved'));
+      if (!linkOrSkip(p.join(staged, 'sub'), outside.path)) return;
+      File(p.join(outside.path, 'b.bin')).writeAsStringSync('not ours');
+      File(p.join(outside.path, 'keep.txt')).writeAsStringSync('keep');
+      final before = snapshot(outside);
+
+      await overrun(t);
+      await settled;
+      await t.discardInFlightForTesting();
+
+      expect(snapshot(outside), before);
+    }, skip: canSwap ? false : why);
+
+    test('an ordinary failure still clears its partial', () async {
+      // The other half of the rule: refusing to delete through a link must not
+      // turn into refusing to delete.
+      final t = WebRtcReceiverTransport();
+      final settled = expectLater(t.completionForTest, throwsA(isA<Exception>()));
+
+      await announce(t, [item('a/x.bin', 3), item('b/y.bin', 2)]);
+      await t.deliverForTest(text(TransferProtocol.buildFileStart(0)),
+          baseDir: dest.path);
+      await t.deliverForTest(binary([1]), baseDir: dest.path);
+      expect(File(p.join(dest.path, 'a', 'x.bin$kPartialSuffix')).existsSync(),
+          isTrue);
+
+      await overrun(t);
+      await settled;
+      await cleanedUp(() => !File(
+              p.join(dest.path, 'a', 'x.bin$kPartialSuffix')).existsSync());
+
+      expect(File(p.join(dest.path, 'a', 'x.bin$kPartialSuffix')).existsSync(),
+          isFalse);
     });
   });
 }

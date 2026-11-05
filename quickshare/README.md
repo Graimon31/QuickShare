@@ -150,8 +150,8 @@ working at that moment.
   open and for 60 seconds after a receiver was let in; if no answer comes in
   that time it is replaced as usual. Once an answer has arrived it is left
   alone, and the code stops answering anyone else.
-- **Bluetooth.** The advertisement is restarted under a new code. It is left
-  alone while a receiver is connected or connecting.
+- **Bluetooth.** The advertisement is restarted under a new locator and a new
+  token. It is left alone while a receiver is connected or connecting.
 - **Hotspot.** The transfer QR is replaced; the network and the Wi-Fi code that
   joins it last as long as the hotspot does.
 
@@ -338,7 +338,7 @@ Bluetooth session.
 
 | Sender | Implementation | Advertised |
 |---|---|---|
-| macOS, iOS | CoreBluetooth bridge (Swift) | Service UUID and the name `QuickShare-` plus the session's eight-character identifier |
+| macOS, iOS | CoreBluetooth bridge (Swift) | Service UUID and the name `QuickShare-` plus the session's eight-character locator |
 | Linux | BlueZ over D-Bus | The same |
 | Android | `universal_ble` peripheral mode | **The service UUID only** |
 | Windows | `universal_ble` peripheral mode (`GattServiceProvider`) | **The service UUID only** |
@@ -353,7 +353,18 @@ phone's own Bluetooth name while the advertisement lasts. Windows cannot set a
 name at all. A receiver accepts a sender with no `QuickShare-` name, because the
 service UUID shows it is a DirectDrop sender and the `START:<token>` write after
 the connection is what shows it is the one the QR named; a sender that does
-advertise a `QuickShare-` name has to carry the scanned session's identifier.
+advertise a `QuickShare-` name has to carry the scanned session's locator.
+
+**The locator and the token are random, and nothing on the air is derived from a
+session code.** Both are drawn from a cryptographic source for each session —
+that is, each time the QR changes — and they are tied to nothing: not to each
+other, not to the code that names the Wi-Fi network, not to the network's name.
+They reach the receiver in the QR and nowhere else. The link directive carries no
+digits, the sealed credentials are bound to the locator the QR holds, and the
+Bonjour name of an Apple peer-to-peer link is made from it too. Until protocol
+generation 5 the advertised name was a hash of the code, which anyone in range
+could search for the code in seconds (the code is about 33 bits); the directive
+carried the digits themselves; and the token was a hash of them.
 With two Android or Windows senders in range, a receiver connects to whichever
 it hears first — and the one it was not meant for refuses the wrong token. The
 Android and Windows senders register their GATT service once per process and
@@ -574,10 +585,13 @@ limit and is bounded only by the protocol (100 GB per file, 500 GB per session,
   fingerprint: "This code is from an older version that sends files unencrypted.
   Update the sending device." An older receiver connects without TLS and cannot
   talk to a current sender.
-- **Bluetooth-started transfers need protocol generation 4 on both ends**; an
-  older receiver is told to update instead of being sent anything, and an older
-  sender that still pushes a file over Bluetooth is refused by a receiver of this
-  version, which says so and writes none of it.
+- **Bluetooth-started transfers need protocol generation 5 on both ends.** A
+  sender of this version tells a receiver below it to update, at once, instead of
+  sending it anything (that receiver sees the connection drop). A receiver of this
+  version refuses a sender whose first frame still carries the code's digits —
+  every generation-4 sender — and a sender that still pushes a file over
+  Bluetooth, says so, and writes none of it. Neither case waits out the
+  negotiation: both devices end with an error naming the update.
 - **An older build that advertises itself to be picked is not listed by this
   version.** Nothing lists devices any more; scan the sender's QR instead.
 
@@ -606,32 +620,37 @@ limit and is bounded only by the protocol (100 GB per file, 500 GB per session,
 Open, understood and not fixed. They are written down here so nobody has to
 discover them.
 
-1. **Names derived from the short code can be reversed offline.** The session
-   token, the hotspot passphrase and the identifiers below all derive from the
-   ten-digit code by unsalted hashes, and the code has about 33 bits. Three of
-   them are broadcast to anyone in radio range where the matching transport is
-   used: the Bluetooth advertised name (`QuickShare-` plus eight characters; on
-   Apple and Linux senders — Android and Windows senders advertise no name),
-   the Bonjour name of an Apple peer-to-peer link (`dd-` plus 16 hex digits of
-   the session token) and the hotspot SSID where it is requested from the code
+1. **Names derived from the short code can be reversed offline.** The hotspot
+   passphrase and the identifiers below derive from the ten-digit code by
+   unsalted hashes, and the code has about 33 bits. One of them is still broadcast
+   to anyone in radio range: the hotspot SSID where it is requested from the code
    (`DirectDrop-` plus six characters; Android may name its own network instead).
-   Whoever sees one can hash all ten billion codes, keep the one that matches,
-   and from the code derive the token and the passphrase. The local-network
-   announcement no longer carries such a value — it carries a one-byte hint that
-   narrows nothing down — and these three still do.
+   Six characters are 30 bits, so reading one leaves about ten codes out of ten
+   billion (a scan of all of them for six random codes left 9, 9, 11, 12, 12 and
+   14), and the passphrase follows from each. Whoever sees it can try them in a
+   minute and join the network. What they reach is a throwaway
+   network with no internet on it: the transfer is behind the pinned certificate
+   and a token that, for a Bluetooth session, is random and not derived from the
+   code. The local-network announcement carries a one-byte hint that narrows
+   nothing down, and the Bluetooth advertisement, the link directive and the
+   peer-to-peer link's Bonjour name no longer carry anything derived from the code
+   (see [Bluetooth](#bluetooth)).
 2. **A Bonjour browser can still see that an offer exists.** While a Wi-Fi offer
    is on a sender's screen, anyone on the same network running a Bonjour browser
    sees an anonymous `_directdrop._tcp` service with a random name, a port and
    one byte of the code's hash. It carries no device name, address, fingerprint
    or token, and it disappears with the offer, but its existence is not hidden.
 3. **Bluetooth frames are not encrypted.** Nothing at the Bluetooth layer
-   encrypts or bonds them, on any sender — Android and Windows included. The `START:<token>` write, the link frame (which
-   includes the ten digits of the code) and the serve frame (token, certificate
+   encrypts or bonds them, on any sender — Android and Windows included. The
+   `START:<token>` write, the link frame and the serve frame (token, certificate
    fingerprint, file name and size) cross as plain text; only the hotspot
    credentials are sealed. That seal holds against a passive listener. A device
    that substitutes its own key during the exchange is not addressed — what it
-   would reach is the credentials of a throwaway network with no internet — but the
-   code and the token are readable regardless.
+   would reach is the credentials of a throwaway network with no internet. Someone
+   who can read the connection reads the session token, which is what authorises
+   the pull: it is random, lasts as long as the QR does, and is of no use without
+   also being on the same Wi-Fi network, but it is readable. It is not derived
+   from the code, so it does not lead to it.
 4. **A computer cannot receive over Bluetooth.** Devices no longer see each
    other: a receiver does not advertise its name and a Bluetooth sender shows no
    list. A Bluetooth session is joined by scanning its QR, which takes a camera,
