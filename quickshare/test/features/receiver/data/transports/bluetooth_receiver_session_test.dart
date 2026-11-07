@@ -41,7 +41,8 @@ class _FakeBleReceiver implements BleReceiver {
   Stream<BluetoothDevice> get devices => _devicesController.stream;
 
   @override
-  Stream<DirectLinkDirective> get linkDirectives => const Stream.empty();
+  Stream<DirectLinkDirective> get linkDirectives => Stream.value(
+      const DirectLinkDirective.overPeerLink(serviceName: 'test-link'));
 
   @override
   Stream<LinkServeInfo> get serveInfos => _serveController.stream;
@@ -112,6 +113,17 @@ class _FakeDriver implements DirectLinkDriver {
   Future<void> stopHosting() async {}
 }
 
+class _DelayedPeerDriver extends _FakeDriver {
+  final joined = Completer<int>();
+  final joining = Completer<void>();
+
+  @override
+  Future<int> joinPeerLink(String serviceName) {
+    joining.complete();
+    return joined.future;
+  }
+}
+
 /// A device whose Wi-Fi is off: the negotiation ends at once, with a reason.
 class _WifiOffDriver extends _FakeDriver {
   @override
@@ -132,6 +144,7 @@ class _FakeQhtpReceiver extends IsolatedQhtpReceiver {
   _FakeQhtpReceiver(this._result);
 
   final Either<Failure, QhtpReceiveResult> _result;
+  final payloads = <QRPayload>[];
 
   @override
   Future<Either<Failure, QhtpReceiveResult>> downloadSession({
@@ -139,6 +152,7 @@ class _FakeQhtpReceiver extends IsolatedQhtpReceiver {
     required String targetBaseDir,
     void Function(QhtpProgress progress)? onProgress,
   }) async {
+    payloads.add(payload);
     await Future<void>.delayed(const Duration(milliseconds: 10));
     return _result;
   }
@@ -157,6 +171,104 @@ void main() {
             isDesktop: false, gallery: GalleryFormats(GalleryPlatform.ios)),
         cache: TransferCache(overrideRoot: () => root),
       );
+
+  test('early and duplicate serve frames wait for the peer proxy', () async {
+    final transport = _FakeBleReceiver();
+    final driver = _DelayedPeerDriver();
+    final receiver = _FakeQhtpReceiver(const Left(NetworkFailure('finished')));
+    final session = BluetoothReceiverSession(
+      transport: transport,
+      driver: driver,
+      networkInfo: _FakeNetworkInfo(),
+      hotspotService: _FakeHotspot(),
+      qhtpReceiver: receiver,
+    );
+    final running = session.run(
+      token: 'token',
+      locator: 'public',
+      destination: await cacheDestination(),
+      onProgress: (_, __, ___) {},
+      onVerifying: () {},
+    );
+    final checked = expectLater(
+        running.timeout(const Duration(seconds: 5)), throwsA(isA<Exception>()));
+    transport.emitDevice(const BluetoothDevice(id: 'd1', name: 'Sender'));
+    await driver.joining.future.timeout(const Duration(seconds: 5));
+    const serve = LinkServeInfo(
+        ip: '127.0.0.1', port: 8000, token: 'secret', tlsFingerprint: 'pin');
+    transport.emitServe(serve);
+    transport.emitServe(serve);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(receiver.payloads, isEmpty);
+    driver.joined.complete(4242);
+    await checked;
+    expect(receiver.payloads, hasLength(1));
+    final payload = receiver.payloads.single;
+    expect(payload.ip, '127.0.0.1');
+    expect(payload.port, 4242);
+    expect(payload.token, 'secret');
+    expect(payload.tlsFingerprint, 'pin');
+  });
+
+  test('an early serve does not hide a failed negotiation', () async {
+    final transport = _FakeBleReceiver();
+    final driver = _DelayedPeerDriver();
+    final receiver =
+        _FakeQhtpReceiver(const Left(NetworkFailure('unexpected')));
+    final session = BluetoothReceiverSession(
+      transport: transport,
+      driver: driver,
+      networkInfo: _FakeNetworkInfo(),
+      hotspotService: _FakeHotspot(),
+      qhtpReceiver: receiver,
+    );
+    final running = session.run(
+      token: 'token',
+      locator: 'public',
+      destination: await cacheDestination(),
+      onProgress: (_, __, ___) {},
+      onVerifying: () {},
+    );
+    final checked = expectLater(
+        running.timeout(const Duration(seconds: 5)),
+        throwsA(isA<Exception>().having((e) => e.toString(), 'message',
+            contains('Could not set up the direct Wi-Fi link'))));
+    transport.emitDevice(const BluetoothDevice(id: 'd1', name: 'Sender'));
+    await driver.joining.future.timeout(const Duration(seconds: 5));
+    transport.emitServe(const LinkServeInfo(
+        ip: '127.0.0.1', port: 8000, token: 'token', tlsFingerprint: 'pin'));
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    driver.joined.completeError(StateError('join failed'));
+    await checked;
+    expect(receiver.payloads, isEmpty);
+  });
+
+  test('a scan failure completes the session before any device is found',
+      () async {
+    final transport = _FakeBleReceiver();
+    final session = BluetoothReceiverSession(
+      transport: transport,
+      driver: _FakeDriver(),
+      networkInfo: _FakeNetworkInfo(),
+      hotspotService: _FakeHotspot(),
+    );
+    final result = session.run(
+      token: 'token',
+      locator: 'public',
+      destination: await cacheDestination(),
+      onProgress: (_, __, ___) {},
+      onVerifying: () {},
+    );
+    final checked = expectLater(
+        result,
+        throwsA(isA<FileException>()
+            .having((e) => e.message, 'message', 'Bluetooth is turned off')));
+    transport.emitFailure(
+        'Bluetooth is turned off', FailureCode.bluetoothTransferFailed);
+    await checked;
+    expect(transport.connected, isEmpty);
+    expect(transport.cancels, 1);
+  });
 
   test('a failed QHTP session completes run() with the failure, not silence',
       () async {
@@ -241,8 +353,8 @@ void main() {
       driver: _FakeDriver(),
       networkInfo: _FakeNetworkInfo(),
       hotspotService: _FakeHotspot(),
-      qhtpReceiver: _FakeQhtpReceiver(
-          const Left(NetworkFailure('never reached'))),
+      qhtpReceiver:
+          _FakeQhtpReceiver(const Left(NetworkFailure('never reached'))),
     );
 
     // Never settles: nothing is cancelled to completion in the fake, and the
@@ -293,14 +405,14 @@ void main() {
     const serve = LinkServeInfo(
         ip: '127.0.0.1', port: 9, token: 'token', tlsFingerprint: 'ff');
 
-    test('a link that cannot be built ends the session with the reason, not '
+    test(
+        'a link that cannot be built ends the session with the reason, not '
         'a spinner', () async {
       // The negotiation used to end in a log line when it found no way to
       // join the sender, and the screen waited for a serve frame that could
       // not come.
       final transport = _FakeBleReceiver();
-      final running =
-          runOn(sessionWith(transport, driver: _WifiOffDriver()));
+      final running = runOn(sessionWith(transport, driver: _WifiOffDriver()));
       transport.emitDevice(sender);
 
       await expectLater(
@@ -310,14 +422,16 @@ void main() {
       );
     });
 
-    test('a sender that is still pushing a file over Bluetooth is told to '
+    test(
+        'a sender that is still pushing a file over Bluetooth is told to '
         'update, not received from', () async {
       final transport = _FakeBleReceiver();
       final running = runOn(sessionWith(transport));
       transport.emitDevice(sender);
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      transport.emitFailure('older sender', FailureCode.senderTooOldForDirectLink);
+      transport.emitFailure(
+          'older sender', FailureCode.senderTooOldForDirectLink);
 
       await expectLater(
         running.timeout(const Duration(seconds: 5)),
@@ -326,7 +440,8 @@ void main() {
       );
     });
 
-    test('the radio dropping before the serve frame ends the session', () async {
+    test('the radio dropping before the serve frame ends the session',
+        () async {
       final transport = _FakeBleReceiver();
       final running = runOn(sessionWith(transport));
       transport.emitDevice(sender);
@@ -404,12 +519,10 @@ void main() {
 
       expect(transport.connected, ['d1']);
 
-      await expectLater(
-          (() async {
-            transport.emitFailure('end it', FailureCode.linkPeerLost);
-            await running;
-          })(),
-          throwsA(isA<Exception>()));
+      await expectLater((() async {
+        transport.emitFailure('end it', FailureCode.linkPeerLost);
+        await running;
+      })(), throwsA(isA<Exception>()));
     });
   });
 }

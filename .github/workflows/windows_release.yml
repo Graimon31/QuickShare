@@ -1,0 +1,103 @@
+name: Windows release build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/windows-release-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: quickshare
+        shell: pwsh
+    env:
+      JAVA_HOME: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          channel: stable
+          cache: true
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup installation failed' }
+
+      - name: Build portable ZIP and installer
+        run: |
+          & .\scripts\build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+
+      - name: Windows storage and native regressions
+        run: |
+          flutter test --no-pub test/platform/windows_native_test.dart --reporter=expanded
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native tests failed' }
+
+      - name: Verify portable launch and installer contents
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $portable = Join-Path $env:RUNNER_TEMP 'DirectDrop portable smoke'
+          $installed = Join-Path $env:RUNNER_TEMP 'DirectDrop installed smoke'
+          Expand-Archive -LiteralPath dist\windows\DirectDrop-windows-portable.zip -DestinationPath $portable
+          $exe = Join-Path $portable 'directdrop.exe'
+          $process = Start-Process -FilePath $exe -WorkingDirectory $portable -PassThru
+          try {
+            Start-Sleep -Seconds 8
+            $process.Refresh()
+            if ($process.HasExited) { throw "Portable app exited early: $($process.ExitCode)" }
+            if ($process.MainWindowHandle -eq 0) { throw 'Portable app did not create a window' }
+            if ($process.MainWindowTitle -ne 'DirectDrop') { throw "Unexpected app window: $($process.MainWindowTitle)" }
+            Write-Host 'Portable app created its DirectDrop window and remained running.'
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+          }
+          $setup = (Resolve-Path dist\windows\DirectDrop-windows-setup.exe).Path
+          $setupProcess = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=`"$installed`"") -Wait -PassThru
+          if ($setupProcess.ExitCode -ne 0) { throw "Installer failed: $($setupProcess.ExitCode)" }
+          foreach ($file in @('directdrop.exe', 'flutter_windows.dll', 'vcruntime140.dll', 'data\app.so')) {
+            $from = Join-Path $portable $file
+            $to = Join-Path $installed $file
+            if (-not (Test-Path -LiteralPath $to)) { throw "Installer omitted $file" }
+            if ((Get-FileHash -LiteralPath $from).Hash -ne (Get-FileHash -LiteralPath $to).Hash) { throw "Installer changed $file" }
+          }
+          $uninstaller = Join-Path $installed 'unins000.exe'
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstall failed: $($uninstall.ExitCode)" }
+          Write-Host 'Installer files match the portable build; test uninstall succeeded.'
+
+      - name: Record checksums and source
+        run: |
+          $out = 'dist\windows'
+          @('DirectDrop-windows-portable.zip', 'DirectDrop-windows-setup.exe') | ForEach-Object {
+            $hash = Get-FileHash -LiteralPath (Join-Path $out $_) -Algorithm SHA256
+            "$($hash.Hash.ToLowerInvariant())  $_"
+          } | Set-Content -LiteralPath (Join-Path $out 'SHA256SUMS.txt') -Encoding ascii
+          @{
+            source_commit = $env:GITHUB_SHA
+            flutter = '3.44.8'
+            architecture = 'x64'
+            configuration = 'release'
+            native_tests = 'passed'
+            portable_launch = 'passed'
+            installer_and_uninstall = 'passed'
+            hardware_transfer_test = 'not run on hosted runner'
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $out 'BUILD-INFO.json') -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DirectDrop-windows-x64
+          path: quickshare/dist/windows/
+          if-no-files-found: error
+          retention-days: 30

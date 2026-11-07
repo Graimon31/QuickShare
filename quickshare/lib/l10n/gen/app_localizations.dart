@@ -1712,6 +1712,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Still counting the files…'**
   String get qrDisplayStillCounting;
+
+  /// No description provided for @errorCancelledByReceiver.
+  ///
+  /// In en, this message translates to:
+  /// **'The receiver cancelled the transfer.'**
+  String get errorCancelledByReceiver;
+
+  /// No description provided for @errorConnectionLostNotRecovered.
+  ///
+  /// In en, this message translates to:
+  /// **'The connection was lost during the transfer and could not be restored after several attempts. Send again; nothing is reported as received that did not arrive whole.'**
+  String get errorConnectionLostNotRecovered;
+
+  /// No description provided for @errorConnectionLostPeerTooOld.
+  ///
+  /// In en, this message translates to:
+  /// **'The connection was lost, and the other device runs an older version of DirectDrop that cannot continue an interrupted transfer. Update the app on that device and send again.'**
+  String get errorConnectionLostPeerTooOld;
+
+  /// No description provided for @errorIntegrityMismatch.
+  ///
+  /// In en, this message translates to:
+  /// **'A file arrived damaged: its checksum (SHA-256) does not match the original, so it was discarded and the transfer is not reported as complete. Send again.'**
+  String get errorIntegrityMismatch;
+
+  /// No description provided for @transferReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection lost, reconnecting…'**
+  String get transferReconnecting;
+
+  /// No description provided for @transferReconnectingHint.
+  ///
+  /// In en, this message translates to:
+  /// **'What was already transferred is kept. The transfer will continue from where it stopped.'**
+  String get transferReconnectingHint;
 }
 
 class _AppLocalizationsDelegate

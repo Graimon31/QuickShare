@@ -123,6 +123,13 @@ void main() {
 
     messenger.setMockMethodCallHandler(method, (call) async {
       nativeCalls.add(call);
+      if (call.method == 'startAdvertising') {
+        await messenger.handlePlatformMessage(
+            events.name,
+            const StandardMethodCodec()
+                .encodeSuccessEnvelope({'type': 'advertisingStarted'}),
+            (_) {});
+      }
       return null;
     });
     // The transport subscribes to the event channel on initialize().
@@ -167,7 +174,8 @@ void main() {
     );
     addTearDown(bloc.close);
 
-    final advertising = bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
+    final advertising =
+        bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
     bloc.add(StartQhtpSend(paths, mode: TransportType.bluetooth));
     await advertising.timeout(const Duration(seconds: 20));
 
@@ -203,8 +211,7 @@ void main() {
     // indistinguishable from a hung app.
     final progress = StreamController<double>.broadcast();
     addTearDown(progress.close);
-    when(() => repository.transferProgress)
-        .thenAnswer((_) => progress.stream);
+    when(() => repository.transferProgress).thenAnswer((_) => progress.stream);
     when(() => repository.startQhtpTransfer(any(),
             authToken: any(named: 'authToken'),
             onIndexed: any(named: 'onIndexed'),
@@ -229,7 +236,8 @@ void main() {
       directLinkDriver: const _FakeDirectLinkDriver(),
     );
     addTearDown(bloc.close);
-    final advertising = bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
+    final advertising =
+        bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
     bloc.add(StartQhtpSend([write('holiday.mov').path],
         mode: TransportType.bluetooth));
     await advertising.timeout(const Duration(seconds: 20));
@@ -250,12 +258,10 @@ void main() {
 
     final moved = bloc.stream.firstWhere((s) => s is Transferring);
     progress.add(0.5);
-    await expectLater(moved.timeout(const Duration(seconds: 10)),
-        completes);
+    await expectLater(moved.timeout(const Duration(seconds: 10)), completes);
   });
 
-  test('the direct link accepts the token the receiver actually has',
-      () async {
+  test('the direct link accepts the token the receiver actually has', () async {
     // The receiver on the far side of a Bluetooth session holds one token:
     // the Bluetooth one. A QHTP session minting its own answered 401 to the
     // only device it existed to serve, and the screen reported a connection
@@ -276,7 +282,8 @@ void main() {
       directLinkDriver: const _FakeDirectLinkDriver(),
     );
     addTearDown(bloc.close);
-    final advertising = bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
+    final advertising =
+        bloc.stream.firstWhere((s) => s is BluetoothAdvertising);
     bloc.add(StartQhtpSend([write('holiday.mov').path],
         mode: TransportType.bluetooth));
     await advertising.timeout(const Duration(seconds: 20));
@@ -286,9 +293,9 @@ void main() {
     await emitNativeEvent({'type': 'receiverReady'});
     await until(() => captured.isNotEmpty);
 
-    final advertisedToken =
-        (nativeCalls.firstWhere((c) => c.method == 'startAdvertising').arguments
-            as Map)['sessionToken'] as String;
+    final advertisedToken = (nativeCalls
+        .firstWhere((c) => c.method == 'startAdvertising')
+        .arguments as Map)['sessionToken'] as String;
     expect(captured.single, equals(advertisedToken),
         reason: 'both halves of one session have to agree on its token');
   });

@@ -26,8 +26,7 @@ import 'package:quickshare/features/sender/domain/entities/transfer_session.dart
 
 /// A file that does something to the filesystem right after it commits.
 class _AfterCommit extends DurableFile {
-  _AfterCommit(super.finalPath,
-      {super.staged, super.base, required this.then});
+  _AfterCommit(super.finalPath, {super.staged, super.base, required this.then});
   final void Function() then;
 
   @override
@@ -91,7 +90,8 @@ void main() {
   Future<void> expectFails(WebRtcReceiverTransport t, Pattern message) =>
       expectLater(
           t.completionForTest.timeout(const Duration(seconds: 8)),
-          throwsA(isA<Exception>().having((e) => '$e', 'reason', contains(message))));
+          throwsA(isA<Exception>()
+              .having((e) => '$e', 'reason', contains(message))));
 
   void chmod(String mode, String path) {
     final result = Process.runSync('chmod', [mode, path]);
@@ -99,7 +99,8 @@ void main() {
   }
 
   final posix = !Platform.isWindows;
-  final isRoot = posix && Process.runSync('id', ['-u']).stdout.toString().trim() == '0';
+  final isRoot =
+      posix && Process.runSync('id', ['-u']).stdout.toString().trim() == '0';
   final canBlockRename = posix && !isRoot;
 
   final folder = [item('Trip/a.bin', 3), item('Trip/sub/b.bin', 2)];
@@ -114,8 +115,8 @@ void main() {
           // The rename onto the real name is refused for a moment — the shape
           // of an antivirus scan holding the folder on Windows.
           chmod('555', dest.path);
-          Timer(const Duration(milliseconds: 350),
-              () => chmod('755', dest.path));
+          Timer(
+              const Duration(milliseconds: 350), () => chmod('755', dest.path));
         }),
       );
       await announce(t, folder);
@@ -130,10 +131,14 @@ void main() {
           [4, 5]);
       expect(Directory(p.join(dest.path, 'Trip.qs.partial')).existsSync(),
           isFalse);
-    }, skip: canBlockRename ? false : 'needs a non-root POSIX user to make a '
-        'rename fail');
+    },
+        skip: canBlockRename
+            ? false
+            : 'needs a non-root POSIX user to make a '
+                'rename fail');
 
-    test('is kept, not deleted, when the rename never works — and the failure '
+    test(
+        'is kept, not deleted, when the rename never works — and the failure '
         'says where it is', () async {
       final t = WebRtcReceiverTransport(
         debugFileFactory: (path, {required staged, required base}) =>
@@ -158,11 +163,15 @@ void main() {
           reason: 'a complete folder was deleted because its rename failed');
       expect(File(p.join(staged, 'sub', 'b.bin')).readAsBytesSync(), [4, 5]);
       expect(Directory(p.join(dest.path, 'Trip')).existsSync(), isFalse,
-          reason: 'a folder that was not committed is not reported as received');
+          reason:
+              'a folder that was not committed is not reported as received');
       expect(File(p.join(staged, '.qs.kept')).existsSync(), isTrue,
           reason: 'the kept folder carries the mark the startup sweep honours');
-    }, skip: canBlockRename ? false : 'needs a non-root POSIX user to make a '
-        'rename fail');
+    },
+        skip: canBlockRename
+            ? false
+            : 'needs a non-root POSIX user to make a '
+                'rename fail');
 
     test('a staging folder swapped for a link is not deleted through',
         () async {
@@ -191,8 +200,7 @@ void main() {
   group('every item is sealed, once, at its exact size', () {
     final two = [item('a.bin', 10), item('b.bin', 10)];
 
-    test('a file-start while another item is open fails the session',
-        () async {
+    test('a file-start while another item is open fails the session', () async {
       final t = WebRtcReceiverTransport();
       final failed = expectFails(t, 'still open');
       await announce(t, two);
@@ -223,12 +231,12 @@ void main() {
       // destination nothing is using. (A fixed wait here is what hid a
       // failure that raced its own cleanup.)
       expect(File(p.join(dest.path, 'a.bin')).existsSync(), isFalse);
-      expect(
-          dest.listSync(recursive: true).whereType<File>(), isEmpty,
+      expect(dest.listSync(recursive: true).whereType<File>(), isEmpty,
           reason: 'nothing of the oversized item is left behind');
     });
 
-    test('every way of hearing about a failure comes after the partial is '
+    test(
+        'every way of hearing about a failure comes after the partial is '
         'gone', () async {
       final t = WebRtcReceiverTransport();
       final partial = File(p.join(dest.path, 'a.bin.qs.partial'));
@@ -258,7 +266,8 @@ void main() {
               'on Windows still open');
     });
 
-    test('what is queued behind a failure is ignored, not reported as a '
+    test(
+        'what is queued behind a failure is ignored, not reported as a '
         'second failure', () async {
       final t = WebRtcReceiverTransport();
       final reasons = <String?>[];
@@ -291,7 +300,8 @@ void main() {
       expect(dest.listSync(recursive: true).whereType<File>(), isEmpty);
     });
 
-    test('15 bytes of a 10-byte item followed by a full second item does not '
+    test(
+        '15 bytes of a 10-byte item followed by a full second item does not '
         'succeed', () async {
       final t = WebRtcReceiverTransport();
       final failed = expectFails(t, RegExp('15|more than'));
@@ -309,6 +319,7 @@ void main() {
       final failed = expectFails(t, 'never arrived');
       await announce(t, [item('a.bin', 0), item('b.bin', 5)]);
       await sendFile(t, 1, [1, 2, 3, 4, 5]);
+      await frame(t, TransferProtocol.buildComplete());
       await failed;
 
       expect(File(p.join(dest.path, 'a.bin')).existsSync(), isFalse);
@@ -335,8 +346,21 @@ void main() {
 
       await t.completionForTest.timeout(const Duration(seconds: 5));
       expect(File(p.join(dest.path, 'a.bin')).lengthSync(), 0);
-      expect(File(p.join(dest.path, 'b.bin')).readAsBytesSync(),
-          [1, 2, 3, 4, 5]);
+      expect(
+          File(p.join(dest.path, 'b.bin')).readAsBytesSync(), [1, 2, 3, 4, 5]);
+    });
+
+    test('an empty item after the last non-empty item is still received',
+        () async {
+      final t = WebRtcReceiverTransport();
+      await announce(t, [item('a.bin', 3), item('b.bin', 0)]);
+      await sendFile(t, 0, [1, 2, 3]);
+      await sendFile(t, 1, const []);
+      await frame(t, TransferProtocol.buildComplete());
+
+      await t.completionForTest.timeout(const Duration(seconds: 5));
+      expect(File(p.join(dest.path, 'a.bin')).readAsBytesSync(), [1, 2, 3]);
+      expect(File(p.join(dest.path, 'b.bin')).lengthSync(), 0);
     });
   });
 
@@ -383,8 +407,7 @@ void main() {
     test('Photo.jpg and photo.jpg both arrive on a case-insensitive volume',
         () async {
       final t = WebRtcReceiverTransport();
-      await announce(
-          t, [item('Trip/Photo.jpg', 3), item('Trip/photo.jpg', 3)]);
+      await announce(t, [item('Trip/Photo.jpg', 3), item('Trip/photo.jpg', 3)]);
       await sendFile(t, 0, [1, 2, 3]);
       await sendFile(t, 1, [4, 5, 6]);
 
@@ -398,9 +421,10 @@ void main() {
               'written over the other and both were counted as received');
       expect(files.map((f) => f.readAsBytesSync().toString()).toSet(),
           {'[1, 2, 3]', '[4, 5, 6]'});
-    }, skip: caseInsensitive
-        ? false
-        : 'this volume is case-sensitive: the two names are different files '
-            'and the normalisation test above is the real collision');
+    },
+        skip: caseInsensitive
+            ? false
+            : 'this volume is case-sensitive: the two names are different files '
+                'and the normalisation test above is the real collision');
   });
 }

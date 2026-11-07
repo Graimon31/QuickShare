@@ -56,6 +56,8 @@
 //     CI_PEER_OFFER_REFRESH_SECONDS
 //                              how old the offer gets before it is rebuilt
 //                              under the same code; default 300, as in the app
+//     CI_PEER_INTERRUPT_BYTES  opt-in native link interruption after this many
+//                              bytes; requires recovery before success
 //     QUICKSHARE_FORCE_RELAY=true
 //                              relay candidates only (debug builds)
 //
@@ -156,6 +158,7 @@ void main() {
         waitFor: CiPeerDefines.waitFor,
         transferFor: CiPeerDefines.transferFor,
         offerLifetime: CiPeerDefines.offerLifetime,
+        interruptBytes: CiPeerDefines.interruptBytes,
       );
 
       final report = await host.run(onListening: () {

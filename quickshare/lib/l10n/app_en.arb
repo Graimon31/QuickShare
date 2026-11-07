@@ -470,5 +470,11 @@
   "errorUnsafeDestination": "The save folder has a shortcut (a symbolic link) where a file or folder should be, so nothing was written there. Remove it, or choose another save folder.",
   "errorPathTooLong": "The save location is nested too deeply — Windows cannot open files at a path this long. Choose a folder closer to the root of the drive.",
   "errorReceivedFilesNotIntact": "Some received files went missing or changed before the transfer finished, so it is not reported as complete. Try again — only what is missing will be received again.",
-  "qrDisplayStillCounting": "Still counting the files…"
+  "qrDisplayStillCounting": "Still counting the files…",
+  "errorCancelledByReceiver": "The receiver cancelled the transfer.",
+  "errorConnectionLostNotRecovered": "The connection was lost during the transfer and could not be restored after several attempts. Send again; nothing is reported as received that did not arrive whole.",
+  "errorConnectionLostPeerTooOld": "The connection was lost, and the other device runs an older version of DirectDrop that cannot continue an interrupted transfer. Update the app on that device and send again.",
+  "errorIntegrityMismatch": "A file arrived damaged: its checksum (SHA-256) does not match the original, so it was discarded and the transfer is not reported as complete. Send again.",
+  "transferReconnecting": "Connection lost, reconnecting…",
+  "transferReconnectingHint": "What was already transferred is kept. The transfer will continue from where it stopped."
 }

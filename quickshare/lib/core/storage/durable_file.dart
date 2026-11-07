@@ -99,6 +99,20 @@ class DurableFile {
     return write;
   }
 
+  /// Puts everything written so far on the device and says how many bytes the
+  /// file holds. A transfer that has to be picked up again reports that number
+  /// to the sender, so it is the number of bytes that are really there, not the
+  /// number that were handed to a write.
+  Future<int> sync() async {
+    final raf = _raf;
+    if (raf == null) {
+      throw StateError('DurableFile.sync on $finalPath before open() / after commit()');
+    }
+    await _writing;
+    await raf.flush();
+    return raf.lengthSync();
+  }
+
   /// fsync payload → close → (staged) atomic rename → fsync directory.
   /// Idempotent once it has succeeded. Returns the path the file now has,
   /// which is [finalPath] unless that name was taken meanwhile.

@@ -46,6 +46,8 @@ import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 import 'package:quickshare/core/webrtc/relay_availability.dart';
+import 'package:quickshare/core/webrtc/resume/receiver_link.dart';
+import 'package:quickshare/core/webrtc/resume/resume_keys.dart';
 import 'package:quickshare/features/receiver/data/client/code_lookup.dart';
 import 'package:quickshare/features/receiver/data/client/code_search.dart';
 import 'package:quickshare/features/receiver/data/client/code_session_resolver.dart';
@@ -69,12 +71,14 @@ abstract final class CiPeerDefines {
   static const String name = String.fromEnvironment('CI_PEER_NAME');
 
   /// The one device name the sender will hand its offer to. Sender only.
-  static const String expectName = String.fromEnvironment('CI_PEER_EXPECT_NAME');
+  static const String expectName =
+      String.fromEnvironment('CI_PEER_EXPECT_NAME');
 
   /// How big the file is. The sender makes one this size (default 50 MiB, but
   /// the mode where the code is given has no default); the receiver refuses
   /// anything else.
-  static const int bytes = int.fromEnvironment('CI_PEER_BYTES', defaultValue: -1);
+  static const int bytes =
+      int.fromEnvironment('CI_PEER_BYTES', defaultValue: -1);
 
   /// SHA-256 of the file, hex. Receiver only, and only when it is not given a
   /// [seed] to work the hash out from.
@@ -126,6 +130,10 @@ abstract final class CiPeerDefines {
   /// that has not started.
   static const int findMinutes =
       int.fromEnvironment('CI_PEER_FIND_MINUTES', defaultValue: 0);
+
+  /// Sender-only physical recovery probe. Zero leaves the link untouched.
+  static const int interruptBytes =
+      int.fromEnvironment('CI_PEER_INTERRUPT_BYTES', defaultValue: 0);
 
   static const int defaultBytes = 50 * 1024 * 1024;
   static const int defaultSeededFindMinutes = 40;
@@ -228,8 +236,7 @@ String ciPeerPlainText(String text) {
 /// Writes [bytes] random bytes to [file] and returns their SHA-256, hex. The
 /// file is streamed, never held whole, and random: a file that compresses
 /// would measure the compressor and not the path.
-Future<String> ciPeerWriteRandomFile(File file, int bytes,
-    {Random? random}) {
+Future<String> ciPeerWriteRandomFile(File file, int bytes, {Random? random}) {
   // Cryptographically random only to pick the seed: one native call per byte
   // would be the slowest part of the whole check.
   final source = random ?? Random(Random.secure().nextInt(1 << 32));
@@ -291,7 +298,8 @@ Iterable<Uint8List> ciPeerSeededBlocks(String seedHex, int bytes,
     throw ArgumentError.value(seedHex, 'seedHex', 'not 64 hex digits');
   }
   if (blockSize <= 0 || blockSize % 32 != 0) {
-    throw ArgumentError.value(blockSize, 'blockSize', 'must be a multiple of 32');
+    throw ArgumentError.value(
+        blockSize, 'blockSize', 'must be a multiple of 32');
   }
   final prefix = utf8.encode(ciPeerSeedDomain);
   final seed = hex.decode(seedHex.toLowerCase());
@@ -471,6 +479,7 @@ class CiPeerOfferHost {
     required this.offerLifetime,
     this.answerWait = const Duration(minutes: 2),
     this.quietAfterRequest = const Duration(seconds: 45),
+    this.interruptBytes = 0,
     void Function(String)? log,
   }) : _log = log ?? ciPeerLogger('sender');
 
@@ -494,6 +503,8 @@ class CiPeerOfferHost {
   /// listener is not replaced under it.
   final Duration quietAfterRequest;
 
+  /// Zero disables fault injection; otherwise cut the native sender link once.
+  final int interruptBytes;
   final void Function(String) _log;
   final CiPeerReport report = CiPeerReport('sender');
 
@@ -520,6 +531,9 @@ class CiPeerOfferHost {
   int _offersBuilt = 0;
   bool _refreshing = false;
   int _loggedDecile = 0;
+  bool _interruptionRequested = false;
+  bool _sawReconnecting = false;
+  bool _sawResumedTransfer = false;
   late DateTime _deadline;
 
   bool get _ended => _done.isCompleted;
@@ -531,6 +545,10 @@ class CiPeerOfferHost {
     _clock.start();
     report.fields['relay_policy'] = ciPeerRelayPolicy();
     try {
+      if (interruptBytes < 0 || interruptBytes >= file.size) {
+        throw ArgumentError(
+            'interrupt threshold must be zero or below file size');
+      }
       _current = await _buildOffer();
       await _listen();
       _deadline = DateTime.now().add(waitFor);
@@ -578,6 +596,11 @@ class CiPeerOfferHost {
         fileSize: file.size,
         itemCount: 1,
       );
+      transport.configureResume(ResumeSetup(
+        keys: ResumeKeys.derive(
+            seed: qr.seed, offerFingerprint: qr.offerFingerprint),
+        mailboxFactory: buildCodeMailbox,
+      ));
       final topic = await qr.topic;
       channel = buildRendezvousChannel(
         acceptPayload: (sealed) async {
@@ -699,11 +722,12 @@ class CiPeerOfferHost {
     _sender?.answered();
     unawaited(_stopListening());
     report.fields['receiver_name'] = _approvedName;
-    report.fields['waited_seconds'] = (_clock.elapsedMilliseconds / 1000).round();
+    report.fields['waited_seconds'] =
+        (_clock.elapsedMilliseconds / 1000).round();
     _log('the sealed answer opened; applying it');
     try {
-      await offer.transport
-          .handleDirectAnswer(CompactSdp.fromBytes(opened).toSdp(isOffer: false), 'answer');
+      await offer.transport.handleDirectAnswer(
+          CompactSdp.fromBytes(opened).toSdp(isOffer: false), 'answer');
     } catch (e) {
       _finish('failure', 'applying the receiver\'s answer failed: $e');
       return;
@@ -724,13 +748,36 @@ class CiPeerOfferHost {
     _log('transport: ${status.name}');
     switch (status) {
       case TransferStatus.transferring:
+        if (_sawReconnecting && !_sawResumedTransfer) {
+          _sawResumedTransfer = true;
+          print('CI_PEER_RECOVERY_RESUMED');
+        }
         _transfer ??= Stopwatch()..start();
         if (_connect != null && report.fields['connect_seconds'] == null) {
           report.fields['connect_seconds'] =
               (_connect!.elapsedMilliseconds / 1000).toStringAsFixed(1);
         }
+      case TransferStatus.reconnecting:
+        if (_interruptionRequested) {
+          _sawReconnecting = true;
+          print('CI_PEER_RECOVERY_RECONNECTING');
+        }
       case TransferStatus.completed:
-        _finish('success');
+        if (interruptBytes > 0 &&
+            (!_interruptionRequested ||
+                !_sawReconnecting ||
+                !_sawResumedTransfer)) {
+          _finish('failure',
+              'recovery probe did not observe interruption, reconnecting and resumed transfer');
+        } else if (interruptBytes > 0 &&
+            ciPeerRelayPolicy() == 'relay' &&
+            transport.lastIcePath?.name != 'relayed') {
+          _finish(
+              'failure', 'replacement link did not report a relayed ICE path');
+        } else {
+          if (interruptBytes > 0) print('CI_PEER_RECOVERY_COMPLETE');
+          _finish('success');
+        }
       case TransferStatus.failed:
         _finish('failure', 'the transport reported a failed transfer');
       case TransferStatus.cancelled:
@@ -743,6 +790,20 @@ class CiPeerOfferHost {
 
   void _onProgress(WebRtcTransferTransport transport, double fraction) {
     if (!_isCommitted(transport)) return;
+    final bytesSent = (file.size * fraction).floor();
+    if (interruptBytes > 0 &&
+        !_interruptionRequested &&
+        bytesSent >= interruptBytes &&
+        fraction < 1) {
+      _interruptionRequested = true;
+      report.fields['interrupt_at_bytes'] = bytesSent;
+      report.fields['ice_path_before_interrupt'] = transport.lastIcePath?.name;
+      report.fields['ice_pair_before_interrupt'] = transport.lastIcePair;
+      print('CI_PEER_RECOVERY_INTERRUPT bytes=$bytesSent');
+      unawaited(transport.interruptLinkForTest().catchError((Object e) {
+        _finish('failure', 'interrupting native link failed: $e');
+      }));
+    }
     final decile = (fraction * 10).floor();
     if (decile <= _loggedDecile) return;
     _loggedDecile = decile;
@@ -758,7 +819,8 @@ class CiPeerOfferHost {
     _finish('failure', d.summary);
   }
 
-  void _onRelayBlocked(WebRtcTransferTransport transport, RelayLimitExceeded b) {
+  void _onRelayBlocked(
+      WebRtcTransferTransport transport, RelayLimitExceeded b) {
     if (!_isCommitted(transport)) return;
     _finish('failure', 'refused to send over the relay: $b');
   }
@@ -821,7 +883,8 @@ class CiPeerOfferHost {
       _log('refreshing the offer failed: $e');
       if (fresh != null) await _closeOffer(fresh);
       if (_sender == null && !_ended) {
-        _finish('failure', 'the code stopped answering and could not be restored: $e');
+        _finish('failure',
+            'the code stopped answering and could not be restored: $e');
       }
     } finally {
       _refreshing = false;
@@ -852,6 +915,11 @@ class CiPeerOfferHost {
     report.fields['ice_path'] = transport?.lastIcePath?.name;
     report.fields['ice_pair'] = transport?.lastIcePair;
     report.fields['offers_built'] = _offersBuilt;
+    if (interruptBytes > 0) {
+      report.fields['recovery_interrupted'] = _interruptionRequested;
+      report.fields['recovery_reconnecting'] = _sawReconnecting;
+      report.fields['recovery_resumed'] = _sawResumedTransfer;
+    }
     final watch = _transfer;
     if (watch != null) {
       final took = watch.elapsed;
@@ -863,7 +931,8 @@ class CiPeerOfferHost {
         report.fields['speed_mbit_s'] = speed.mbitPerSecond.toStringAsFixed(1);
       }
     }
-    report.fields['total_seconds'] = (_clock.elapsedMilliseconds / 1000).round();
+    report.fields['total_seconds'] =
+        (_clock.elapsedMilliseconds / 1000).round();
     if (status == 'success') {
       // The sender knows what it sent and that the transport finished. That
       // the bytes arrived whole is for the receiver to say.
@@ -1027,7 +1096,16 @@ Future<CiPeerReport> ciPeerReceive({
     final receiving = WebRtcReceiverTransport();
     transport = receiving;
     final transfer = Stopwatch();
+    var sawReconnect = false;
+    var sawResume = false;
     final progress = receiving.progressStream.listen((e) {
+      if (e.phase == 'reconnecting') {
+        sawReconnect = true;
+        print('CI_PEER_RECOVERY_RECEIVER_RECONNECTING');
+      } else if (sawReconnect && !sawResume && e.phase == 'transferring') {
+        sawResume = true;
+        print('CI_PEER_RECOVERY_RECEIVER_RESUMED');
+      }
       if (e.phase == 'transferring' && !transfer.isRunning) {
         transfer.start();
         say('bytes are flowing');
@@ -1037,24 +1115,27 @@ Future<CiPeerReport> ciPeerReceive({
 
     final String saved;
     try {
-      saved = await receiving
-          .receiveWithSdpOffer(
-            qr.offer.toSdp(isOffer: true),
-            targetDir: destination.path,
-            deliverAnswer: (answerSdp) async {
-              say('delivering the sealed answer on ${drop.name}');
-              await drop.publish(
-                topic,
-                await SealedEnvelope.seal(
-                  plaintext: ServerlessQr.trimForQr(CompactSdp.fromSdp(answerSdp))
-                      .toBytes(),
-                  seed: qr.seed,
-                  offerFingerprint: qr.offerFingerprint,
-                ),
-              );
-            },
-          )
-          .timeout(transferFor);
+      saved = await receiving.receiveWithSdpOffer(
+        qr.offer.toSdp(isOffer: true),
+        targetDir: destination.path,
+        resume: ResumeSetup(
+          keys: ResumeKeys.derive(
+              seed: qr.seed, offerFingerprint: qr.offerFingerprint),
+          mailboxFactory: buildCodeMailbox,
+        ),
+        deliverAnswer: (answerSdp) async {
+          say('delivering the sealed answer on ${drop.name}');
+          await drop.publish(
+            topic,
+            await SealedEnvelope.seal(
+              plaintext: ServerlessQr.trimForQr(CompactSdp.fromSdp(answerSdp))
+                  .toBytes(),
+              seed: qr.seed,
+              offerFingerprint: qr.offerFingerprint,
+            ),
+          );
+        },
+      ).timeout(transferFor);
     } on TimeoutException {
       fail('the file did not arrive within ${transferFor.inMinutes} min');
       return report;
@@ -1089,6 +1170,8 @@ Future<CiPeerReport> ciPeerReceive({
         (tookTransfer.inMilliseconds / 1000).toStringAsFixed(1);
     report.fields['speed_mib_s'] = speed.mibPerSecond.toStringAsFixed(2);
     report.fields['speed_mbit_s'] = speed.mbitPerSecond.toStringAsFixed(1);
+    report.fields['recovery_reconnecting'] = sawReconnect;
+    report.fields['recovery_resumed'] = sawResume;
     report.fields['ice_path'] = receiving.lastIcePath?.name;
     report.fields['ice_pair'] = receiving.lastIcePair;
 

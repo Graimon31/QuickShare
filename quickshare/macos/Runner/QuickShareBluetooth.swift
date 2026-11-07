@@ -783,23 +783,30 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
 
     private func startScanning(sessionToken: String? = nil, locator: String? = nil) {
         discovered.removeAll()
+        scanRequested = true
+        discoveryDiagnostics.removeAll()
         expectedSessionToken = sessionToken
         expectedLocator = locator
         let manager = centralManager ?? CBCentralManager(delegate: self, queue: nil)
         centralManager = manager
         let options: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         if manager.state == .poweredOn {
+          emit(["type": "bleDiagnostic", "message": "scan_started service=\(BTServiceIDs.service.uuidString)"])
             manager.scanForPeripherals(withServices: [BTServiceIDs.service], options: options)
         } else {
             pendingStartScan = true
+            centralManagerDidUpdateState(manager)
         }
     }
 
     private var pendingStartScan = false
+    private var scanRequested = false
+    private var discoveryDiagnostics = Set<String>()
 
     private func stopScanning() {
         centralManager?.stopScan()
         pendingStartScan = false
+        scanRequested = false
     }
 
     private func connect(deviceId: String) {
@@ -820,16 +827,17 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
         peripheral.delegate = self
 
         centralConnectTimeoutTimer?.invalidate()
-        centralConnectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
-            guard let self = self, self.targetPeripheral != nil, self.remoteControlChar == nil else { return }
-            if let p = self.targetPeripheral {
-                self.centralManager?.cancelPeripheralConnection(p)
-            }
-            self.emit([
-                "type": "receiverFailed",
-                "error": "Failed to connect: Connection attempt timed out",
-                "code": "timeout"
-            ])
+        centralConnectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self, weak peripheral] _ in
+          guard let self = self, let peripheral = peripheral,
+                self.targetPeripheral === peripheral else { return }
+          self.centralConnectTimeoutTimer = nil
+          self.targetPeripheral = nil
+          self.centralManager?.cancelPeripheralConnection(peripheral)
+          self.emit([
+            "type": "receiverFailed",
+            "error": "Failed to connect: Bluetooth handshake timed out",
+            "code": "timeout"
+          ])
         }
 
         centralManager?.connect(peripheral, options: nil)
@@ -871,9 +879,12 @@ public class QuickShareBluetoothPlugin: NSObject, FlutterStreamHandler {
 
 extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
     public func peripheralManagerDidUpdateState(_ peripheral: CBPeripheralManager) {
+        guard peripheral === peripheralManager else { return }
+        emit(["type": "bleDiagnostic", "message": "peripheral_state=\(peripheral.state.rawValue)"])
         guard peripheral.state == .poweredOn else {
-            if peripheral.state == .unauthorized || peripheral.state == .unsupported {
-                emit(["type": "senderFailed", "error": "Bluetooth is not available or not authorized"])
+            if peripheral.state == .poweredOff || peripheral.state == .unauthorized || peripheral.state == .unsupported {
+                let reason = peripheral.state == .poweredOff ? "Bluetooth is turned off" : "Bluetooth is not available or not authorized"
+                emit(["type": "senderFailed", "error": reason])
             }
             return
         }
@@ -884,6 +895,7 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
     }
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, didAdd service: CBService, error: Error?) {
+        guard peripheral === peripheralManager, pendingDeviceName != nil else { return }
         if let error = error {
             emit(["type": "senderFailed", "error": "Failed to publish BLE service: \(error.localizedDescription)"])
             return
@@ -893,7 +905,17 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
             CBAdvertisementDataServiceUUIDsKey: [BTServiceIDs.service],
             CBAdvertisementDataLocalNameKey: name,
         ])
-        emit(["type": "advertisingStarted"])
+    }
+
+    public func peripheralManagerDidStartAdvertising(_ peripheral: CBPeripheralManager, error: Error?) {
+        guard peripheral === peripheralManager, pendingDeviceName != nil else { return }
+        if let error {
+          emit(["type": "bleDiagnostic", "message": "advertising_failed=\(error.localizedDescription)"])
+          emit(["type": "senderFailed", "error": "Failed to start Bluetooth advertising: \(error.localizedDescription)"])
+        } else {
+          emit(["type": "bleDiagnostic", "message": "advertising_started service=\(BTServiceIDs.service.uuidString) name=\(pendingDeviceName ?? "<missing>")"])
+          emit(["type": "advertisingStarted"])
+        }
     }
 
     public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didSubscribeTo characteristic: CBCharacteristic) {
@@ -1013,16 +1035,39 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
 
 extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        emit(["type": "bleDiagnostic", "message": "central_state=\(central.state.rawValue) scan_requested=\(scanRequested)"])
+        guard scanRequested else { return }
         if central.state == .poweredOn, pendingStartScan {
-            pendingStartScan = false
-            central.scanForPeripherals(withServices: [BTServiceIDs.service], options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
-        } else if central.state == .unauthorized || central.state == .unsupported {
-            emit(["type": "receiverFailed", "error": "Bluetooth is not available or not authorized"])
+          pendingStartScan = false
+          emit(["type": "bleDiagnostic", "message": "scan_started service=\(BTServiceIDs.service.uuidString)"])
+          central.scanForPeripherals(withServices: [BTServiceIDs.service], options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        } else if central.state == .poweredOff || central.state == .unauthorized || central.state == .unsupported {
+          pendingStartScan = false
+          scanRequested = false
+          let reason = central.state == .poweredOff ? "Bluetooth is turned off" : "Bluetooth is not available or not authorized"
+          emit(["type": "receiverFailed", "error": reason])
         }
     }
 
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {
         let advertisedName = (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? peripheral.name ?? "Unknown device"
+        let serviceIds = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []).map { $0.uuidString }.joined(separator: ",")
+        let overflowIds = (advertisementData[CBAdvertisementDataOverflowServiceUUIDsKey] as? [CBUUID] ?? []).map { $0.uuidString }.joined(separator: ",")
+        let expectedPublicName = expectedLocator.map { "QuickShare-\($0)" } ?? ""
+        let nameSource = advertisementData[CBAdvertisementDataLocalNameKey] == nil ? "cached-or-missing" : "advertisement"
+        let publicName = !advertisedName.isEmpty && !expectedPublicName.isEmpty && expectedPublicName.hasPrefix(advertisedName) ? advertisedName : "<other-or-missing>"
+        let reason: String
+        if advertisedName.hasPrefix("QuickShare-"), let expectedLocator, !expectedLocator.isEmpty, !advertisedName.contains(expectedLocator) {
+          reason = "locator_mismatch"
+        } else if advertisedName.hasPrefix("QuickShare-"), (expectedLocator == nil || expectedLocator?.isEmpty == true), let expectedSessionToken, !advertisedName.contains(String(expectedSessionToken.prefix(8))) {
+          reason = "legacy_mismatch"
+        } else {
+          reason = "accepted"
+        }
+        let diagnosticKey = "\(peripheral.identifier.uuidString)|\(publicName)|\(serviceIds)|\(overflowIds)|\(reason)"
+        if discoveryDiagnostics.insert(diagnosticKey).inserted {
+          emit(["type": "bleDiagnostic", "message": "discovery name=\(publicName) name_source=\(nameSource) services=\(serviceIds) overflow=\(overflowIds) filter=\(reason)"])
+        }
         // What a sender advertises is the session's locator: random, the one
         // the QR carries, and related to no code. A device with no
         // `QuickShare-` name at all — a Windows PC or an Android phone, which
@@ -1047,10 +1092,12 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        guard peripheral === targetPeripheral else { return }
         peripheral.discoverServices([BTServiceIDs.service])
     }
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        guard peripheral === targetPeripheral else { return }
         centralConnectTimeoutTimer?.invalidate()
         centralConnectTimeoutTimer = nil
         var code = "connectFailed"
@@ -1065,6 +1112,7 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
     }
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        guard peripheral === targetPeripheral else { return }
         centralConnectTimeoutTimer?.invalidate()
         centralConnectTimeoutTimer = nil
         targetPeripheral = nil
@@ -1087,6 +1135,7 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
 
 extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard peripheral === targetPeripheral else { return }
         if let error = error {
             centralConnectTimeoutTimer?.invalidate()
             centralConnectTimeoutTimer = nil
@@ -1103,6 +1152,7 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        guard peripheral === targetPeripheral else { return }
         if let error = error {
             centralConnectTimeoutTimer?.invalidate()
             centralConnectTimeoutTimer = nil
@@ -1130,6 +1180,7 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral === targetPeripheral else { return }
         if let error = error {
             centralConnectTimeoutTimer?.invalidate()
             centralConnectTimeoutTimer = nil
@@ -1141,8 +1192,6 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
         if characteristic.uuid == BTServiceIDs.data { dataSubscribed = true }
 
         if metadataSubscribed, dataSubscribed, let controlChar = remoteControlChar {
-            centralConnectTimeoutTimer?.invalidate()
-            centralConnectTimeoutTimer = nil
             let writeType: CBCharacteristicWriteType = controlChar.properties.contains(.write) ? .withResponse : .withoutResponse
 
             // Say what this build can take, before START rather than after. A
@@ -1171,10 +1220,13 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
 
             guard let token = expectedSessionToken, !token.isEmpty else { return }
             peripheral.writeValue(Data("START:\(token)".utf8), for: controlChar, type: writeType)
+            centralConnectTimeoutTimer?.invalidate()
+            centralConnectTimeoutTimer = nil
         }
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        guard peripheral === targetPeripheral else { return }
         guard let value = characteristic.value else { return }
 
         if characteristic.uuid == BTServiceIDs.metadata {

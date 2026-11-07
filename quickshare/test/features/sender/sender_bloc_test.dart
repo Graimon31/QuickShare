@@ -140,6 +140,28 @@ void main() {
 
   group('SenderBloc', () {
     blocTest<SenderBloc, SenderState>(
+      'a queued reconnect status preserves the highest displayed progress',
+      build: () => SenderBloc(repository: mockRepository),
+      seed: () => const Transferring(0.6, 0),
+      act: (bloc) async {
+        var next = _next<Transferring>(bloc);
+        bloc.add(const TransferProgressEvent(0.5, reconnecting: true));
+        await next;
+        next = _next<Transferring>(bloc);
+        bloc.add(const TransferProgressEvent(0.7));
+        await next;
+        next = _next<Transferring>(bloc);
+        bloc.add(const TransferProgressEvent(0.6, reconnecting: false));
+        await next;
+      },
+      expect: () => [
+        const Transferring(0.6, 0, reconnecting: true),
+        const Transferring(0.7, 0, reconnecting: true),
+        const Transferring(0.7, 0),
+      ],
+    );
+
+    blocTest<SenderBloc, SenderState>(
       'emits [SenderError] when pickFile fails',
       build: () {
         when(() => mockRepository.pickFile()).thenAnswer(

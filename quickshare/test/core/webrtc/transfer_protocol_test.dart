@@ -231,6 +231,118 @@ void main() {
     });
   });
 
+  group('version 2: reconnection and a checksum of every file', () {
+    const sid = '0123456789abcdef0123456789abcdef';
+
+    test('a manifest without a session is exactly what every build has sent',
+        () {
+      final json = jsonDecode(TransferProtocol.buildManifest([photo]))
+          as Map<String, dynamic>;
+      expect(json.containsKey('v'), isFalse);
+      expect(json.containsKey('sid'), isFalse);
+      expect(TransferProtocol.sessionOf(json), (version: 1, sessionId: null));
+    });
+
+    test('a sender that can resume says so and names its session', () {
+      final json = jsonDecode(
+              TransferProtocol.buildManifest([photo], sessionId: sid))
+          as Map<String, dynamic>;
+      expect(TransferProtocol.sessionOf(json), (version: 2, sessionId: sid));
+    });
+
+    test('a split manifest announces the session in its first frame', () {
+      final many = [
+        for (var i = 0; i < 4000; i++)
+          TransferItem(
+              name: 'f$i.bin',
+              size: i,
+              mimeType: 'application/octet-stream',
+              compressed: false,
+              path: 'Trip/Day 1/f$i.bin'),
+      ];
+      final frames =
+          TransferProtocol.buildManifestFrames(many, sessionId: sid);
+      final first = jsonDecode(frames.first) as Map<String, dynamic>;
+      expect(first['type'], 'manifest-begin');
+      expect(TransferProtocol.sessionOf(first), (version: 2, sessionId: sid));
+    });
+
+    test('a session id that is not 32 hex digits is not one', () {
+      for (final bad in ['', 'zz', sid.toUpperCase(), '${sid}0', 42]) {
+        expect(
+            TransferProtocol.sessionOf({'v': 2, 'sid': bad}).sessionId, isNull,
+            reason: '$bad');
+      }
+    });
+
+    test('file-start names an offset only when it continues an item', () {
+      expect(jsonDecode(TransferProtocol.buildFileStart(2)),
+          {'type': 'file-start', 'index': 2});
+      expect(jsonDecode(TransferProtocol.buildFileStart(2, offset: 0)),
+          {'type': 'file-start', 'index': 2});
+      expect(jsonDecode(TransferProtocol.buildFileStart(2, offset: 4096)),
+          {'type': 'file-start', 'index': 2, 'offset': 4096});
+    });
+
+    test('file-end carries the digest of the whole file when it is given', () {
+      final digest = 'ab' * 32;
+      expect(jsonDecode(TransferProtocol.buildFileEnd(1, sha256: digest)),
+          {'type': 'file-end', 'index': 1, 'sha256': digest});
+      expect(jsonDecode(TransferProtocol.buildFileEnd(1)),
+          {'type': 'file-end', 'index': 1});
+    });
+
+    test('hello says what the receiver holds, and nothing on a first link', () {
+      expect(jsonDecode(TransferProtocol.buildHello(generation: 1)), {
+        'type': 'hello',
+        'v': 2,
+        'gen': 1,
+        'next': 0,
+        'offset': 0,
+      });
+      expect(
+          jsonDecode(TransferProtocol.buildHello(
+              generation: 3, sessionId: sid, next: 4, offset: 65536)),
+          {
+            'type': 'hello',
+            'v': 2,
+            'gen': 3,
+            'sid': sid,
+            'next': 4,
+            'offset': 65536,
+          });
+    });
+
+    test('resume, done, ping and bye are their own frames', () {
+      expect(
+          jsonDecode(TransferProtocol.buildResume(
+              sessionId: sid, generation: 2, next: 1, offset: 10)),
+          {
+            'type': 'resume',
+            'sid': sid,
+            'gen': 2,
+            'next': 1,
+            'offset': 10,
+          });
+      expect(jsonDecode(TransferProtocol.buildDone(ok: true)),
+          {'type': 'done', 'ok': true});
+      expect(jsonDecode(TransferProtocol.buildDone(ok: false, code: 'integrity')),
+          {'type': 'done', 'ok': false, 'code': 'integrity'});
+      expect(jsonDecode(TransferProtocol.buildPing()), {'type': 'ping'});
+      expect(jsonDecode(TransferProtocol.buildBye()), {'type': 'bye'});
+      final types = {
+        TransferProtocol.hello,
+        TransferProtocol.resume,
+        TransferProtocol.done,
+        TransferProtocol.ping,
+        TransferProtocol.bye,
+        TransferProtocol.complete,
+        TransferProtocol.cancelled,
+      };
+      expect(types, hasLength(7), reason: 'no two frames share a name');
+    });
+  });
+
   group('backward compatibility', () {
     test('both legacy single-file openers are still recognised', () {
       // A peer on an older build is not a corrupt peer.

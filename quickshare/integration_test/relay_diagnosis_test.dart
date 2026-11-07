@@ -85,6 +85,8 @@ import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/l10n/gen/app_localizations_en.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
 
+import '../test/support/fake_mailbox.dart';
+
 // --- stand-ins for what the machine does not need to do for this test ------
 
 class _MockSenderRepository extends Mock implements SenderRepository {}
@@ -467,12 +469,14 @@ void main() {
     required FileMetadata file,
     Duration publishAck = Duration.zero,
     Duration? slowChunks,
+    bool interruptAfterProgress = false,
     Duration overall = const Duration(seconds: 90),
     void Function(
             WebRtcTransferTransport sender, WebRtcReceiverTransport receiver)?
         onTransports,
   }) async {
     final bus = _Bus()..publishAck = publishAck;
+    final mailbox = FakeMailboxHub();
     boundedTeardown('bus', bus.dispose);
 
     final senderTransport =
@@ -503,12 +507,14 @@ void main() {
       diagnostics: TransferDiagnostics(overrideDir: () => senderDiagnostics),
       webRtcTransportFactory: () => senderTransport,
       rendezvousChannelFactory: ({acceptPayload}) => bus.side(),
+      codeMailboxFactory: () => mailbox.endpoint('sender'),
     );
     final receiverBloc = ReceiverBloc(
       downloadFileUseCase: _MockDownload(),
       repository: _MockReceiverRepository(),
       serverlessTransportFactory: () => receiverTransport,
       rendezvousChannelFactory: bus.side,
+      resumeMailboxFactory: () => mailbox.endpoint('receiver'),
     );
     boundedTeardown('sender bloc', senderBloc.close);
     boundedTeardown('receiver bloc', receiverBloc.close);
@@ -554,6 +560,18 @@ void main() {
     receiverBloc.add(StartDownload(payload: payload));
     await until<DateTime>(() => bus.publishedAt, 'the answer to be published');
     final receiverSetup = receiverStarted.elapsed;
+
+    if (interruptAfterProgress) {
+      await until<Downloading>(
+          () => receiverStates
+              .whereType<Downloading>()
+              .where((s) => s.progress > 0 && s.progress < 1)
+              .firstOrNull,
+          'partial receiver progress before interrupting the native link');
+      await senderTransport
+          .interruptLinkForTest()
+          .timeout(const Duration(seconds: 10));
+    }
 
     // ---- both ends finish: failure surfaces or success ----
     Duration? senderEnd;
@@ -906,6 +924,45 @@ void main() {
           'sender_ms=${outcome.senderElapsed.inMilliseconds} '
           'receiver_ms=${outcome.receiverElapsed.inMilliseconds} '
           'worker_requests=${worker.turnRequests.length}');
+    }, skip: forced, timeout: const Timeout(Duration(minutes: 3)));
+
+    testWidgets('native WebRTC reconnect resumes an interrupted file',
+        (tester) async {
+      await refuseWith429();
+      final file = makeFile('reconnect.bin', 8 * 1024 * 1024, 31);
+      final outcome = await runSession(
+        iceBudget: const Duration(seconds: 20),
+        senderDiagnostics: fresh('reconnect_diag'),
+        file: file,
+        slowChunks: const Duration(milliseconds: 20),
+        interruptAfterProgress: true,
+        overall: const Duration(seconds: 120),
+      );
+
+      expect(
+          outcome.senderStates
+              .whereType<Transferring>()
+              .any((state) => state.reconnecting),
+          isTrue,
+          reason:
+              'the sender must report recovery after the native link closes');
+      expect(outcome.senderStates.whereType<SenderError>(), isEmpty);
+      expect(outcome.receiverStates.whereType<ReceiverError>(), isEmpty);
+      expect(outcome.senderStates.whereType<TransferComplete>(), hasLength(1));
+      expect(
+          outcome.receiverStates.whereType<DownloadComplete>(), hasLength(1));
+      expect(outcome.sender, isA<TransferComplete>());
+      expect(outcome.receiver, isA<DownloadComplete>());
+      final done = outcome.receiver as DownloadComplete;
+      expect(done.items, hasLength(1));
+      expect(sha256.convert(File(done.filePath).readAsBytesSync()),
+          sha256.convert(File(file.path).readAsBytesSync()));
+      final received = Directory(p.dirname(done.filePath))
+          .listSync()
+          .whereType<File>()
+          .where((f) => p.basename(f.path).startsWith('reconnect'));
+      expect(received, hasLength(1),
+          reason: 'resume must not duplicate the file');
     }, skip: forced, timeout: const Timeout(Duration(minutes: 3)));
 
     // The deadline guards the wait for a connection. A transfer that is

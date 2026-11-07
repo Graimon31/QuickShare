@@ -12,7 +12,8 @@ import 'ble_receiver_failure.dart';
 import 'universal_ble_receiver_transport.dart';
 
 export 'ble_receiver_failure.dart' show BleReceiverFailure;
-export 'universal_ble_receiver_transport.dart' show UniversalBleReceiverTransport;
+export 'universal_ble_receiver_transport.dart'
+    show UniversalBleReceiverTransport;
 
 class BluetoothDevice extends Equatable {
   final String id;
@@ -186,6 +187,10 @@ class BluetoothReceiverTransport implements BleReceiver {
   void _handleEvent(dynamic event) {
     final map = Map<String, dynamic>.from(event as Map);
     switch (map['type']) {
+      case 'bleDiagnostic':
+        final message = map['message'];
+        if (message is String) AppLogger.info(message, tag: 'BLE_NATIVE');
+        break;
       case 'deviceDiscovered':
         _devicesController.add(BluetoothDevice(
             id: map['id'] as String, name: map['name'] as String));
@@ -213,8 +218,7 @@ class BluetoothReceiverTransport implements BleReceiver {
       case 'serveInfo':
         final serve = map['serve'];
         if (serve is Map) {
-          final info =
-              LinkServeInfo.fromJson(Map<String, Object?>.from(serve));
+          final info = LinkServeInfo.fromJson(Map<String, Object?>.from(serve));
           if (info != null) {
             _serveInfoController.add(info);
           } else {
@@ -277,8 +281,8 @@ class _UniversalBleReceiverAdapter implements BleReceiver {
   _UniversalBleReceiverAdapter(this._inner);
 
   @override
-  Stream<BluetoothDevice> get devices => _inner.devices.map((d) =>
-      BluetoothDevice(id: d.deviceId, name: d.name ?? 'Unknown device'));
+  Stream<BluetoothDevice> get devices => _inner.devices.map(
+      (d) => BluetoothDevice(id: d.deviceId, name: d.name ?? 'Unknown device'));
 
   @override
   Stream<DirectLinkDirective> get linkDirectives => _inner.linkDirectives;

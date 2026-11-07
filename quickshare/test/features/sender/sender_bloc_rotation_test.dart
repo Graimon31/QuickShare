@@ -198,12 +198,16 @@ class _Repository implements SenderRepository {
   @override
   String? get sessionTlsFingerprint => 'AA:BB';
   @override
-  Future<bool> waitForFirstClient({Duration timeout = const Duration(seconds: 10)}) async => true;
+  Future<bool> waitForFirstClient(
+          {Duration timeout = const Duration(seconds: 10)}) async =>
+      true;
 
   @override
-  Future<Either<Failure, FileMetadata>> pickFile() => throw UnimplementedError();
+  Future<Either<Failure, FileMetadata>> pickFile() =>
+      throw UnimplementedError();
   @override
-  Future<Either<Failure, FileMetadata>> pickMedia() => throw UnimplementedError();
+  Future<Either<Failure, FileMetadata>> pickMedia() =>
+      throw UnimplementedError();
   @override
   Future<Either<Failure, TransferSession>> startServer(FileMetadata file) =>
       throw UnimplementedError();
@@ -327,14 +331,15 @@ void main() {
   });
 
   group('a Wi-Fi offer', () {
-    test('is advertised by its hint and port while it is on screen, and '
+    test(
+        'is advertised by its hint and port while it is on screen, and '
         'withdrawn when it ends', () {
       fakeAsync((async) {
         final t = _Harness(async)..startWifi();
         final offer = t.offer;
 
-        expect(t.advertiser.onAir,
-            (port: 8123, hint: offer.code!.discoveryHint));
+        expect(
+            t.advertiser.onAir, (port: 8123, hint: offer.code!.discoveryHint));
 
         t.bloc.add(CancelSending());
         t.settle();
@@ -350,11 +355,13 @@ void main() {
         t.pass(const Duration(seconds: 7));
         t.startWifi();
 
-        expect(t.offer.expiresAt, _Harness.epoch.add(const Duration(seconds: 7)).add(_five));
+        expect(t.offer.expiresAt,
+            _Harness.epoch.add(const Duration(seconds: 7)).add(_five));
       });
     });
 
-    test('rotates at exactly five minutes: new code, new token, new QR, new '
+    test(
+        'rotates at exactly five minutes: new code, new token, new QR, new '
         'hint on the air', () {
       fakeAsync((async) {
         final t = _Harness(async)..startWifi();
@@ -378,12 +385,13 @@ void main() {
         expect(after.expiresAt, before.expiresAt!.add(_five));
 
         expect(t.advertiser.advertised, hasLength(2));
-        expect(t.advertiser.onAir,
-            (port: 8123, hint: after.code!.discoveryHint));
+        expect(
+            t.advertiser.onAir, (port: 8123, hint: after.code!.discoveryHint));
       });
     });
 
-    test('the QR carries the new token and the receiver-typed code is the new '
+    test(
+        'the QR carries the new token and the receiver-typed code is the new '
         'one', () {
       fakeAsync((async) {
         final t = _Harness(async)..startWifi();
@@ -415,7 +423,8 @@ void main() {
     test('keeps what the walk found out: the totals survive a rotation', () {
       fakeAsync((async) {
         final t = _Harness(async)..startWifi();
-        t.bloc.add(const IndexProgressed(12, 3456, generation: 1, complete: true));
+        t.bloc.add(
+            const IndexProgressed(12, 3456, generation: 1, complete: true));
         t.settle();
         expect(t.offer.itemCount, 12);
 
@@ -427,7 +436,8 @@ void main() {
       });
     });
 
-    test('after the machine slept through the deadline it rotates when the '
+    test(
+        'after the machine slept through the deadline it rotates when the '
         'screen comes back, not when a timer next fires', () {
       fakeAsync((async) {
         final t = _Harness(async)..startWifi();
@@ -455,7 +465,8 @@ void main() {
       });
     });
 
-    test('coming back to a server the system took away starts the offer over '
+    test(
+        'coming back to a server the system took away starts the offer over '
         'with fresh secrets', () {
       fakeAsync((async) {
         final t = _Harness(async)..startWifi();
@@ -471,7 +482,8 @@ void main() {
       });
     });
 
-    test('a session that has ended on its own says so instead of showing a '
+    test(
+        'a session that has ended on its own says so instead of showing a '
         'dead code', () {
       fakeAsync((async) {
         final t = _Harness(async)..startWifi();
@@ -500,8 +512,8 @@ void main() {
         expect(t.repo.rotations, 0,
             reason: 'the dialog is open; nothing underneath it moves');
 
-        t.bloc.add(RespondToInviteApproval(
-            requestId: request.id, accepted: true));
+        t.bloc.add(
+            RespondToInviteApproval(requestId: request.id, accepted: true));
         t.settle();
 
         expect(t.repo.rotations, 1);
@@ -509,7 +521,8 @@ void main() {
       });
     });
 
-    test('a request nobody answered stops holding when the server gives up on '
+    test(
+        'a request nobody answered stops holding when the server gives up on '
         'it', () {
       fakeAsync((async) {
         final t = _Harness(async)..startWifi();
@@ -546,7 +559,8 @@ void main() {
       });
     });
 
-    test('if the screen is back on an offer afterwards, rotation resumes — '
+    test(
+        'if the screen is back on an offer afterwards, rotation resumes — '
         'immediately when the deadline passed meanwhile', () {
       fakeAsync((async) {
         final t = _Harness(async)..startWifi();
@@ -612,7 +626,8 @@ void main() {
       t.pass(const Duration(milliseconds: 50));
     }
 
-    test('an offer that nobody answered is replaced by a fresh one, and the '
+    test(
+        'an offer that nobody answered is replaced by a fresh one, and the '
         'old subscription and peer connection are closed', () {
       fakeAsync((async) {
         final t = internet(async);
@@ -639,7 +654,8 @@ void main() {
       });
     });
 
-    test('the old link leads nowhere: an answer on the old channel is not '
+    test(
+        'the old link leads nowhere: an answer on the old channel is not '
         'applied', () {
       fakeAsync((async) {
         final t = internet(async);
@@ -685,7 +701,8 @@ void main() {
 
         t.pass(const Duration(hours: 1));
 
-        expect(transports, hasLength(1), reason: 'no new offer mid-negotiation');
+        expect(transports, hasLength(1),
+            reason: 'no new offer mid-negotiation');
         expect(transports.single.stopped, isFalse);
         expect(channels.single.closed, isFalse);
       });
@@ -724,12 +741,14 @@ void main() {
     }
 
     /// A receiver that types [code], through the same public mailbox.
-    _Receiver typed(_Harness t, SessionCode code, {String name = 'Alice laptop'}) =>
+    _Receiver typed(_Harness t, SessionCode code,
+            {String name = 'Alice laptop'}) =>
         _Receiver(t, code, name);
 
     InviteApprovalRequested question(_Harness t) {
       final s = t.bloc.state;
-      expect(s, isA<InviteApprovalRequested>(), reason: 'expected a dialog, got $s');
+      expect(s, isA<InviteApprovalRequested>(),
+          reason: 'expected a dialog, got $s');
       return s as InviteApprovalRequested;
     }
 
@@ -759,7 +778,8 @@ void main() {
         start(t);
         final offer = t.offer;
 
-        expect(t.advertiser.advertised, isEmpty, reason: 'no hint, no public id');
+        expect(t.advertiser.advertised, isEmpty,
+            reason: 'no hint, no public id');
         expect(t.advertiser.onAir, isNull);
         // Listening is all it does: on the topic of twelve bits of the code.
         expect(t.hub.listenedTopics, {InternetCode.requestTopic(offer.code!)});
@@ -767,7 +787,8 @@ void main() {
       });
     });
 
-    test('a receiver that types the code is asked about, by name, and gets '
+    test(
+        'a receiver that types the code is asked about, by name, and gets '
         'exactly the QR on screen once the person agrees', () {
       fakeAsync((async) {
         final t = internet(async);
@@ -785,7 +806,8 @@ void main() {
         answer(t, true);
 
         expect(receiver.outcome, isA<CodeSessionFoundOnline>());
-        expect((receiver.outcome as CodeSessionFoundOnline).payload, offer.qrData);
+        expect(
+            (receiver.outcome as CodeSessionFoundOnline).payload, offer.qrData);
         expect(t.bloc.state, isA<QRReady>(), reason: 'back to the offer');
       });
     });
@@ -807,7 +829,8 @@ void main() {
       });
     });
 
-    test('a refusal tells the receiver and returns to the offer, the code '
+    test(
+        'a refusal tells the receiver and returns to the offer, the code '
         'unchanged', () {
       fakeAsync((async) {
         final t = internet(async);
@@ -824,7 +847,8 @@ void main() {
       });
     });
 
-    test('a dialog nobody answers closes itself at ninety seconds, as a '
+    test(
+        'a dialog nobody answers closes itself at ninety seconds, as a '
         'refusal', () {
       fakeAsync((async) {
         final t = internet(async);
@@ -854,13 +878,15 @@ void main() {
         question(t);
 
         t.pass(const Duration(seconds: 80));
-        expect(transports, hasLength(1), reason: 'the deadline passed, the code stayed');
+        expect(transports, hasLength(1),
+            reason: 'the deadline passed, the code stayed');
         expect(t.bloc.state, isA<InviteApprovalRequested>());
         expect(question(t).previousState.code, first.code);
       });
     });
 
-    test('after consent the offer is held for the answer, for sixty seconds '
+    test(
+        'after consent the offer is held for the answer, for sixty seconds '
         'and no longer; then it is replaced and the transfer is not counted',
         () {
       fakeAsync((async) {
@@ -874,7 +900,8 @@ void main() {
         expect(receiver.outcome, isA<CodeSessionFoundOnline>());
 
         t.pass(const Duration(seconds: 55));
-        expect(transports, hasLength(1), reason: 'held while the answer is awaited');
+        expect(transports, hasLength(1),
+            reason: 'held while the answer is awaited');
 
         t.pass(const Duration(seconds: 10));
         t.pass(const Duration(milliseconds: 100));
@@ -889,7 +916,8 @@ void main() {
       });
     });
 
-    test('a rotation replaces the code and its topic together with the QR, '
+    test(
+        'a rotation replaces the code and its topic together with the QR, '
         'and the old code gets no answer', () {
       fakeAsync((async) {
         final t = internet(async);
@@ -916,7 +944,8 @@ void main() {
       });
     });
 
-    test('an exchange that has not reached the dialog is abandoned by a '
+    test(
+        'an exchange that has not reached the dialog is abandoned by a '
         'rotation', () {
       fakeAsync((async) {
         final t = internet(async);
@@ -932,12 +961,14 @@ void main() {
 
         hand.confirm();
         t.settle();
-        expect(t.bloc.state, isA<QRReady>(), reason: 'no dialog for a dead exchange');
+        expect(t.bloc.state, isA<QRReady>(),
+            reason: 'no dialog for a dead exchange');
         expect(t.repo.rotations, 0);
       });
     });
 
-    test('a sealed answer ends the code: nobody else is asked, the mailbox is '
+    test(
+        'a sealed answer ends the code: nobody else is asked, the mailbox is '
         'released and the offer stays held', () {
       fakeAsync((async) {
         final t = internet(async);
@@ -984,7 +1015,8 @@ void main() {
       });
     });
 
-    test('with no public channel reachable the offer fails, instead of '
+    test(
+        'with no public channel reachable the offer fails, instead of '
         'showing a code that leads nowhere', () {
       fakeAsync((async) {
         late FakeMailbox box;
@@ -996,7 +1028,8 @@ void main() {
         start(t);
 
         expect(t.bloc.state, isA<SenderError>());
-        expect((t.bloc.state as SenderError).code, FailureCode.internetStartFailed);
+        expect((t.bloc.state as SenderError).code,
+            FailureCode.internetStartFailed);
         expect(transports.single.stopped, isTrue);
       });
     });
@@ -1020,7 +1053,8 @@ void main() {
     );
 
     void start(_Harness t) {
-      t.bloc.add(const StartSendingWithTransport(file, TransportType.bluetooth));
+      t.bloc
+          .add(const StartSendingWithTransport(file, TransportType.bluetooth));
       t.settle();
     }
 
@@ -1028,6 +1062,33 @@ void main() {
       final s = t.bloc.state;
       expect(s, isA<BluetoothAdvertising>(), reason: '$s');
       return s as BluetoothAdvertising;
+    }
+
+    for (final fails in [false, true]) {
+      test(
+          'a cancelled pending Bluetooth start ignores late ${fails ? 'failure' : 'success'}',
+          () {
+        fakeAsync((async) {
+          final radio = _FakeBluetooth()..holdStart = Completer<void>();
+          final t = _Harness(async, bluetooth: () => radio);
+          start(t);
+          expect(radio.started, hasLength(1));
+          t.bloc.add(CancelSending());
+          t.settle();
+          expect(t.bloc.state, isA<SenderInitial>());
+          expect(radio.stopped, isTrue);
+          if (fails) {
+            radio.holdStart!
+                .completeError(StateError('late advertising failure'));
+          } else {
+            radio.holdStart!.complete();
+          }
+          t.settle();
+          expect(t.bloc.state, isA<SenderInitial>(),
+              reason:
+                  'an abandoned start must not restore an offer or emit an error');
+        });
+      });
     }
 
     test('a lone advertisement is restarted under a new code at five minutes',
@@ -1060,7 +1121,8 @@ void main() {
       });
     });
 
-    test('a receiver that is connected holds it, and it moves on when that '
+    test(
+        'a receiver that is connected holds it, and it moves on when that '
         'ends', () {
       fakeAsync((async) {
         final t = bluetooth(async);
@@ -1165,6 +1227,7 @@ a=candidate:0 1 udp 2122260223 192.168.3.1 40000 typ host generation 0
 
 class _FakeBluetooth extends BluetoothTransferTransport {
   bool stopped = false;
+  Completer<void>? holdStart;
   final List<({String token, String locator})> started = [];
   final ready = StreamController<void>.broadcast();
   final status = StreamController<TransferStatus>.broadcast();
@@ -1184,6 +1247,7 @@ class _FakeBluetooth extends BluetoothTransferTransport {
   Future<String> startSharing(FileMetadata file, String token,
       {List<FileMetadata>? files, String locator = ''}) async {
     started.add((token: token, locator: locator));
+    await holdStart?.future;
     return file.name;
   }
 
@@ -1201,8 +1265,7 @@ class _Receiver {
       now: t.now,
     )
         .run(code,
-            deviceName: name,
-            gate: CodeSearchArbiter(control).gate('internet'))
+            deviceName: name, gate: CodeSearchArbiter(control).gate('internet'))
         .then((o) => outcome = o);
   }
 

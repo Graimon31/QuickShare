@@ -105,6 +105,14 @@ String localizedFailure(
       return l10n.errorPathTooLong;
     case FailureCode.receivedFilesNotIntact:
       return l10n.errorReceivedFilesNotIntact;
+    case FailureCode.cancelledByReceiver:
+      return l10n.errorCancelledByReceiver;
+    case FailureCode.connectionLostNotRecovered:
+      return l10n.errorConnectionLostNotRecovered;
+    case FailureCode.connectionLostPeerTooOld:
+      return l10n.errorConnectionLostPeerTooOld;
+    case FailureCode.integrityMismatch:
+      return l10n.errorIntegrityMismatch;
     default:
       return fallback;
   }

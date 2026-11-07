@@ -40,6 +40,8 @@ import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/utils/device_name.dart';
 import 'package:uuid/uuid.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
+import 'package:quickshare/core/webrtc/resume/receiver_link.dart';
+import 'package:quickshare/core/webrtc/resume/resume_keys.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
@@ -188,9 +190,10 @@ class NoPathFound extends SenderEvent {
 
 class TransferProgressEvent extends SenderEvent {
   final double progress;
-  const TransferProgressEvent(this.progress);
+  final bool? reconnecting;
+  const TransferProgressEvent(this.progress, {this.reconnecting});
   @override
-  List<Object?> get props => [progress];
+  List<Object?> get props => [progress, reconnecting];
 }
 
 // States
@@ -362,9 +365,10 @@ class BluetoothAdvertising extends SenderState {
 class Transferring extends SenderState {
   final double progress;
   final int speedBps;
-  const Transferring(this.progress, this.speedBps);
+  final bool reconnecting;
+  const Transferring(this.progress, this.speedBps, {this.reconnecting = false});
   @override
-  List<Object?> get props => [progress, speedBps];
+  List<Object?> get props => [progress, speedBps, reconnecting];
 }
 
 class TransferComplete extends SenderState {
@@ -893,8 +897,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // Like the server's own questions, this one ends when nobody answers: the
     // receiver is told no, and the dialog goes with the question instead of
     // staying up over an offer that has already moved on.
-    final decided = request.decision.timeout(_codeTimings.dialogTimeout,
-        onTimeout: () {
+    final decided =
+        request.decision.timeout(_codeTimings.dialogTimeout, onTimeout: () {
       request.complete(false);
       return false;
     });
@@ -925,6 +929,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         fileSize: bytes,
         itemCount: itemCount,
       );
+      _activeWebRtcTransport?.configureResume(ResumeSetup(
+        keys: ResumeKeys.derive(
+            seed: qr.seed, offerFingerprint: qr.offerFingerprint),
+        mailboxFactory: _codeMailboxFactory,
+      ));
       final topic = await qr.topic;
 
       // The Worker's mailbox takes anything from anyone, and its channel
@@ -1138,8 +1147,15 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       _statusSubscription =
           _activeWebRtcTransport!.statusStream.listen((status) {
         if (status == TransferStatus.failed) {
-          add(const TransferFailed('Transfer failed unexpectedly',
-              code: FailureCode.transferFailedUnexpectedly));
+          add(TransferFailed('Transfer failed unexpectedly',
+              code: _activeWebRtcTransport?.lastFailureCode ??
+                  FailureCode.transferFailedUnexpectedly));
+        } else if (status == TransferStatus.reconnecting ||
+            status == TransferStatus.transferring) {
+          final current = state;
+          add(TransferProgressEvent(
+              current is Transferring ? current.progress : 0,
+              reconnecting: status == TransferStatus.reconnecting));
         } else if (status == TransferStatus.completed) {
           add(TransferCompleted());
         }
@@ -1234,6 +1250,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       _activeBluetoothTransport =
           _bluetoothTransportFactory?.call() ?? BluetoothTransferTransport();
       await _activeBluetoothTransport!.initialize();
+      if (generation != _sessionGeneration || isClosed) return;
 
       _progressSubscription?.cancel();
       _progressSubscription =
@@ -1290,6 +1307,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           .startSharing(file, token,
               files: _sessionFiles ?? [file], locator: ids.locator)
           .timeout(_bluetoothStartBudget);
+      // Cancellation can stop and clear this transport while the native
+      // advertising callback is still outstanding.
+      if (generation != _sessionGeneration || isClosed) return;
       // The direct-link negotiation starts the moment a generation-4
       // receiver is connected — the Bluetooth channel is the rendezvous,
       // the file crosses the Wi-Fi link the coordinator builds. Subscription
@@ -1303,12 +1323,6 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _rotation.hold(_linkHold);
         unawaited(_beginBluetoothDirectLink());
       });
-
-      if (generation != _sessionGeneration || isClosed) {
-        await _activeBluetoothTransport?.stopSharing();
-        _activeBluetoothTransport = null;
-        return;
-      }
 
       final displayFile = _sessionDisplay ?? file;
       final totalCount = (_sessionFiles ?? [file]).length;
@@ -1327,6 +1341,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         expiresAt: _newExpiry(),
       ));
     } catch (e) {
+      // A cancelled or replaced start must not report an error, or stop the
+      // newer transport that now occupies the shared active slot.
+      if (generation != _sessionGeneration || isClosed) return;
       debugPrint('Bluetooth init error: $e');
       await _activeBluetoothTransport?.stopSharing();
       _activeBluetoothTransport = null;
@@ -2049,9 +2066,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await old?.stopSharing();
     if (generation != _sessionGeneration || isClosed) return;
 
-    AppLogger.info('Internet offer unanswered after '
+    AppLogger.info(
+        'Internet offer unanswered after '
         '${AppConstants.sessionCodeLifetime.inMinutes} minutes; building a '
-        'fresh one', tag: 'SENDER');
+        'fresh one',
+        tag: 'SENDER');
     await _startInternetOffer(file, TransportType.internet, emit, generation);
   }
 
@@ -2081,8 +2100,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     }
     if (generation != _sessionGeneration || isClosed) return;
 
-    AppLogger.info('Bluetooth offer rotated: restarting the advertisement '
-        'under a new code', tag: 'SENDER');
+    AppLogger.info(
+        'Bluetooth offer rotated: restarting the advertisement '
+        'under a new code',
+        tag: 'SENDER');
     await _startBluetoothOffer(file, emit, generation);
   }
 
@@ -2109,8 +2130,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     if (generation != _sessionGeneration || isClosed) return;
     final data = qr.fold<String?>((_) => null, (q) => q);
     if (data == null) {
-      await _offerEnded(qr.fold((f) => f, (_) => null), emit,
-          hotspotUp: true);
+      await _offerEnded(qr.fold((f) => f, (_) => null), emit, hotspotUp: true);
       return;
     }
     if (state is! LocalNetworkReady) return;
@@ -2230,9 +2250,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         state is LocalNetworkReady ||
         state is Transferring) {
       final totalBytes = _sessionTotalBytes;
-      if (totalBytes <= 0) return;
-      final currentBytes =
-          (event.progress.clamp(0.0, 1.0) * totalBytes).round();
+      final current = state;
+      final progress = max(event.progress.clamp(0.0, 1.0),
+          current is Transferring ? current.progress : 0.0);
+      final currentBytes = (progress * totalBytes).round();
       if (currentBytes > _reportedSentBytes) {
         _reportedSentBytes = currentBytes;
       }
@@ -2257,7 +2278,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _lastBytes = currentBytes;
       }
 
-      emit(Transferring(event.progress, speedBps));
+      emit(Transferring(progress, speedBps,
+          reconnecting: event.reconnecting ??
+              (state is Transferring && (state as Transferring).reconnecting)));
     }
   }
 

@@ -22,6 +22,7 @@ import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_
 import 'package:quickshare/core/diagnostics/transfer_report.dart';
 import 'package:quickshare/core/transfer/interruption_guard.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
+import 'package:quickshare/core/signaling/code_mailbox.dart';
 import 'package:quickshare/core/signaling/rendezvous_channels.dart';
 import 'package:quickshare/core/storage/receive_destination.dart';
 import 'package:quickshare/core/storage/received_item.dart';
@@ -32,6 +33,8 @@ import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
+import 'package:quickshare/core/webrtc/resume/receiver_link.dart';
+import 'package:quickshare/core/webrtc/resume/resume_keys.dart';
 
 abstract class ReceiverEvent extends Equatable {
   const ReceiverEvent();
@@ -94,9 +97,11 @@ class DownloadProgressUpdate extends ReceiverEvent {
   final int received;
   final int total;
   final String fileName;
-  const DownloadProgressUpdate(this.received, this.total, [this.fileName = '']);
+  final bool reconnecting;
+  const DownloadProgressUpdate(this.received, this.total,
+      [this.fileName = '', this.reconnecting = false]);
   @override
-  List<Object> get props => [received, total, fileName];
+  List<Object> get props => [received, total, fileName, reconnecting];
 }
 
 class DownloadCompleted extends ReceiverEvent {
@@ -157,9 +162,11 @@ class Downloading extends ReceiverState {
   final double progress;
   final int speedBps;
   final String fileName;
-  const Downloading(this.progress, this.speedBps, this.fileName);
+  final bool reconnecting;
+  const Downloading(this.progress, this.speedBps, this.fileName,
+      {this.reconnecting = false});
   @override
-  List<Object> get props => [progress, speedBps, fileName];
+  List<Object> get props => [progress, speedBps, fileName, reconnecting];
 }
 
 class Verifying extends ReceiverState {}
@@ -223,6 +230,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
   /// Builds the channel the answer is published on. Null in production, where
   /// it is [buildRendezvousChannel]; a test hands in one that stays in process.
   final AnswerChannel Function()? _rendezvousChannelFactory;
+  final CodeMailbox Function()? _resumeMailboxFactory;
   BluetoothReceiverSession? _bluetoothSession;
   final BluetoothReceiverSession Function()? _bluetoothSessionFactory;
 
@@ -278,9 +286,11 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     TransferInterruptionGuard? interruptionGuard,
     WebRtcReceiverTransport Function()? serverlessTransportFactory,
     AnswerChannel Function()? rendezvousChannelFactory,
+    CodeMailbox Function()? resumeMailboxFactory,
     BluetoothReceiverSession Function()? bluetoothSessionFactory,
   })  : _serverlessTransportFactory = serverlessTransportFactory,
         _rendezvousChannelFactory = rendezvousChannelFactory,
+        _resumeMailboxFactory = resumeMailboxFactory,
         _bluetoothSessionFactory = bluetoothSessionFactory,
         _interruption = interruptionGuard ?? TransferInterruptionGuard(),
         super(ReceiverInitial()) {
@@ -303,7 +313,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         (payload) async {
           _currentPayload = payload;
           if (payload.mode == QRPayloadDecoder.bluetoothMode) {
-            final embeddedPreview = (payload.fileSize > 0 || payload.itemCount > 0)
+            final embeddedPreview = (payload.fileSize > 0 ||
+                    payload.itemCount > 0)
                 ? QhtpSessionPreview(
                     itemCount: payload.itemCount > 0 ? payload.itemCount : 1,
                     totalBytes: payload.fileSize,
@@ -472,8 +483,7 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         if (transferAttempt != _transferAttempt) return;
         await result.fold(
           (failure) async {
-            unawaited(
-                _report(0, failure: failure.message, code: failure.code));
+            unawaited(_report(0, failure: failure.message, code: failure.code));
             add(DownloadFailed(failure.message, code: failure.code));
           },
           (result) async {
@@ -533,7 +543,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
     on<DownloadProgressUpdate>((event, emit) {
       if (_currentPayload == null) return;
 
-      final measured = _speedMeter.update(event.received);
+      final measured =
+          event.reconnecting ? null : _speedMeter.update(event.received);
 
       final raw = event.total > 0 ? event.received / event.total : 0.0;
       final progress = raw > _progressFloor ? raw : _progressFloor;
@@ -542,7 +553,8 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       final name = event.fileName.isNotEmpty
           ? event.fileName
           : _currentPayload!.fileName;
-      emit(Downloading(progress, (measured ?? 0).round(), name));
+      emit(Downloading(progress, (measured ?? 0).round(), name,
+          reconnecting: event.reconnecting));
     });
 
     on<StartVerifying>((event, emit) {
@@ -624,8 +636,9 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       // the transport reported progress and nobody was listening.
       progressSub = transport.progressStream.listen((p) {
         if (attempt != _transferAttempt) return;
-        if (p.phase == 'transferring') {
-          add(DownloadProgressUpdate(p.received, p.total, p.fileName));
+        if (p.phase == 'transferring' || p.phase == 'reconnecting') {
+          add(DownloadProgressUpdate(
+              p.received, p.total, p.fileName, p.phase == 'reconnecting'));
         }
       });
 
@@ -644,6 +657,11 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
       await transport.receiveWithSdpOffer(
         qr.offer.toSdp(isOffer: true),
         targetDir: dest.path,
+        resume: ResumeSetup(
+          keys: ResumeKeys.derive(
+              seed: qr.seed, offerFingerprint: qr.offerFingerprint),
+          mailboxFactory: _resumeMailboxFactory,
+        ),
         deliverAnswer: (answerSdp) async {
           final sealed = await SealedEnvelope.seal(
             plaintext:
@@ -703,6 +721,12 @@ class ReceiverBloc extends Bloc<ReceiverEvent, ReceiverState> {
         unawaited(_report(0,
             failure: e.diagnosis.summary, code: e.diagnosis.failureCode));
         emit(ReceiverError(e.diagnosis.summary, code: e.diagnosis.failureCode));
+      } else if (e is NetworkException && e.code != null) {
+        AppLogger.error('Serverless transfer stopped: ${e.message}',
+            tag: 'WEBRTC_RECEIVER');
+        _startedAt = started;
+        unawaited(_report(0, failure: e.message, code: e.code));
+        emit(ReceiverError(e.message, code: e.code));
       } else if (e is FileException && e.code != null) {
         // The disk, not the network: a full volume, a link in the destination,
         // a transfer that cannot fit. The screen says which, in its language.

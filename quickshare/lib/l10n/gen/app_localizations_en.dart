@@ -967,4 +967,26 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get qrDisplayStillCounting => 'Still counting the files…';
+
+  @override
+  String get errorCancelledByReceiver => 'The receiver cancelled the transfer.';
+
+  @override
+  String get errorConnectionLostNotRecovered =>
+      'The connection was lost during the transfer and could not be restored after several attempts. Send again; nothing is reported as received that did not arrive whole.';
+
+  @override
+  String get errorConnectionLostPeerTooOld =>
+      'The connection was lost, and the other device runs an older version of DirectDrop that cannot continue an interrupted transfer. Update the app on that device and send again.';
+
+  @override
+  String get errorIntegrityMismatch =>
+      'A file arrived damaged: its checksum (SHA-256) does not match the original, so it was discarded and the transfer is not reported as complete. Send again.';
+
+  @override
+  String get transferReconnecting => 'Connection lost, reconnecting…';
+
+  @override
+  String get transferReconnectingHint =>
+      'What was already transferred is kept. The transfer will continue from where it stopped.';
 }

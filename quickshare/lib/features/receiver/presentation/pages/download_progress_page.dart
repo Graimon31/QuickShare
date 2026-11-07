@@ -160,8 +160,9 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
             } else if (state is ReceiverError) {
               WakelockPlus.disable();
               unawaited(BackgroundHold.end());
-              ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(_errorMessage(l10n, state), style: const TextStyle(color: Colors.white))));
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(_errorMessage(l10n, state),
+                      style: const TextStyle(color: Colors.white))));
               context.go('/');
             }
           },
@@ -191,6 +192,11 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
                       speedBytesPerSec: state.speedBps.toDouble(),
                       fileName: state.fileName,
                     ),
+                    if (state.reconnecting) ...[
+                      const SizedBox(height: 16),
+                      Text(l10n.transferReconnecting,
+                          textAlign: TextAlign.center),
+                    ],
                     const SizedBox(height: 16),
                     _buildWakelockWarning(l10n),
                   ],

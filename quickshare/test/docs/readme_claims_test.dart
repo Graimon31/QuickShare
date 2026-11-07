@@ -141,6 +141,10 @@ void main() {
         'QUICKSHARE_TURN_PASS': AppConstants.turnCredential,
         'QUICKSHARE_RELAY_LIMIT': '${AppConstants.maxRelayTransferBytes}',
         'QUICKSHARE_FORCE_RELAY': '${AppConstants.forceRelay}',
+        'QUICKSHARE_STATS_PROBE': '${AppConstants.statsProbe}',
+        'QUICKSHARE_TURN_TRANSPORT': AppConstants.turnTransportOnly,
+        'QUICKSHARE_SEND_RATE_KIB': '${AppConstants.debugSendRateKiB}',
+        'QUICKSHARE_MAX_BUFFERED': '${AppConstants.debugMaxBufferedAmount}',
       };
       final seen = <String>{};
       for (final (name, defaultCell) in configurationRows(readme)) {
@@ -242,15 +246,15 @@ void main() {
   group('codes that change', () {
     test('the README gives the interval the code uses', () {
       final minutes = AppConstants.sessionCodeLifetime.inMinutes;
-      expect(AppConstants.sessionCodeLifetime,
-          Duration(minutes: minutes),
+      expect(AppConstants.sessionCodeLifetime, Duration(minutes: minutes),
           reason: 'a whole number of minutes, or say how the README should '
               'state it and update this test');
       expect(readme, contains('every $minutes minutes'));
       expect(readme, contains('Codes change every $minutes minutes'));
     });
 
-    test('the README states the Bonjour limit and who can receive over '
+    test(
+        'the README states the Bonjour limit and who can receive over '
         'Bluetooth honestly', () {
       expect(readme, contains('A Bonjour browser can still see that an offer'));
       // Bluetooth is joined by the QR code alone, which a computer cannot
@@ -259,7 +263,6 @@ void main() {
       expect(readme, contains('joined by the QR code and by nothing else'));
     });
   });
-
 
   group('Bluetooth, per sender', () {
     final manifest = readFileOrFail('android/app/src/main/AndroidManifest.xml');
@@ -273,10 +276,14 @@ void main() {
     });
 
     const file = FileMetadata(
-        name: 'a', path: '/tmp/a', size: 1, mimeType: 'application/octet-stream');
+        name: 'a',
+        path: '/tmp/a',
+        size: 1,
+        mimeType: 'application/octet-stream');
 
     for (final platform in [TargetPlatform.android, TargetPlatform.windows]) {
-      test('${platform.name} advertises the service UUID only, as the README '
+      test(
+          '${platform.name} advertises the service UUID only, as the README '
           'says', () async {
         debugDefaultTargetPlatformOverride = platform;
         final radio = FakeBlePeripheral();
@@ -290,9 +297,14 @@ void main() {
         expect(advert.services.map(BleUuidParser.string),
             [BleUuidParser.string(BleGatt.service)]);
         expect(advert.localName, isNull);
-        expect(readme, contains('| Android | `universal_ble` peripheral mode | **The service UUID only** |'));
-        expect(readme,
-            contains('| Windows | `universal_ble` peripheral mode (`GattServiceProvider`) | **The service UUID only** |'));
+        expect(
+            readme,
+            contains(
+                '| Android | `universal_ble` peripheral mode | **The service UUID only** |'));
+        expect(
+            readme,
+            contains(
+                '| Windows | `universal_ble` peripheral mode (`GattServiceProvider`) | **The service UUID only** |'));
       });
     }
 
@@ -302,7 +314,8 @@ void main() {
       // would take 21 more", in a packet of 31.
       expect(BleAdvertisement.legacyPacketLimit, 31);
       expect(BleAdvertisement.legacyPrimaryPacketBytes(), 3);
-      expect(BleAdvertisement.legacyPrimaryPacketBytes(serviceUuids128: 1), 3 + 18);
+      expect(BleAdvertisement.legacyPrimaryPacketBytes(serviceUuids128: 1),
+          3 + 18);
       expect(
           BleAdvertisement.legacyPrimaryPacketBytes(
                   localName: BleAdvertisement.nameFor('ABCD1234')) -
@@ -331,8 +344,8 @@ void main() {
         transport.initialize().then((_) => transport
             .startSharing(file, 'tok', locator: 'ABCD1234')
             .then<void>((_) => results.add('started'),
-                onError: (Object e) =>
-                    results.add(e is BluetoothRadioException ? 'error' : '$e')));
+                onError: (Object e) => results
+                    .add(e is BluetoothRadioException ? 'error' : '$e')));
         async.elapse(const Duration(seconds: 9));
         expect(results, isEmpty, reason: 'gave up early');
         async.elapse(const Duration(seconds: 2));
@@ -395,14 +408,17 @@ void main() {
           reason: 'the string for the removed card is still in the ARB file');
     });
 
-    test('the README says where the transport is chosen, what an address '
+    test(
+        'the README says where the transport is chosen, what an address '
         'without one does, and where a drop goes', () {
       final flat = readme.replaceAll(RegExp(r'\s+'), ' ');
       expect(flat, contains('chosen on the home screen'));
       expect(flat, contains('`/send?mode=internet`'));
       expect(flat, contains('goes back to the home screen'));
-      expect(flat, contains('**Over the internet** card, which sends it over '
-          'the internet'));
+      expect(
+          flat,
+          contains('**Over the internet** card, which sends it over '
+              'the internet'));
       expect(flat, contains('which send it over the local network'));
     });
   });

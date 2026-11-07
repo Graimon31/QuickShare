@@ -58,8 +58,13 @@ void main() {
   }
 
   setUp(() {
-    binding.defaultBinaryMessenger
-        .setMockMethodCallHandler(methods, (call) async => null);
+    binding.defaultBinaryMessenger.setMockMethodCallHandler(methods,
+        (call) async {
+      if (call.method == 'startAdvertising') {
+        await radioSays({'type': 'advertisingStarted'});
+      }
+      return null;
+    });
     binding.defaultBinaryMessenger
         .setMockMethodCallHandler(events, (call) async => null);
   });

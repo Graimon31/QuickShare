@@ -976,4 +976,26 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get qrDisplayStillCounting => 'Считаем файлы…';
+
+  @override
+  String get errorCancelledByReceiver => 'Получатель отменил передачу.';
+
+  @override
+  String get errorConnectionLostNotRecovered =>
+      'Связь прервалась во время передачи, и после нескольких попыток её не удалось восстановить. Отправьте ещё раз: ничего не считается полученным, если оно пришло не целиком.';
+
+  @override
+  String get errorConnectionLostPeerTooOld =>
+      'Связь прервалась, а на другом устройстве стоит старая версия DirectDrop, которая не умеет продолжать прерванную передачу. Обновите приложение на этом устройстве и отправьте ещё раз.';
+
+  @override
+  String get errorIntegrityMismatch =>
+      'Файл пришёл повреждённым: его контрольная сумма (SHA-256) не совпадает с исходной, поэтому он удалён, а передача не считается завершённой. Отправьте ещё раз.';
+
+  @override
+  String get transferReconnecting => 'Связь прервалась, переподключаюсь…';
+
+  @override
+  String get transferReconnectingHint =>
+      'То, что уже передано, сохранено. Передача продолжится с места остановки.';
 }

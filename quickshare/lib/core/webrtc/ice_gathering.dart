@@ -99,6 +99,36 @@ Future<IcePathKind> selectedPathKind(RTCPeerConnection connection) async {
   }
 }
 
+/// The channel can open before native statistics publish its selected pair.
+/// Wait briefly for that snapshot before applying relay limits or recording
+/// the route. Both values come from the same snapshot, with a bounded wait
+/// even if the platform never answers getStats.
+Future<({IcePathKind kind, String pair})> waitForSelectedPath(
+  RTCPeerConnection connection, {
+  Duration budget = const Duration(seconds: 2),
+  Duration pollInterval = const Duration(milliseconds: 50),
+}) async {
+  final clock = Stopwatch()..start();
+  while (clock.elapsed < budget) {
+    final remaining = budget - clock.elapsed;
+    try {
+      final reports = await connection.getStats().timeout(remaining);
+      final kind = pathKindFromStats(reports);
+      if (kind != IcePathKind.unknown) {
+        return (kind: kind, pair: describeSelectedPair(reports));
+      }
+    } catch (_) {
+      // A failed or late read cannot establish a direct path. The caller
+      // retains the conservative relay limit when the route is unknown.
+      return (kind: IcePathKind.unknown, pair: 'unknown');
+    }
+    final left = budget - clock.elapsed;
+    if (left <= Duration.zero) break;
+    await Future<void>.delayed(left < pollInterval ? left : pollInterval);
+  }
+  return (kind: IcePathKind.unknown, pair: 'none');
+}
+
 /// The candidate ids of the pair WebRTC chose, or null if none succeeded.
 ///
 /// Nominated/succeeded first; some implementations do not mark a pair
@@ -241,8 +271,7 @@ Future<NoPathDiagnosis> diagnoseNoPath({
 ///    confirmed relay does.
 bool relayLimitAllows(IcePathKind path, int sessionBytes, {int? limitBytes}) {
   final limit = limitBytes ?? AppConstants.maxRelayTransferBytes;
-  final capped =
-      path == IcePathKind.relayed || path == IcePathKind.unknown;
+  final capped = path == IcePathKind.relayed || path == IcePathKind.unknown;
   if (!capped) return true;
   if (limit <= 0) return true;
   return sessionBytes <= limit;
@@ -289,9 +318,8 @@ Future<void> waitForUsableCandidates(
   // Worth a warning rather than a debug line: shipping an offer with neither a
   // reflexive nor a relay candidate means the only way through is a direct
   // route on the same network.
-  final level = tracker.sawRelay || tracker.sawServerReflexive
-      ? 'usable'
-      : 'host-only';
+  final level =
+      tracker.sawRelay || tracker.sawServerReflexive ? 'usable' : 'host-only';
   AppLogger.warning(
       'ICE gathering hit the ${limit.inMilliseconds} ms ceiling with a '
       '$level candidate set — ${tracker.describe()}',
