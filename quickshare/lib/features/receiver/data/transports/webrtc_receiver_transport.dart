@@ -1167,6 +1167,7 @@ class WebRtcReceiverTransport {
         _connectDeadline.connected();
         _iceRecoveryTimer?.cancel();
         _iceRecoveryTimer = null;
+        unawaited(_recordSelectedPath());
       case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
         _iceRecoveryTimer?.cancel();
         _iceRecoveryTimer = Timer(_iceRecoveryGrace, () {
@@ -1192,6 +1193,35 @@ class WebRtcReceiverTransport {
         }
       default:
         break;
+    }
+  }
+
+  /// How the last session's bytes travelled, and the candidate types on each
+  /// end of the pair that carried them — `local=relay remote=srflx` — as this
+  /// side saw them. The receiver's half of what the sender keeps as
+  /// `lastIcePath`; null until ICE has come up.
+  IcePathKind? lastIcePath;
+  String? lastIcePair;
+  bool _readingPath = false;
+
+  /// Reads the chosen pair once ICE is up, and again when it settles. Only
+  /// reads and remembers: nothing here decides anything about the transfer.
+  Future<void> _recordSelectedPath() async {
+    final connection = _peerConnection;
+    if (connection == null || _readingPath) return;
+    _readingPath = true;
+    try {
+      final path = await selectedPathKind(connection);
+      final pair = await selectedPairDescription(connection);
+      // A read that finds no pair — the connection is already going away —
+      // must not erase one that did.
+      if (path == IcePathKind.unknown && lastIcePath != null) return;
+      lastIcePath = path;
+      lastIcePair = pair;
+      AppLogger.info('Receiver selected path: ${path.name} ($pair)',
+          tag: 'WEBRTC_RECEIVER');
+    } finally {
+      _readingPath = false;
     }
   }
 

@@ -275,14 +275,22 @@ class WebRtcTransferTransport implements TransferTransport {
   /// to a user watching a progress ring, and differ by an order of magnitude.
   IcePathKind? lastIcePath;
 
+  /// The candidate types on each end of the pair [lastIcePath] was read from —
+  /// `local=relay remote=srflx` — for whoever has to say which kinds of
+  /// candidate met, not only how the bytes travelled. Null until a channel has
+  /// opened.
+  String? lastIcePair;
+
   Future<void> _startTransferIfAffordable(FileMetadata file) async {
     final connection = _peerConnection;
     if (connection == null) return;
 
     final path = await selectedPathKind(connection);
+    final pair = await selectedPairDescription(connection);
+    lastIcePair = pair;
     AppLogger.info(
         'Serverless sender selected path: ${path.name} '
-        '(${await selectedPairDescription(connection)}), '
+        '($pair), '
         'relay=${_relayUnavailable?.reason.name ?? 'available'}, '
         'session ${file.size} bytes',
         tag: 'WEBRTC_SENDER');

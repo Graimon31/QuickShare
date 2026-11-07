@@ -1,0 +1,144 @@
+name: Remote peer check (receive over the internet)
+
+# Receives a file by its ten-digit code from a sender that is NOT on this
+# runner's network: somebody's Mac, running
+# `quickshare/integration_test/ci_peer_sender.dart`, under its VPN. The code
+# exchange goes through the real Nostr relays and the real DirectDrop Worker,
+# the bytes through whatever path ICE finds (the real TURN relay, when nothing
+# direct works), and the receiver fails on any difference in size or SHA-256.
+#
+# Runs on one thing only: a push to a branch named `ci-peer/<anything>`. Not a
+# pull request, not main, not a schedule, not by hand: the sender has to be up
+# and waiting, and a person starts that. What to receive is read from
+# `ci-peer/peer.json` in the pushed commit. How to run both halves is in
+# `quickshare/integration_test/CI_PEER.md`.
+#
+# The code and the receiver's name end up in a public repository, so neither is
+# a secret. The sender accepts only the one name it was started with, once, and
+# the file is random bytes; see CiPeerOfferHost in ci_peer_support.dart.
+on:
+  push:
+    branches:
+      - 'ci-peer/**'
+
+permissions:
+  contents: read
+
+jobs:
+  receive_by_code:
+    name: Receive by code from the remote sender (macOS)
+    runs-on: macos-latest
+    # The sender waits forty minutes for a receiver once its code is shown. The
+    # build comes first and takes most of the rest.
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./quickshare
+    env:
+      # The log the receiver's output is kept in, for the summary and the
+      # artifact.
+      CI_PEER_LOG: ${{ github.workspace }}/ci_peer_receiver.log
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # peer.json is whatever the pushed commit says, so every value is checked
+      # against what it may look like before it is used anywhere: nothing from
+      # the file reaches a shell line or a define unchecked.
+      - name: Read ci-peer/peer.json
+        working-directory: .
+        run: |
+          set -euo pipefail
+          file=ci-peer/peer.json
+          if [ ! -f "$file" ]; then
+            echo "::error::$file is missing: it holds {code, name, bytes, sha256}"
+            exit 1
+          fi
+          if ! jq -e . "$file" > /dev/null; then
+            echo "::error::$file is not valid JSON"
+            exit 1
+          fi
+          code=$(jq -r '.code | strings' "$file")
+          name=$(jq -r '.name | strings' "$file")
+          bytes=$(jq -r '.bytes | numbers' "$file")
+          sha256=$(jq -r '.sha256 | strings' "$file")
+          force=$(jq -r '(.forceRelay // false) | if type == "boolean" then tostring else "invalid" end' "$file")
+          bad=0
+          [[ "$code" =~ ^[0-9]{10}$ ]] || { echo '::error::code must be a string of ten digits'; bad=1; }
+          [[ "$name" =~ ^[A-Za-z0-9._-]{1,40}$ ]] || { echo '::error::name must be 1-40 characters of A-Z a-z 0-9 . _ -'; bad=1; }
+          [[ "$bytes" =~ ^[1-9][0-9]{0,11}$ ]] || { echo '::error::bytes must be a positive whole number'; bad=1; }
+          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || { echo '::error::sha256 must be 64 lower-case hex digits'; bad=1; }
+          [[ "$force" =~ ^(true|false)$ ]] || { echo '::error::forceRelay must be true or false'; bad=1; }
+          if [ "$bad" -ne 0 ]; then exit 1; fi
+          {
+            echo "CI_PEER_CODE=$code"
+            echo "CI_PEER_NAME=$name"
+            echo "CI_PEER_BYTES=$bytes"
+            echo "CI_PEER_SHA256=$sha256"
+            echo "CI_PEER_FORCE_RELAY=$force"
+          } >> "$GITHUB_ENV"
+          echo "Receiving $bytes bytes as \"$name\" (forceRelay=$force)"
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Enable the macOS desktop target
+        run: flutter config --enable-macos-desktop
+
+      - run: flutter pub get
+
+      # The native half of the build, which is where the time goes (libwebrtc
+      # and the pods), done before the receiver is started so that the search
+      # begins the moment it can and not after a compile.
+      - name: Build
+        run: flutter build macos --debug --no-pub
+
+      # An explicit reporter, as in ci.yml: the one `flutter test` picks by
+      # itself on Actions wraps the app's output in groups the log swallows.
+      - name: Receive
+        run: |
+          set -o pipefail
+          flutter test integration_test/ci_peer_receiver.dart -d macos --no-pub \
+            --reporter=expanded \
+            --dart-define=CI_PEER_CODE="$CI_PEER_CODE" \
+            --dart-define=CI_PEER_NAME="$CI_PEER_NAME" \
+            --dart-define=CI_PEER_BYTES="$CI_PEER_BYTES" \
+            --dart-define=CI_PEER_SHA256="$CI_PEER_SHA256" \
+            --dart-define=QUICKSHARE_FORCE_RELAY="$CI_PEER_FORCE_RELAY" \
+            2>&1 | tee "$CI_PEER_LOG"
+
+      # The receiver writes its own summary when it can reach the runner's
+      # file. A sandboxed macOS app often cannot, and a run that failed to
+      # build or start has none to write; this puts the lines that matter on
+      # the run page in either case.
+      - name: Step summary, when the app could not write one
+        if: always()
+        run: |
+          if [ -f "$CI_PEER_LOG" ] && grep -q 'CI_PEER_SUMMARY_WRITTEN=yes' "$CI_PEER_LOG"; then
+            exit 0
+          fi
+          {
+            echo '### DirectDrop: receiving by code from a remote sender'
+            echo
+            if [ -f "$CI_PEER_LOG" ] && grep -q 'CI_PEER' "$CI_PEER_LOG"; then
+              echo '```'
+              grep 'CI_PEER' "$CI_PEER_LOG" | grep -v 'CI_PEER_RESULT_JSON=' | tail -n 60
+              echo '```'
+            else
+              echo 'The receiver never ran: see the Build and Receive steps.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-peer-receiver-log-${{ github.run_number }}
+          path: ${{ github.workspace }}/ci_peer_receiver.log
+          if-no-files-found: ignore

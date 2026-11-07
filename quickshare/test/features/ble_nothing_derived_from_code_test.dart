@@ -542,6 +542,12 @@ void main() {
     });
   }
 
+  // Ten digits that stand alone, as a code would in a JSON value. Not any ten
+  // digits in a row: the token is 32 random hex characters, and a run of ten
+  // decimal digits turns up inside one in about every fifth session.
+  final tenDigitsStandingAlone =
+      RegExp(r'(?<![0-9a-fA-F])\d{10}(?![0-9a-fA-F])');
+
   group('every shape the link directive takes', () {
     test('the sender hosts: the sealed credentials and a key, and no digits',
         () async {
@@ -565,7 +571,7 @@ void main() {
       expect(link.keys.toSet(), {'host', 'kex'});
       expect(link['host'], 'receiver');
       expect(link.containsKey('code'), isFalse);
-      expect(frames().join(), isNot(matches(RegExp(r'\d{10}'))),
+      expect(frames().join(), isNot(matches(tenDigitsStandingAlone)),
           reason: 'ten digits in a row anywhere on the air');
     });
 
@@ -591,7 +597,7 @@ void main() {
           isNot(PeerLinkService.serviceNameFor(qr.token)),
           reason: 'it is announced to the whole network, and read in the clear '
               'here');
-      expect(frames().join(), isNot(matches(RegExp(r'\d{10}'))));
+      expect(frames().join(), isNot(matches(tenDigitsStandingAlone)));
     });
   });
 
