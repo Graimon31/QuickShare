@@ -1,12 +1,17 @@
 // What the two halves of the "real remote peer" check share.
 //
-// `ci_peer_sender.dart` runs on one machine, `ci_peer_receiver.dart` on another
-// (a GitHub-hosted runner), and between them is nothing but the public
-// internet: the real Nostr relays, the real DirectDrop Worker, the real TURN
-// credentials. Neither half is a stand-in for the other, and nothing in this
-// file knows which machine it is on, so the sides can be swapped later — the
-// runner sending, a Mac receiving — by writing two more thin `main`s over the
-// same two pieces:
+// `ci_peer_sender.dart` runs on one machine, `ci_peer_receiver.dart` on another,
+// and between them is nothing but the public internet: the real Nostr relays,
+// the real DirectDrop Worker, the real TURN credentials. Neither half is a
+// stand-in for the other, and nothing in this file knows which machine it is
+// on, so the check runs in both directions with the same two programs:
+//
+//     to-runner   a Mac sends (random code, random file), a GitHub runner
+//                 receives what `ci-peer/peer.json` says
+//     to-mac      a GitHub runner sends (the code and the file's seed come from
+//                 `peer.json`, which the Mac wrote), the Mac receives
+//
+// over the same two pieces:
 //
 //     CiPeerOfferHost    hosts an offer under a code and hands it to exactly
 //                        one named receiver (what the app's internet tab does)
@@ -26,7 +31,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
-import 'package:convert/convert.dart' show AccumulatorSink;
+import 'package:convert/convert.dart' show AccumulatorSink, hex;
 import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
@@ -56,7 +61,8 @@ import 'package:quickshare/features/sender/domain/entities/transfer_session.dart
 /// directions of the check: a define says what the check is about, not which
 /// machine it is on.
 abstract final class CiPeerDefines {
-  /// The ten digits the receiver types. Receiver only.
+  /// The ten digits. Receiver: the ones it types. Sender: only in the mode where
+  /// the code is given (see [seed]); otherwise the sender makes one up.
   static const String code = String.fromEnvironment('CI_PEER_CODE');
 
   /// The device name the receiver announces to the sender. Receiver only.
@@ -65,16 +71,27 @@ abstract final class CiPeerDefines {
   /// The one device name the sender will hand its offer to. Sender only.
   static const String expectName = String.fromEnvironment('CI_PEER_EXPECT_NAME');
 
-  /// How big the file is. The sender makes one this size (default 50 MiB); the
-  /// receiver refuses anything else.
+  /// How big the file is. The sender makes one this size (default 50 MiB, but
+  /// the mode where the code is given has no default); the receiver refuses
+  /// anything else.
   static const int bytes = int.fromEnvironment('CI_PEER_BYTES', defaultValue: -1);
 
-  /// SHA-256 of the file, hex. Receiver only.
+  /// SHA-256 of the file, hex. Receiver only, and only when it is not given a
+  /// [seed] to work the hash out from.
   static const String sha256Hex = String.fromEnvironment('CI_PEER_SHA256');
+
+  /// 64 hex digits that stand for the whole file: the bytes are
+  /// [ciPeerSeededBlocks] of it. When the machine that picks the code is also
+  /// the one that receives, it picks this too and works out the hash itself.
+  ///
+  /// Sender: given together with [code], [expectName] and [bytes], it makes the
+  /// sender offer exactly that file under exactly that code, and not a random
+  /// one under a code of its own. Receiver: given instead of [sha256Hex].
+  static const String seed = String.fromEnvironment('CI_PEER_SEED');
 
   /// Where the sender writes `{code, bytes, sha256, ...}` and, in the end, its
   /// result. Empty: a file in the system temporary folder, whose path is
-  /// printed.
+  /// printed. Not used where the code is given.
   static const String out = String.fromEnvironment('CI_PEER_OUT');
 
   /// How long the sender waits for a receiver to connect, from the moment its
@@ -96,15 +113,31 @@ abstract final class CiPeerDefines {
       defaultValue: 300 /* AppConstants.sessionCodeLifetime */);
 
   /// The receiver's search is tried this many times before it gives up; a
-  /// search that finds nothing is retyped, as a person would.
+  /// search that finds nothing is retyped, as a person would. Ignored when
+  /// [findMinutes] says how long to search instead.
   static const int findAttempts =
       int.fromEnvironment('CI_PEER_FIND_ATTEMPTS', defaultValue: 5);
 
+  /// How long the receiver keeps searching, retyping the code each time a
+  /// search finds nothing, for a sender that is not up yet (the other machine
+  /// is still building). Zero: not that; [findAttempts] searches instead. A
+  /// receiver given a [seed] searches for [defaultSeededFindMinutes] unless
+  /// told otherwise, because a seed means the sender is somebody else's job
+  /// that has not started.
+  static const int findMinutes =
+      int.fromEnvironment('CI_PEER_FIND_MINUTES', defaultValue: 0);
+
   static const int defaultBytes = 50 * 1024 * 1024;
+  static const int defaultSeededFindMinutes = 40;
 
   static const Duration waitFor = Duration(minutes: waitMinutes);
   static const Duration transferFor = Duration(minutes: transferMinutes);
   static const Duration offerLifetime = Duration(seconds: offerRefreshSeconds);
+
+  /// How long the receiver searches, or null for [findAttempts] searches.
+  static const Duration? findFor = findMinutes > 0
+      ? Duration(minutes: findMinutes)
+      : (seed != '' ? Duration(minutes: defaultSeededFindMinutes) : null);
 }
 
 // ─── Small, pure helpers (covered by test/integration/ci_peer_support_test) ──
@@ -118,20 +151,61 @@ bool ciPeerNameMatches(String expected, String announced) {
 
 /// What is wrong with the receiver's settings, one sentence each. Empty means
 /// the receiver can start.
+///
+/// The file is described either by its [sha256Hex] or by a [seedHex] it is made
+/// from, and by both is an error: two descriptions that could disagree are one
+/// too many.
 List<String> ciPeerReceiverProblems({
   required String code,
   required String name,
   required int bytes,
   required String sha256Hex,
+  String seedHex = '',
 }) =>
     [
       if (SessionCode.parse(code) == null)
         'CI_PEER_CODE is not a ten-digit code',
       if (InternetCode.cleanName(name).isEmpty) 'CI_PEER_NAME is empty',
       if (bytes <= 0) 'CI_PEER_BYTES is missing or not a positive number',
-      if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(sha256Hex))
+      if (seedHex.isNotEmpty && sha256Hex.isNotEmpty)
+        'give CI_PEER_SHA256 or CI_PEER_SEED, not both'
+      else if (seedHex.isNotEmpty && !_isHex64(seedHex))
+        'CI_PEER_SEED is not 64 hex digits'
+      else if (seedHex.isEmpty && !_isHex64(sha256Hex))
         'CI_PEER_SHA256 is not 64 hex digits',
     ];
+
+/// What is wrong with the settings of a sender that is *given* its code and its
+/// file: the mode of the runner that sends to a Mac. Empty means it can start.
+List<String> ciPeerGivenSenderProblems({
+  required String code,
+  required String expectName,
+  required int bytes,
+  required String seedHex,
+}) =>
+    [
+      if (SessionCode.parse(code) == null)
+        'CI_PEER_CODE is not a ten-digit code',
+      if (InternetCode.cleanName(expectName).isEmpty)
+        'CI_PEER_EXPECT_NAME is empty',
+      if (bytes <= 0) 'CI_PEER_BYTES is missing or not a positive number',
+      if (!_isHex64(seedHex)) 'CI_PEER_SEED is not 64 hex digits',
+    ];
+
+bool _isHex64(String text) => RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(text);
+
+/// Whether a search that has come up empty should be typed again: after
+/// [attempt] searches and [elapsed] since the first, with [pause] to wait
+/// before the next. With [findFor] it is time that decides, and the next search
+/// must be able to start before the time is up; without, it is [findAttempts].
+bool ciPeerMaySearchAgain({
+  required int attempt,
+  required Duration elapsed,
+  required int findAttempts,
+  required Duration pause,
+  Duration? findFor,
+}) =>
+    findFor != null ? elapsed + pause < findFor : attempt < findAttempts;
 
 /// [text] as something safe to put in a log or a summary: it came from the
 /// other end, so anything but plain characters becomes `?`.
@@ -155,14 +229,11 @@ String ciPeerPlainText(String text) {
 /// file is streamed, never held whole, and random: a file that compresses
 /// would measure the compressor and not the path.
 Future<String> ciPeerWriteRandomFile(File file, int bytes,
-    {Random? random}) async {
+    {Random? random}) {
   // Cryptographically random only to pick the seed: one native call per byte
   // would be the slowest part of the whole check.
   final source = random ?? Random(Random.secure().nextInt(1 << 32));
-  final digest = AccumulatorSink<Digest>();
-  final hash = sha256.startChunkedConversion(digest);
-  final sink = file.openWrite();
-  try {
+  Iterable<Uint8List> blocks() sync* {
     const block = 1024 * 1024;
     var left = bytes;
     while (left > 0) {
@@ -176,9 +247,85 @@ Future<String> ciPeerWriteRandomFile(File file, int bytes,
       for (; i < size; i++) {
         chunk[i] = source.nextInt(256);
       }
+      yield chunk;
+      left -= size;
+    }
+  }
+
+  return _writeAndHash(file, blocks());
+}
+
+/// Writes the file [seedHex] stands for, [bytes] long, and returns its SHA-256.
+/// Two machines given the same seed and size write the same bytes.
+Future<String> ciPeerWriteSeededFile(File file, int bytes, String seedHex) =>
+    _writeAndHash(file, ciPeerSeededBlocks(seedHex, bytes));
+
+/// SHA-256, hex, of the file [seedHex] stands for, without writing it: what the
+/// machine that picked the seed expects to receive.
+Future<String> ciPeerSeededSha256(int bytes, String seedHex) async {
+  final digest = AccumulatorSink<Digest>();
+  final hash = sha256.startChunkedConversion(digest);
+  for (final block in ciPeerSeededBlocks(seedHex, bytes)) {
+    hash.add(block);
+    // 50 MiB takes a few seconds; the event loop is not held for all of them.
+    await Future<void>.delayed(Duration.zero);
+  }
+  hash.close();
+  return digest.events.single.toString();
+}
+
+/// The bytes of the file that [seedHex] (64 hex digits, 32 bytes) stands for,
+/// [bytes] long, in blocks of [blockSize].
+///
+/// Block `i` of 32 bytes is `SHA-256("directdrop-ci-peer-file-v1" || seed ||
+/// i)`, with `i` as eight bytes, big-endian; the file is the blocks one after
+/// another, cut at [bytes]. Chosen because anybody can check it with nothing
+/// but a SHA-256 tool and because it is not compressible: a file that
+/// compresses would measure the compressor and not the path.
+///
+/// The seed is not a secret (it is in a public repository next to the code),
+/// and the file is worth nothing to anyone.
+Iterable<Uint8List> ciPeerSeededBlocks(String seedHex, int bytes,
+    {int blockSize = 1024 * 1024}) sync* {
+  if (!_isHex64(seedHex)) {
+    throw ArgumentError.value(seedHex, 'seedHex', 'not 64 hex digits');
+  }
+  if (blockSize <= 0 || blockSize % 32 != 0) {
+    throw ArgumentError.value(blockSize, 'blockSize', 'must be a multiple of 32');
+  }
+  final prefix = utf8.encode(ciPeerSeedDomain);
+  final seed = hex.decode(seedHex.toLowerCase());
+  final input = Uint8List(prefix.length + seed.length + 8)
+    ..setRange(0, prefix.length, prefix)
+    ..setRange(prefix.length, prefix.length + seed.length, seed);
+  final counter = ByteData.sublistView(input, prefix.length + seed.length);
+  var index = 0;
+  var left = bytes;
+  while (left > 0) {
+    final size = min(blockSize, left);
+    final chunk = Uint8List(size);
+    for (var at = 0; at < size; at += 32) {
+      counter.setUint64(0, index++);
+      final block = sha256.convert(input).bytes;
+      chunk.setRange(at, min(at + 32, size), block);
+    }
+    yield chunk;
+    left -= size;
+  }
+}
+
+/// What the seeded file's blocks are hashed under; see [ciPeerSeededBlocks].
+const String ciPeerSeedDomain = 'directdrop-ci-peer-file-v1';
+
+/// Writes [blocks] to [file] one at a time and returns their SHA-256, hex.
+Future<String> _writeAndHash(File file, Iterable<Uint8List> blocks) async {
+  final digest = AccumulatorSink<Digest>();
+  final hash = sha256.startChunkedConversion(digest);
+  final sink = file.openWrite();
+  try {
+    for (final chunk in blocks) {
       sink.add(chunk);
       hash.add(chunk);
-      left -= size;
       await sink.flush();
     }
     hash.close();
@@ -740,10 +887,28 @@ class CiPeerOfferHost {
 
 // ─── The receiver ──────────────────────────────────────────────────────────
 
+/// How the receiver looks for a sender once: by default what the code screen
+/// does, [CodeLookup.find]. A parameter so that the way a search that breaks,
+/// finds nothing or is refused is dealt with can be tested without the network.
+typedef CiPeerLookup = Future<CodeSessionOutcome> Function(
+    SessionCode code, String deviceName, CodeSearchControl control);
+
+Future<CodeSessionOutcome> _lookInTheApp(
+        SessionCode code, String deviceName, CodeSearchControl control) =>
+    CodeLookup(deviceName: deviceName).find(code, control: control);
+
 /// Finds the sender of [code] the way the code screen does (the local network
 /// and the internet together), takes the file it offers, and checks it against
 /// [expectedBytes] and [expectedSha256]. Never throws: every way it can end,
 /// including every mismatch, is a `failure` in the returned report.
+///
+/// A search that finds nothing is typed again after [findPause]: [findAttempts]
+/// times, or, when [findFor] is given, for as long as that, which is how a
+/// receiver waits for a sender that is still being built on another machine.
+/// A search that *breaks* (the VPN dropped the relays for a minute) is the same
+/// as one that found nothing: it is retried, not fatal. What does end the
+/// search at once is an answer: a sender that declines this device, or one that
+/// speaks another version.
 Future<CiPeerReport> ciPeerReceive({
   required SessionCode code,
   required String name,
@@ -751,8 +916,10 @@ Future<CiPeerReport> ciPeerReceive({
   required String expectedSha256,
   required Directory destination,
   int findAttempts = 5,
+  Duration? findFor,
   Duration findPause = const Duration(seconds: 10),
   Duration transferFor = const Duration(minutes: 20),
+  CiPeerLookup lookup = _lookInTheApp,
   void Function(String)? log,
 }) async {
   final say = log ?? ciPeerLogger('receiver');
@@ -776,20 +943,33 @@ Future<CiPeerReport> ciPeerReceive({
   try {
     // ── 1. Typing the code ──
     String? offerText;
-    for (var attempt = 1; attempt <= findAttempts && offerText == null; attempt++) {
+    var lastEnd = 'nothing';
+    final budget = findFor == null
+        ? '$findAttempts searches'
+        : findFor.inSeconds < 120
+            ? '${findFor.inSeconds}s of searching'
+            : '${findFor.inMinutes} min of searching';
+    for (var attempt = 1; offerText == null; attempt++) {
       final control = CodeSearchControl();
       final phases =
           control.phases.listen((phase) => say('search: ${phase.name}'));
       final search = Stopwatch()..start();
       CodeSessionOutcome outcome;
       try {
-        outcome = await CodeLookup(deviceName: name).find(code, control: control);
+        outcome = await lookup(code, name, control);
+        lastEnd = outcome.runtimeType.toString();
+      } catch (e) {
+        // A search that broke has found nothing; whether that is the end is
+        // for the budget to say, as for a search that came back empty.
+        outcome = const CodeSessionNotFound();
+        lastEnd = 'a search that broke (${e.runtimeType})';
       } finally {
         await phases.cancel();
         await control.dispose();
       }
-      say('search $attempt/$findAttempts: ${outcome.runtimeType} '
-          'after ${(search.elapsedMilliseconds / 1000).toStringAsFixed(1)}s');
+      say('search $attempt: $lastEnd '
+          'after ${(search.elapsedMilliseconds / 1000).toStringAsFixed(1)}s '
+          '(${(clock.elapsedMilliseconds / 1000).toStringAsFixed(0)}s in)');
       report.fields['find_attempts'] = attempt;
       if (outcome is CodeSessionFoundOnline) {
         offerText = outcome.payload;
@@ -806,12 +986,22 @@ Future<CiPeerReport> ciPeerReceive({
       } else if (outcome is CodeSessionUpdateRequired) {
         fail('the sender speaks another version of the code protocol');
         return report;
-      } else if (attempt < findAttempts) {
+      } else {
+        if (!ciPeerMaySearchAgain(
+          attempt: attempt,
+          elapsed: clock.elapsed,
+          findAttempts: findAttempts,
+          pause: findPause,
+          findFor: findFor,
+        )) {
+          break;
+        }
         await Future<void>.delayed(findPause);
       }
     }
     if (offerText == null) {
-      fail('no sender answered the code after $findAttempts searches');
+      fail('no sender answered the code in $budget (the last search ended in '
+          '$lastEnd)');
       return report;
     }
 
@@ -930,6 +1120,13 @@ Future<CiPeerReport> ciPeerReceive({
   } finally {
     report.fields['total_seconds'] = (clock.elapsedMilliseconds / 1000).round();
     if (!report.succeeded) {
+      // A transfer that broke still says which path it was on: that is what
+      // tells a relay that stopped carrying bytes from a path never found.
+      final path = transport?.lastIcePath;
+      if (path != null) {
+        report.fields['ice_path'] ??= path.name;
+        report.fields['ice_pair'] ??= transport?.lastIcePair;
+      }
       try {
         await transport?.cancel();
       } catch (_) {}

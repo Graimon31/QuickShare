@@ -1,21 +1,35 @@
-name: Remote peer check (receive over the internet)
+name: Remote peer check (over the internet)
 
-# Receives a file by its ten-digit code from a sender that is NOT on this
-# runner's network: somebody's Mac, running
-# `quickshare/integration_test/ci_peer_sender.dart`, under its VPN. The code
-# exchange goes through the real Nostr relays and the real DirectDrop Worker,
-# the bytes through whatever path ICE finds (the real TURN relay, when nothing
-# direct works), and the receiver fails on any difference in size or SHA-256.
+# One macOS runner as one end of a transfer by ten-digit code whose other end
+# is NOT on this runner's network: somebody's Mac, under its VPN. Which end the
+# runner is comes from `direction` in `ci-peer/peer.json`:
+#
+#   to-runner (the default)  the Mac sends, the runner receives. The Mac runs
+#       `quickshare/integration_test/ci_peer_sender.dart`, which picks the code
+#       and the file and writes them to peer.json; the runner types the code
+#       and compares the file's size and SHA-256 with peer.json's.
+#   to-mac                   the runner sends, the Mac receives. The Mac picks
+#       the code, a seed that stands for the file, its size and a name, writes
+#       them to peer.json and starts searching for the code at once, retrying
+#       for forty minutes; the runner builds, then offers exactly that file
+#       under exactly that code to the one receiver that has the name. The Mac
+#       works the hash out from the seed and compares. The script that does the
+#       Mac's side is `quickshare/integration_test/ci_peer_to_mac.sh`.
+#
+# In both, the code exchange goes through the real Nostr relays and the real
+# DirectDrop Worker, the bytes through whatever path ICE finds (the real TURN
+# relay, when nothing direct works), and whoever receives fails on any
+# difference.
 #
 # Runs on one thing only: a push to a branch named `ci-peer/<anything>`. Not a
-# pull request, not main, not a schedule, not by hand: the sender has to be up
-# and waiting, and a person starts that. What to receive is read from
-# `ci-peer/peer.json` in the pushed commit. How to run both halves is in
+# pull request, not main, not a schedule, not by hand: the other end has to be
+# up (or about to be), and a person starts that. How to run both ways is in
 # `quickshare/integration_test/CI_PEER.md`.
 #
-# The code and the receiver's name end up in a public repository, so neither is
-# a secret. The sender accepts only the one name it was started with, once, and
-# the file is random bytes; see CiPeerOfferHost in ci_peer_support.dart.
+# The code, the seed and the name end up in a public repository, so none of
+# them is a secret. The sender accepts only the one name it was given, once, and
+# the file is bytes that are worth nothing; see CiPeerOfferHost in
+# ci_peer_support.dart.
 on:
   push:
     branches:
@@ -25,20 +39,20 @@ permissions:
   contents: read
 
 jobs:
-  receive_by_code:
-    name: Receive by code from the remote sender (macOS)
+  remote_peer:
+    name: Remote peer on macOS (receives or sends, as peer.json says)
     runs-on: macos-latest
-    # The sender waits forty minutes for a receiver once its code is shown. The
-    # build comes first and takes most of the rest.
-    timeout-minutes: 35
+    # The build comes first (ten to fifteen minutes). Then, to-runner: five
+    # searches and a transfer; to-mac: the sender waits up to forty minutes
+    # for the Mac, which has been searching since before the build began.
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
         working-directory: ./quickshare
     env:
-      # The log the receiver's output is kept in, for the summary and the
-      # artifact.
-      CI_PEER_LOG: ${{ github.workspace }}/ci_peer_receiver.log
+      # The log the app's output is kept in, for the summary and the artifact.
+      CI_PEER_LOG: ${{ github.workspace }}/ci_peer.log
     steps:
       - uses: actions/checkout@v4
         with:
@@ -46,40 +60,61 @@ jobs:
 
       # peer.json is whatever the pushed commit says, so every value is checked
       # against what it may look like before it is used anywhere: nothing from
-      # the file reaches a shell line or a define unchecked.
+      # the file reaches a shell line or a define unchecked. Only the fields the
+      # direction uses are read.
       - name: Read ci-peer/peer.json
         working-directory: .
         run: |
           set -euo pipefail
           file=ci-peer/peer.json
           if [ ! -f "$file" ]; then
-            echo "::error::$file is missing: it holds {code, name, bytes, sha256}"
+            echo "::error::$file is missing: it holds {code, name, bytes, sha256} (or {direction, code, name, bytes, seed})"
             exit 1
           fi
-          if ! jq -e . "$file" > /dev/null; then
-            echo "::error::$file is not valid JSON"
+          if ! jq -e 'type == "object"' "$file" > /dev/null 2>&1; then
+            echo "::error::$file is not a JSON object"
             exit 1
           fi
+          direction=$(jq -r '(.direction // "to-runner") | if type == "string" then . else "invalid" end' "$file")
           code=$(jq -r '.code | strings' "$file")
           name=$(jq -r '.name | strings' "$file")
           bytes=$(jq -r '.bytes | numbers' "$file")
-          sha256=$(jq -r '.sha256 | strings' "$file")
           force=$(jq -r '(.forceRelay // false) | if type == "boolean" then tostring else "invalid" end' "$file")
+          sha256=''
+          seed=''
           bad=0
+          [[ "$direction" =~ ^(to-runner|to-mac)$ ]] || { echo '::error::direction must be to-runner or to-mac'; bad=1; }
           [[ "$code" =~ ^[0-9]{10}$ ]] || { echo '::error::code must be a string of ten digits'; bad=1; }
           [[ "$name" =~ ^[A-Za-z0-9._-]{1,40}$ ]] || { echo '::error::name must be 1-40 characters of A-Z a-z 0-9 . _ -'; bad=1; }
           [[ "$bytes" =~ ^[1-9][0-9]{0,11}$ ]] || { echo '::error::bytes must be a positive whole number'; bad=1; }
-          [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || { echo '::error::sha256 must be 64 lower-case hex digits'; bad=1; }
           [[ "$force" =~ ^(true|false)$ ]] || { echo '::error::forceRelay must be true or false'; bad=1; }
+          if [ "$direction" = to-runner ]; then
+            sha256=$(jq -r '.sha256 | strings' "$file")
+            [[ "$sha256" =~ ^[0-9a-f]{64}$ ]] || { echo '::error::sha256 must be 64 lower-case hex digits'; bad=1; }
+          elif [ "$direction" = to-mac ]; then
+            seed=$(jq -r '.seed | strings' "$file")
+            [[ "$seed" =~ ^[0-9a-f]{64}$ ]] || { echo '::error::seed must be 64 lower-case hex digits'; bad=1; }
+            # This runner writes the file, so what it is asked to write is bounded.
+            if [[ "$bytes" =~ ^[1-9][0-9]{0,11}$ ]] && [ "$bytes" -gt 2147483648 ]; then
+              echo '::error::bytes may not exceed 2 GiB when the runner sends'
+              bad=1
+            fi
+          fi
           if [ "$bad" -ne 0 ]; then exit 1; fi
           {
+            echo "CI_PEER_DIRECTION=$direction"
             echo "CI_PEER_CODE=$code"
             echo "CI_PEER_NAME=$name"
             echo "CI_PEER_BYTES=$bytes"
             echo "CI_PEER_SHA256=$sha256"
+            echo "CI_PEER_SEED=$seed"
             echo "CI_PEER_FORCE_RELAY=$force"
           } >> "$GITHUB_ENV"
-          echo "Receiving $bytes bytes as \"$name\" (forceRelay=$force)"
+          if [ "$direction" = to-mac ]; then
+            echo "Sending $bytes bytes to \"$name\" (forceRelay=$force)"
+          else
+            echo "Receiving $bytes bytes as \"$name\" (forceRelay=$force)"
+          fi
 
       - name: Set up Flutter SDK
         uses: subosito/flutter-action@v2
@@ -94,14 +129,16 @@ jobs:
       - run: flutter pub get
 
       # The native half of the build, which is where the time goes (libwebrtc
-      # and the pods), done before the receiver is started so that the search
-      # begins the moment it can and not after a compile.
+      # and the pods), done before the app is started so that the receiving end
+      # begins to search, and the sending end to offer, the moment it can and
+      # not after a compile.
       - name: Build
         run: flutter build macos --debug --no-pub
 
       # An explicit reporter, as in ci.yml: the one `flutter test` picks by
       # itself on Actions wraps the app's output in groups the log swallows.
-      - name: Receive
+      - name: Receive (the Mac sends)
+        if: env.CI_PEER_DIRECTION == 'to-runner'
         run: |
           set -o pipefail
           flutter test integration_test/ci_peer_receiver.dart -d macos --no-pub \
@@ -113,10 +150,27 @@ jobs:
             --dart-define=QUICKSHARE_FORCE_RELAY="$CI_PEER_FORCE_RELAY" \
             2>&1 | tee "$CI_PEER_LOG"
 
-      # The receiver writes its own summary when it can reach the runner's
-      # file. A sandboxed macOS app often cannot, and a run that failed to
-      # build or start has none to write; this puts the lines that matter on
-      # the run page in either case.
+      # The same program the Mac runs by hand to send, given the code, the seed
+      # and the name the Mac picked instead of making them up. It makes the
+      # file from the seed, offers it under the code, accepts the one name once,
+      # and waits (forty minutes, its default) for the Mac to turn up.
+      - name: Send (the Mac receives)
+        if: env.CI_PEER_DIRECTION == 'to-mac'
+        run: |
+          set -o pipefail
+          flutter test integration_test/ci_peer_sender.dart -d macos --no-pub \
+            --reporter=expanded \
+            --dart-define=CI_PEER_CODE="$CI_PEER_CODE" \
+            --dart-define=CI_PEER_EXPECT_NAME="$CI_PEER_NAME" \
+            --dart-define=CI_PEER_BYTES="$CI_PEER_BYTES" \
+            --dart-define=CI_PEER_SEED="$CI_PEER_SEED" \
+            --dart-define=QUICKSHARE_FORCE_RELAY="$CI_PEER_FORCE_RELAY" \
+            2>&1 | tee "$CI_PEER_LOG"
+
+      # The app writes its own summary when it can reach the runner's file. A
+      # sandboxed macOS app often cannot, and a run that failed to build or
+      # start has none to write; this puts the lines that matter on the run
+      # page in either case.
       - name: Step summary, when the app could not write one
         if: always()
         run: |
@@ -124,14 +178,18 @@ jobs:
             exit 0
           fi
           {
-            echo '### DirectDrop: receiving by code from a remote sender'
+            if [ "${CI_PEER_DIRECTION:-}" = to-mac ]; then
+              echo '### DirectDrop: sending by code to a remote receiver'
+            else
+              echo '### DirectDrop: receiving by code from a remote sender'
+            fi
             echo
             if [ -f "$CI_PEER_LOG" ] && grep -q 'CI_PEER' "$CI_PEER_LOG"; then
               echo '```'
               grep 'CI_PEER' "$CI_PEER_LOG" | grep -v 'CI_PEER_RESULT_JSON=' | tail -n 60
               echo '```'
             else
-              echo 'The receiver never ran: see the Build and Receive steps.'
+              echo 'The app never ran: see the Build and Receive/Send steps.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -139,6 +197,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-peer-receiver-log-${{ github.run_number }}
-          path: ${{ github.workspace }}/ci_peer_receiver.log
+          name: ci-peer-log-${{ github.run_number }}
+          path: ${{ github.workspace }}/ci_peer.log
           if-no-files-found: ignore
