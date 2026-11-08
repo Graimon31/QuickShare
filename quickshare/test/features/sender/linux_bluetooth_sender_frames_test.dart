@@ -44,7 +44,8 @@ void main() {
       expect(
           LinuxBluetoothSender.mtuOfWrite([
             DBusArray.byte(const [1, 2]),
-            options({'mtu': const DBusUint16(185), 'link': const DBusString('LE')}),
+            options(
+                {'mtu': const DBusUint16(185), 'link': const DBusString('LE')}),
           ]),
           185);
     });
@@ -56,7 +57,10 @@ void main() {
             options({'link': const DBusString('LE')}),
           ]),
           isNull);
-      expect(LinuxBluetoothSender.mtuOfWrite([DBusArray.byte(const [1])]),
+      expect(
+          LinuxBluetoothSender.mtuOfWrite([
+            DBusArray.byte(const [1])
+          ]),
           isNull);
       expect(LinuxBluetoothSender.mtuOfWrite(const []), isNull);
     });
@@ -74,6 +78,64 @@ void main() {
             const DBusString('not a dictionary'),
           ]),
           isNull);
+    });
+  });
+
+  group('pairing write sources and control frames', () {
+    test('extracts only an actual BlueZ device object path', () {
+      final bytes = DBusArray.byte(const [1]);
+      const path = '/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF';
+      expect(
+          LinuxBluetoothSender.peerOfWrite([
+            bytes,
+            DBusDict.stringVariant({'device': DBusObjectPath(path)})
+          ]),
+          path);
+      expect(
+          LinuxBluetoothSender.peerOfWrite([
+            bytes,
+            DBusDict.stringVariant({'device': const DBusString('fake')})
+          ]),
+          isEmpty);
+      expect(LinuxBluetoothSender.peerOfWrite([bytes]), isEmpty);
+    });
+
+    test(
+        'isolates peers and recovers slots after malformed and oversized frames',
+        () async {
+      final sender = LinuxBluetoothSender();
+      final received = <String, String>{};
+      void accept(String peer, String command) => received[peer] = command;
+      for (var n = 0; n < 10; n++) {
+        sender.debugAcceptPairingPart(
+            'bad-$n', Uint8List.fromList([BleFrame.marker, 1]), accept);
+      }
+      final splitter = BleFrameSplitter();
+      final a = splitter.split(
+          Uint8List.fromList(utf8.encode('PAIR:${'a' * 100}')),
+          notificationBytes: 20);
+      final b = splitter.split(
+          Uint8List.fromList(utf8.encode('PAIR:${'b' * 100}')),
+          notificationBytes: 20);
+      for (var n = 0; n < a.length; n++) {
+        sender.debugAcceptPairingPart('a', a[n], accept);
+        sender.debugAcceptPairingPart('b', b[n], accept);
+      }
+      expect(received, {'a': 'PAIR:${'a' * 100}', 'b': 'PAIR:${'b' * 100}'});
+      final over = splitter.split(
+          Uint8List.fromList(utf8.encode('PAIR:${'x' * 176}')),
+          notificationBytes: 20);
+      for (final part in over) {
+        sender.debugAcceptPairingPart('a', part, accept);
+      }
+      expect(received['a'], 'PAIR:${'a' * 100}');
+      final again = splitter.split(Uint8List.fromList(utf8.encode('PAIR:ok')),
+          notificationBytes: 20);
+      for (final part in again) {
+        sender.debugAcceptPairingPart('a', part, accept);
+      }
+      expect(received['a'], 'PAIR:ok');
+      await sender.stop();
     });
   });
 
@@ -117,7 +179,8 @@ void main() {
     Map<String, Object?> asMap(String json) =>
         jsonDecode(json) as Map<String, Object?>;
 
-    test('an iPhone\'s 185-byte MTU: two parts of at most 182 for each of '
+    test(
+        'an iPhone\'s 185-byte MTU: two parts of at most 182 for each of '
         'the two big frames, and they come out whole', () async {
       sender.debugPeerMtu = 185;
 
@@ -150,12 +213,28 @@ void main() {
       expect(whole(), [directive, directive]);
     });
 
+    test('broadcast pairing frames fit a subscriber with the minimum MTU',
+        () async {
+      sender.debugPeerMtu = 247;
+      final pair = {
+        'pair': {'id': 'a' * 16, 'sealed': 's' * 300}
+      };
+
+      await sender.notifyLinkFrame(pair);
+
+      expect(parts, hasLength(greaterThan(1)));
+      expect(parts.map((p) => p.length), everyElement(lessThanOrEqualTo(20)));
+      expect(whole(), [jsonEncode(pair)]);
+    });
+
     test('a frame past the largest there is is refused, and nothing is sent',
         () async {
       sender.debugPeerMtu = 517;
 
       await expectLater(
-        sender.notifyLinkFrame({'serve': {'fn': 'x' * 4000}}),
+        sender.notifyLinkFrame({
+          'serve': {'fn': 'x' * 4000}
+        }),
         throwsA(isA<BleFrameException>().having(
             (e) => e.problem, 'problem', BleFrameProblem.frameTooLarge)),
       );

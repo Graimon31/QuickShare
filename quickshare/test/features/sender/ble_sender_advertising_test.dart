@@ -154,7 +154,8 @@ void main() {
         });
       });
 
-      test('the service stays out of the scan response, where a scan filter '
+      test(
+          'the service stays out of the scan response, where a scan filter '
           'may not look', () async {
         await started(session);
 
@@ -168,8 +169,10 @@ void main() {
         final ready = <void>[];
         transport.receiverReady.listen(ready.add);
 
-        radio.write('central-1', BleGatt.control, BleControlProtocol.capabilities());
-        radio.write('central-1', BleGatt.control, BleControlProtocol.start(session.token));
+        radio.write(
+            'central-1', BleGatt.control, BleControlProtocol.capabilities());
+        radio.write('central-1', BleGatt.control,
+            BleControlProtocol.start(session.token));
         radio.subscribe('central-1', BleGatt.data);
         await Future<void>.delayed(Duration.zero);
 
@@ -179,10 +182,11 @@ void main() {
       test('a START without the token is refused at the ATT layer', () async {
         await started(session);
 
-        final answer =
-            radio.write('central-1', BleGatt.control, BleControlProtocol.start('wrong'));
+        final answer = radio.write(
+            'central-1', BleGatt.control, BleControlProtocol.start('wrong'));
 
-        expect(answer?.status, BleControlProtocol.attInsufficientAuthentication);
+        expect(
+            answer?.status, BleControlProtocol.attInsufficientAuthentication);
       });
 
       test('stopSharing stops the advertisement and the handlers', () async {
@@ -194,7 +198,8 @@ void main() {
         expect(radio.writeHandler, isNull);
       });
 
-      test('the service is registered once for the life of the process, not '
+      test(
+          'the service is registered once for the life of the process, not '
           'once per code', () async {
         // The Android plugin keeps a cache of characteristic objects by UUID
         // and never clears it on clearServices(), so the second registration
@@ -355,12 +360,13 @@ void main() {
       radio.subscribe('client-7', BleGatt.data);
       await Future<void>.delayed(Duration.zero);
 
-      await transport.sendLinkFrame({'link': {'host': 'sender'}});
+      await transport.sendLinkFrame({
+        'link': {'host': 'sender'}
+      });
 
       final sent = radio.notificationsOn(BleGatt.metadata).single;
       expect(sent.deviceId, 'client-7');
-      expect(radio.framesOn(BleGatt.metadata),
-          ['{"link":{"host":"sender"}}']);
+      expect(radio.framesOn(BleGatt.metadata), ['{"link":{"host":"sender"}}']);
     });
 
     test('on Windows they are not: the plugin refuses a targeted update',
@@ -373,12 +379,49 @@ void main() {
       radio.subscribe('client-7', BleGatt.data);
       await Future<void>.delayed(Duration.zero);
 
-      await transport.sendLinkFrame({'link': {'host': 'sender'}});
+      await transport.sendLinkFrame({
+        'link': {'host': 'sender'}
+      });
 
       expect(radio.notificationsOn(BleGatt.metadata).single.deviceId, isNull);
     });
 
-    test('one that is longer than a notification goes out in parts, none of '
+    test('Windows pairing broadcasts fit even a minimum MTU subscriber',
+        () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
+      radio.maxNotifyLength = 182;
+      final transport = await started(BleSession.generate());
+      final frame = {
+        'pair': {'id': 'a' * 16, 'sealed': 's' * 100}
+      };
+
+      await transport.sendLinkFrame(frame, peerId: 'client-7');
+
+      expect(radio.partsOn(BleGatt.metadata).map((p) => p.length),
+          everyElement(lessThanOrEqualTo(20)));
+      expect(radio.notificationsOn(BleGatt.metadata).map((n) => n.deviceId),
+          everyElement(isNull));
+      expect(radio.framesOn(BleGatt.metadata), [jsonEncode(frame)]);
+    });
+
+    test('Android pairing is targeted and uses the peer MTU', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      radio.maxNotifyLength = 182;
+      final transport = await started(BleSession.generate());
+      final frame = {
+        'pair': {'id': 'a' * 16, 'sealed': 's' * 100}
+      };
+
+      await transport.sendLinkFrame(frame, peerId: 'client-7');
+
+      expect(radio.notificationsOn(BleGatt.metadata), hasLength(1));
+      expect(
+          radio.notificationsOn(BleGatt.metadata).single.deviceId, 'client-7');
+      expect(radio.framesOn(BleGatt.metadata), [jsonEncode(frame)]);
+    });
+
+    test(
+        'one that is longer than a notification goes out in parts, none of '
         'them longer than it', () async {
       // The platforms cut a notification to the negotiated payload without
       // saying so, and the receiver then fails to read half a JSON document.
@@ -388,7 +431,9 @@ void main() {
       final transport = await started(BleSession.generate());
       radio.subscribe('client-7', BleGatt.data);
       await Future<void>.delayed(Duration.zero);
-      final frame = {'link': {'host': 'sender', 'sealed': 'x' * 60}};
+      final frame = {
+        'link': {'host': 'sender', 'sealed': 'x' * 60}
+      };
 
       await transport.sendLinkFrame(frame);
 
@@ -454,7 +499,8 @@ void main() {
           [jsonEncode(directive), jsonEncode(serve)]);
     });
 
-    test('the sizes: 14 and 15 parts of 20 bytes on a connection nobody '
+    test(
+        'the sizes: 14 and 15 parts of 20 bytes on a connection nobody '
         'negotiated', () async {
       final transport = await connected(limit: 20);
 
@@ -493,7 +539,8 @@ void main() {
       expect(got['serve'], serve['serve']);
     });
 
-    test('an unknown limit is the least a connection carries, on Android and '
+    test(
+        'an unknown limit is the least a connection carries, on Android and '
         'on Windows alike', () async {
       for (final platform in [TargetPlatform.android, TargetPlatform.windows]) {
         radio.notifications.clear();
@@ -509,7 +556,8 @@ void main() {
       }
     });
 
-    test('a limit the platform makes up is not believed past what an '
+    test(
+        'a limit the platform makes up is not believed past what an '
         'attribute can be', () async {
       final transport = await connected(limit: 100000);
 
@@ -547,7 +595,8 @@ void main() {
       expect(radio.notifications, isEmpty);
     });
 
-    test('a connection so small the frame would need more than 255 parts is '
+    test(
+        'a connection so small the frame would need more than 255 parts is '
         'refused', () async {
       // One byte of payload a part, and a frame of more than 255 bytes.
       final transport = await connected(limit: 5);
@@ -562,7 +611,8 @@ void main() {
       expect(radio.notifications, isEmpty);
     });
 
-    test('two frames asked for at once are sent one after the other, never '
+    test(
+        'two frames asked for at once are sent one after the other, never '
         'mixed', () async {
       final transport = await connected(limit: 20);
 
@@ -580,7 +630,9 @@ void main() {
       final transport = await connected(limit: 512);
 
       await expectLater(
-        transport.sendLinkFrame({'serve': {'fn': 'x' * 4000}}),
+        transport.sendLinkFrame({
+          'serve': {'fn': 'x' * 4000}
+        }),
         throwsA(isA<BluetoothRadioException>()),
       );
       await transport.sendLinkFrame(directive);
@@ -603,10 +655,11 @@ void main() {
       expect(parts.first[3], parts.where((p) => p[1] == parts.first[1]).length);
     });
 
-    test('the parts are spaced where the platform does not wait for the '
+    test(
+        'the parts are spaced where the platform does not wait for the '
         'radio, and not where it does', () async {
-      final spaced = await connected(
-          limit: 20, pacing: const Duration(milliseconds: 25));
+      final spaced =
+          await connected(limit: 20, pacing: const Duration(milliseconds: 25));
       final times = <DateTime>[];
       radio.onNotification = (_) => times.add(DateTime.now());
 
@@ -621,7 +674,8 @@ void main() {
       }
     });
 
-    test('Android spaces them by default; Windows, whose plugin awaits each '
+    test(
+        'Android spaces them by default; Windows, whose plugin awaits each '
         'notification, does not', () async {
       final android = BluetoothTransferTransport();
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
@@ -638,7 +692,9 @@ void main() {
     final transport = await started(BleSession.generate());
     radio.subscribe('client-7', BleGatt.data);
     await Future<void>.delayed(Duration.zero);
-    final frame = {'link': {'host': 'sender', 'sealed': 'x' * 60}};
+    final frame = {
+      'link': {'host': 'sender', 'sealed': 'x' * 60}
+    };
 
     await transport.sendLinkFrame(frame);
 
@@ -651,7 +707,8 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.android;
     final transport = await started(BleSession.generate());
 
-    radio.write('c', BleGatt.control, BleControlProtocol.hello("Anna's iPhone"));
+    radio.write(
+        'c', BleGatt.control, BleControlProtocol.hello("Anna's iPhone"));
 
     expect(transport.receiverName, "Anna's iPhone");
   });

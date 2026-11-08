@@ -24,7 +24,7 @@ import 'package:quickshare/l10n/gen/app_localizations.dart';
 /// code". There is no field for a pasted link or a raw QR: the QR is scanned,
 /// and the digits are typed.
 ///
-/// The code is looked for on the local network and, at the same moment, on the
+/// The code is looked for on the local network, over Bluetooth and on the
 /// internet, because the code does not say which kind of offer it belongs to.
 /// Whichever proves the code first is the sender; the other search is stopped.
 class CodeReceivePage extends StatefulWidget {
@@ -153,7 +153,15 @@ class _CodeReceivePageState extends State<CodeReceivePage> {
       case CodeSessionFoundOnline(:final payload):
         AppLogger.info('Session code matched a sender over the internet',
             tag: 'CODE');
-        context.read<ReceiverBloc>().add(QRCodeScanned(payload, fromPaste: true));
+        context
+            .read<ReceiverBloc>()
+            .add(QRCodeScanned(payload, fromPaste: true));
+      case CodeSessionFoundBluetooth(:final payload):
+        AppLogger.info('Session code matched a sender over Bluetooth',
+            tag: 'CODE');
+        context
+            .read<ReceiverBloc>()
+            .add(QRCodeScanned(payload, fromPaste: true));
       case CodeSessionDeclined():
         _fail(l10n.inviteDeclined);
       case CodeSessionNotFound():

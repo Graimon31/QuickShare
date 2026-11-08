@@ -10,6 +10,8 @@ import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/network/direct_link_coordinator.dart';
 import 'package:quickshare/core/transfer/ble_control_protocol.dart';
+import 'package:quickshare/core/transfer/ble_code_pairing.dart';
+import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/transfer/ble_frame.dart';
 import 'package:quickshare/core/transfer/ble_gatt.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
@@ -75,7 +77,7 @@ class BluetoothTransferTransport implements TransferTransport {
   LinuxBluetoothSender? _linuxSender;
   String? _universalSessionToken;
   String? _universalClientId;
-  bool _universalDataSubscribed = false;
+  final _universalDataSubscribers = <String>{};
   bool _universalStartReceived = false;
   bool _universalTransferStarted = false;
 
@@ -154,9 +156,11 @@ class BluetoothTransferTransport implements TransferTransport {
   ///    makes; there is no way to ask the stack to wait, and its queue keeps
   ///    the order.
   ///  * Android and Windows: [_notifyUniversal].
-  Future<void> sendLinkFrame(Map<String, Object?> frame) => _inOrder(() async {
+  Future<void> sendLinkFrame(Map<String, Object?> frame, {String? peerId}) =>
+      _inOrder(() async {
         if (_usesNativeAppleBridge) {
-          await _method.invokeMethod('sendLinkFrame', {'frame': frame});
+          await _method.invokeMethod('sendLinkFrame',
+              {'frame': frame, if (peerId != null) 'peerId': peerId});
           return;
         }
         if (_usesLinuxBridge) {
@@ -169,7 +173,7 @@ class BluetoothTransferTransport implements TransferTransport {
           }
           return;
         }
-        await _notifyUniversal(frame);
+        await _notifyUniversal(frame, peerId: peerId);
       });
 
   Future<void> _frameQueue = Future<void>.value();
@@ -233,10 +237,21 @@ class BluetoothTransferTransport implements TransferTransport {
   }
 
   /// One frame as one or more notifications on the metadata characteristic.
-  Future<void> _notifyUniversal(Map<String, Object?> frame) async {
-    final clientId = _universalClientId;
+  Future<void> _notifyUniversal(Map<String, Object?> frame,
+      {String? peerId}) async {
+    final clientId = peerId ??
+        _universalClientId ??
+        (_universalDataSubscribers.length == 1
+            ? _universalDataSubscribers.first
+            : null);
     final bytes = Uint8List.fromList(utf8.encode(jsonEncode(frame)));
-    final notificationBytes = await _notificationBytes(clientId);
+    final negotiatedBytes = await _notificationBytes(clientId);
+    // Windows broadcasts to every subscriber. Another pairing peer can have a
+    // smaller MTU than the intended peer, so these responses must fit both.
+    final notificationBytes = defaultTargetPlatform == TargetPlatform.windows &&
+            frame.containsKey('pair')
+        ? math.min(negotiatedBytes, BleFrame.defaultNotificationBytes)
+        : negotiatedBytes;
 
     final List<Uint8List> parts;
     try {
@@ -275,6 +290,46 @@ class BluetoothTransferTransport implements TransferTransport {
         deviceId:
             defaultTargetPlatform == TargetPlatform.windows ? null : clientId,
       );
+    }
+  }
+
+  final _pairingFrames = <String, BleFrameAssembler>{};
+
+  void _acceptPairingPart(String peer, Uint8List bytes) {
+    if (_codePairing == null || bytes.length > 512) return;
+    if (!_pairingFrames.containsKey(peer) && _pairingFrames.length >= 8) return;
+    final assembler = _pairingFrames.putIfAbsent(
+        peer,
+        () => BleFrameAssembler(
+              maxFrameBytes: 180,
+              onFrame: (frame) {
+                _pairingFrames.remove(peer)?.dispose();
+                unawaited(_handlePairing(
+                    peer, utf8.decode(frame, allowMalformed: true)));
+              },
+              onFault: (_) => _pairingFrames.remove(peer)?.dispose(),
+            ));
+    assembler.add(bytes);
+  }
+
+  BleCodePairingSender? _codePairing;
+
+  /// Called before advertising, with the exact offer shown beside the digits.
+  void enableCodePairing(SessionCode code, String payload) {
+    _codePairing?.dispose();
+    _codePairing = BleCodePairingSender(code, payload);
+  }
+
+  Future<void> _handlePairing(String peer, String command) async {
+    final pairing = _codePairing;
+    if (pairing == null) return;
+    try {
+      final reply = await pairing.handle(peer, command);
+      if (reply != null && identical(pairing, _codePairing)) {
+        await sendLinkFrame({'pair': reply}, peerId: peer);
+      }
+    } catch (_) {
+      // An unauthenticated central must not tear down the sender's offer.
     }
   }
 
@@ -329,13 +384,21 @@ class BluetoothTransferTransport implements TransferTransport {
       UniversalBlePeripheral.characteristicSubscriptionStream.listen((event) {
         if (!BleUuidParser.compareStrings(
                 event.characteristicId, BleGatt.data) ||
-            !event.isSubscribed ||
             _universalSessionToken == null) {
           return;
         }
-        _universalClientId = event.deviceId;
-        _universalDataSubscribed = true;
-        _statusController.add(TransferStatus.connecting);
+        if (!event.isSubscribed) {
+          _universalDataSubscribers.remove(event.deviceId);
+          _pairingFrames.remove(event.deviceId)?.dispose();
+          if (!_universalTransferStarted && _universalDataSubscribers.isEmpty) {
+            _statusController.add(TransferStatus.serving);
+          }
+          return;
+        }
+        _universalDataSubscribers.add(event.deviceId);
+        if (!_universalTransferStarted) {
+          _statusController.add(TransferStatus.connecting);
+        }
         _onUniversalSessionReady();
       }),
     );
@@ -345,7 +408,19 @@ class BluetoothTransferTransport implements TransferTransport {
         if (BleUuidParser.compareStrings(characteristicId, BleGatt.control) &&
             value != null &&
             _universalSessionToken != null) {
+          if (value.isNotEmpty && value.first == BleFrame.marker) {
+            _acceptPairingPart(deviceId, value);
+            return PeripheralWriteRequestResult();
+          }
           final command = utf8.decode(value, allowMalformed: true);
+          if (_universalTransferStarted && deviceId != _universalClientId) {
+            return PeripheralWriteRequestResult(
+                status: BleControlProtocol.attInsufficientAuthentication);
+          }
+          if (command.startsWith(BleCodePairing.prefix)) {
+            unawaited(_handlePairing(deviceId, command));
+            return PeripheralWriteRequestResult();
+          }
           // Always ahead of START, so it is on record before the decision
           // about what this session may send is taken.
           final generation = BleControlProtocol.parseCapabilities(command);
@@ -411,6 +486,16 @@ class BluetoothTransferTransport implements TransferTransport {
         if (message is String) AppLogger.info(message, tag: 'BLE_NATIVE');
         break;
       case 'advertisingStarted':
+        _statusController.add(TransferStatus.serving);
+        break;
+      case 'pairingCommand':
+        final command = map['command'];
+        final peer = map['peerId'];
+        if (command is String && peer is String) {
+          unawaited(_handlePairing(peer, command));
+        }
+        break;
+      case 'pairingDisconnected':
         _statusController.add(TransferStatus.serving);
         break;
       case 'centralConnected':
@@ -549,6 +634,7 @@ class BluetoothTransferTransport implements TransferTransport {
         },
         onApOffer: _apOfferController.add,
         onPeerKey: _rememberPeerKey,
+        onPairing: (peer, command) => unawaited(_handlePairing(peer, command)),
       );
       return file.name;
     }
@@ -588,7 +674,7 @@ class BluetoothTransferTransport implements TransferTransport {
     _universalSessionToken = null;
     _lastPeerKey = null;
     _universalClientId = null;
-    _universalDataSubscribed = false;
+    _universalDataSubscribers.clear();
     _universalStartReceived = false;
     _universalTransferStarted = false;
     _universalSplitter = BleFrameSplitter();
@@ -832,7 +918,7 @@ class BluetoothTransferTransport implements TransferTransport {
   /// anything slowly.
   void _onUniversalSessionReady() {
     if (_universalTransferStarted ||
-        !_universalDataSubscribed ||
+        !_universalDataSubscribers.contains(_universalClientId) ||
         !_universalStartReceived ||
         _universalClientId == null ||
         _universalSessionToken == null) {
@@ -850,6 +936,12 @@ class BluetoothTransferTransport implements TransferTransport {
 
   @override
   Future<void> stopSharing() async {
+    _codePairing?.dispose();
+    _codePairing = null;
+    for (final frames in _pairingFrames.values) {
+      frames.dispose();
+    }
+    _pairingFrames.clear();
     if (_usesNativeAppleBridge) {
       try {
         await _method.invokeMethod('stopAdvertising');
@@ -875,7 +967,7 @@ class BluetoothTransferTransport implements TransferTransport {
       UniversalBlePeripheral.setWriteRequestHandlers(null);
       _universalSessionToken = null;
       _universalClientId = null;
-      _universalDataSubscribed = false;
+      _universalDataSubscribers.clear();
       _universalStartReceived = false;
       _universalTransferStarted = false;
       _universalPeerGeneration = null;

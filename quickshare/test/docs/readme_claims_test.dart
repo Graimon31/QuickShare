@@ -257,10 +257,9 @@ void main() {
         'the README states the Bonjour limit and who can receive over '
         'Bluetooth honestly', () {
       expect(readme, contains('A Bonjour browser can still see that an offer'));
-      // Bluetooth is joined by the QR code alone, which a computer cannot
-      // scan; the README has to say so rather than imply a list or a code.
-      expect(readme, contains('A computer cannot receive over Bluetooth'));
-      expect(readme, contains('joined by the QR code and by nothing else'));
+      expect(readme, contains('Bluetooth accepts a QR or a ten-digit code'));
+      expect(readme, contains('Neither side lists nearby devices'));
+      expect(readme, contains('Bluetooth code entry requires the updated app'));
     });
   });
 

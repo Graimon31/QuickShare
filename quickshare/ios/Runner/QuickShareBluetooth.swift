@@ -3,6 +3,14 @@ import Flutter
 import CoreBluetooth
 import UIKit
 
+// MARK: - BEGIN QuickSharePairingControl
+private enum QuickSharePairingControl {
+  static func isValid(_ command: String) -> Bool {
+    command.hasPrefix("PAIR:") && command.utf8.count <= 180
+  }
+}
+// MARK: - END QuickSharePairingControl
+
 /// iOS CoreBluetooth bridge for QuickShare's Bluetooth rendezvous.
 ///
 /// The same GATT protocol is used by the macOS and iOS implementations: the
@@ -353,6 +361,10 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   private var discovered: [String: CBPeripheral] = [:]
   private var expectedSessionToken: String?
   private var expectedLocator: String?
+  private var pairingOnly = false
+  private var pairingReadyEmitted = false
+  private var disconnectingPairingPeers = Set<UUID>()
+  private var deferredReconnectId: String?
   private var pendingStartScan = false
   private var scanRequested = false
   private var discoveryDiagnostics = Set<String>()
@@ -361,6 +373,11 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   private var metadataSubscribed = false
   private var dataSubscribed = false
   private var centralConnectTimeoutTimer: Timer?
+  private var pairingWriteParts: [Data] = []
+  private var pairingWriteResult: FlutterResult?
+  private var pairingWriteTimer: Timer?
+  private var pairingWriteFrameId: UInt8 = 0
+  private var pairingInput: [UUID: (assembler: QuickShareBleFrameAssembler, started: Date)] = [:]
 
   /// A sender that is pushing a file over this channel is an older build.
   /// Said once: its file is thousands of notifications.
@@ -380,6 +397,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   /// never sent one.
   private var senderPeerGeneration: Int?
   private var senderSubscribedToData = false
+  private var dataCentrals = Set<UUID>()
   private var senderTransferStarted = false
 
   // MARK: Frames
@@ -387,6 +405,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   /// A part of a frame waiting for the radio.
   private struct OutgoingPart {
     let data: Data
+    let peerId: UUID?
     /// The Flutter call to answer once this part has gone. Only the last part of
     /// a frame carries it, so a frame is "sent" when all of it has been.
     let finishes: FlutterResult?
@@ -408,7 +427,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   /// Sent whole is not an option: a notification carries the central's
   /// `maximumUpdateValueLength` (182 to an iPhone) and a frame that is longer is
   /// cut by CoreBluetooth without a word.
-  private func sendFrame(_ frame: Data, _ result: @escaping FlutterResult) {
+  private func sendFrame(_ frame: Data, _ result: @escaping FlutterResult, peerId: UUID? = nil) {
     guard peripheralManager != nil, senderMetadata != nil else {
       result(FlutterError(code: "UNAVAILABLE", message: "no link channel is up", details: nil))
       return
@@ -417,10 +436,14 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
       result(FlutterError(code: "UNAVAILABLE", message: "the receiver is not subscribed to the frame channel", details: nil))
       return
     }
+    if let peerId, metadataCentrals[peerId] == nil {
+      result(FlutterError(code: "UNAVAILABLE", message: "the pairing peer is not subscribed", details: nil))
+      return
+    }
     let parts: [Data]
     do {
       parts = try QuickShareBleFrame.split(
-        frame, frameId: nextFrameId, notificationBytes: notificationBytes())
+        frame, frameId: nextFrameId, notificationBytes: notificationBytes(peerId: peerId))
     } catch let error as QuickShareBleFrameError {
       result(FlutterError(code: "FRAME", message: error.message, details: error.problem.rawValue))
       return
@@ -430,15 +453,16 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     }
     nextFrameId = nextFrameId &+ 1
     for (index, part) in parts.enumerated() {
-      outbox.append(OutgoingPart(data: part, finishes: index == parts.count - 1 ? result : nil))
+      outbox.append(OutgoingPart(data: part, peerId: peerId, finishes: index == parts.count - 1 ? result : nil))
     }
     drainOutbox()
   }
 
   /// The most one notification can carry to every receiver subscribed: the least
   /// of their limits, or what a connection nobody negotiated carries.
-  private func notificationBytes() -> Int {
-    let carried = metadataCentrals.values.map { $0.maximumUpdateValueLength }.filter { $0 > 0 }
+  private func notificationBytes(peerId: UUID? = nil) -> Int {
+    let recipients = peerId.flatMap { metadataCentrals[$0] }.map { [$0] } ?? Array(metadataCentrals.values)
+    let carried = recipients.map { $0.maximumUpdateValueLength }.filter { $0 > 0 }
     guard let least = carried.min() else { return QuickShareBleFrame.defaultNotificationBytes }
     return min(least, QuickShareBleFrame.maxNotificationBytes)
   }
@@ -456,7 +480,17 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
       return
     }
     while let first = outbox.first {
-      if !manager.updateValue(first.data, for: metadata, onSubscribedCentrals: nil) {
+      let recipients: [CBCentral]?
+      if let peerId = first.peerId {
+        guard let central = metadataCentrals[peerId] else {
+          failOutbox(code: "UNAVAILABLE", message: "the pairing peer stopped listening")
+          return
+        }
+        recipients = [central]
+      } else {
+        recipients = nil
+      }
+      if !manager.updateValue(first.data, for: metadata, onSubscribedCentrals: recipients) {
         armOutboxWatchdog()
         return
       }
@@ -528,6 +562,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   }
 
   private func resetFrames() {
+    failPairingWrite("Bluetooth pairing connection closed")
     frames.reset()
     disarmFrameClock()
     reportedDamagedFrame = false
@@ -539,6 +574,10 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   private func handleFrame(_ frame: Data) {
     guard let json = try? JSONSerialization.jsonObject(with: frame) as? [String: Any] else {
       refuseDamagedFrame("A frame of \(frame.count) bytes arrived complete but is not a JSON object.")
+      return
+    }
+    if let pair = json["pair"] as? [String: Any] {
+      emit(["type": "pairingFrame", "pair": pair, "deviceId": targetPeripheral?.identifier.uuidString ?? ""])
       return
     }
     if let link = json["link"] as? [String: Any] {
@@ -605,7 +644,8 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     case "startScanning":
       let args = call.arguments as? [String: Any]
       startScanning(sessionToken: args?["sessionToken"] as? String,
-                    locator: args?["locator"] as? String)
+                    locator: args?["locator"] as? String,
+                    pairingOnly: args?["pairingOnly"] as? Bool ?? false)
       result(nil)
 
     case "stopScanning":
@@ -619,6 +659,19 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
         return
       }
       connect(deviceId: deviceId)
+      result(nil)
+
+    case "sendPairingCommand":
+      guard let args = call.arguments as? [String: Any],
+        let command = args["command"] as? String,
+        QuickSharePairingControl.isValid(command) else {
+        result(FlutterError(code: "BAD_ARGS", message: "invalid pairing command", details: nil))
+        return
+      }
+      sendPairingCommand(command, result)
+
+    case "disconnectPairing":
+      disconnectPairing()
       result(nil)
 
     case "cancelTransfer":
@@ -651,7 +704,17 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
       // Cut into parts that fit the receiver and sent in order, however often
       // the radio has to be waited for; answered when the last has gone. See
       // sendFrame.
-      sendFrame(data, result)
+      let peerId: UUID?
+      if let value = args["peerId"] {
+        guard let value = value as? String, let parsed = UUID(uuidString: value) else {
+          result(FlutterError(code: "BAD_ARGS", message: "invalid peerId", details: nil))
+          return
+        }
+        peerId = parsed
+      } else {
+        peerId = nil
+      }
+      sendFrame(data, result, peerId: peerId)
 
     // The receiver's half of the negotiation: the credentials of the network
     // it raised, written back over the control characteristic.
@@ -678,12 +741,14 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
 
   private var pendingControlWrites: [String] = []
 
-  private func startScanning(sessionToken: String?, locator: String? = nil) {
+  private func startScanning(sessionToken: String?, locator: String? = nil, pairingOnly: Bool = false) {
     discovered.removeAll()
     scanRequested = true
     discoveryDiagnostics.removeAll()
     expectedSessionToken = sessionToken
     expectedLocator = locator
+    self.pairingOnly = pairingOnly
+    pairingReadyEmitted = false
     let manager = centralManager ?? CBCentralManager(delegate: self, queue: nil)
     centralManager = manager
     let options: [String: Any] = [CBCentralManagerScanOptionAllowDuplicatesKey: true]
@@ -704,11 +769,24 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
 
   private func connect(deviceId: String) {
     guard let peripheral = discovered[deviceId] else {
-      emit(["type": "receiverFailed", "error": "Device no longer available"])
+      emit(["type": "receiverFailed", "deviceId": deviceId, "error": "Device no longer available"])
       return
     }
     centralManager?.stopScan()
+    if disconnectingPairingPeers.contains(peripheral.identifier) {
+      deferredReconnectId = deviceId
+      centralConnectTimeoutTimer?.invalidate()
+      centralConnectTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 20.0, repeats: false) { [weak self] _ in
+        guard let self = self, self.deferredReconnectId == deviceId else { return }
+        self.deferredReconnectId = nil
+        self.centralConnectTimeoutTimer = nil
+        self.emit(["type": "receiverFailed", "deviceId": deviceId, "error": "Bluetooth disconnect timed out", "code": "timeout"])
+      }
+      return
+    }
+    deferredReconnectId = nil
     targetPeripheral = peripheral
+    pairingReadyEmitted = false
     metadataSubscribed = false
     dataSubscribed = false
     remoteControl = nil
@@ -726,7 +804,8 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
       self.centralManager?.cancelPeripheralConnection(peripheral)
       self.emit([
         "type": "receiverFailed",
-        "error": "Failed to connect: Bluetooth handshake timed out",
+        "deviceId": peripheral.identifier.uuidString,
+            "error": "Failed to connect: Bluetooth handshake timed out",
         "code": "timeout"
       ])
     }
@@ -734,21 +813,42 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     centralManager?.connect(peripheral, options: nil)
   }
 
-  private func cancelTransfer() {
+  /// A cancellation callback may arrive after discovery has already found the
+  /// same peripheral again. Wait for it before starting the next connection.
+  private func finishPairingDisconnect(_ peripheral: CBPeripheral) -> Bool {
+    guard disconnectingPairingPeers.remove(peripheral.identifier) != nil else { return false }
+    if deferredReconnectId == peripheral.identifier.uuidString {
+      let id = deferredReconnectId!
+      deferredReconnectId = nil
+      connect(deviceId: id)
+    }
+    return true
+  }
+
+  private func disconnectPairing() {
     centralConnectTimeoutTimer?.invalidate()
     centralConnectTimeoutTimer = nil
     stopScanning()
-    stopAdvertising()
-    if let peripheral = targetPeripheral {
-      centralManager?.cancelPeripheralConnection(peripheral)
-    }
+    deferredReconnectId = nil
+    let previous = targetPeripheral
     targetPeripheral = nil
+    if let previous, previous.state != .disconnected {
+      disconnectingPairingPeers.insert(previous.identifier)
+      centralManager?.cancelPeripheralConnection(previous)
+    }
     remoteControl = nil
     metadataSubscribed = false
     dataSubscribed = false
     pendingControlWrites.removeAll()
     discovered.removeAll()
     resetFrames()
+    pairingOnly = false
+    pairingReadyEmitted = false
+  }
+
+  private func cancelTransfer() {
+    stopAdvertising()
+    disconnectPairing()
   }
 
   // MARK: Peripheral sender
@@ -758,6 +858,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     senderSessionToken = sessionToken
     senderTransferStarted = false
     senderSubscribedToData = false
+    dataCentrals.removeAll()
     senderPeerGeneration = nil
 
     let control = CBMutableCharacteristic(
@@ -808,6 +909,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   private func stopAdvertising() {
     failOutbox(code: "UNAVAILABLE", message: "the link channel was closed before the frame was sent")
     metadataCentrals.removeAll()
+    pairingInput.removeAll()
     peripheralManager?.stopAdvertising()
     peripheralManager?.removeAllServices()
     peripheralManager = nil
@@ -817,6 +919,7 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
     senderMetadata = nil
     senderData = nil
     senderSubscribedToData = false
+    dataCentrals.removeAll()
     senderTransferStarted = false
     senderSessionToken = nil
     senderPeerGeneration = nil
@@ -845,6 +948,66 @@ public final class QuickShareBluetoothPlugin: NSObject, FlutterPlugin, FlutterSt
   }
 
   /// Writes one control command to the sender this device is connected to.
+  /// Pairing writes are serialized with responses; every part must be accepted
+  /// before the next, including when a peer negotiated only the minimum MTU.
+  private func sendPairingCommand(_ command: String, _ result: @escaping FlutterResult) {
+    guard pairingOnly, let peripheral = targetPeripheral,
+      let control = remoteControl, metadataSubscribed, dataSubscribed,
+      control.properties.contains(.write) else {
+      result(FlutterError(code: "UNAVAILABLE", message: "pairing channel is not ready", details: nil))
+      return
+    }
+    guard pairingWriteResult == nil else {
+      result(FlutterError(code: "PAIRING_WRITE_IN_PROGRESS", message: "a pairing command is already being sent", details: nil))
+      return
+    }
+    do {
+      pairingWriteParts = try QuickShareBleFrame.split(Data(command.utf8),
+        frameId: pairingWriteFrameId,
+        notificationBytes: peripheral.maximumWriteValueLength(for: .withResponse))
+    } catch {
+      result(FlutterError(code: "FRAME", message: "pairing command cannot be framed", details: nil))
+      return
+    }
+    pairingWriteFrameId = pairingWriteFrameId &+ 1
+    pairingWriteResult = result
+    pairingWriteTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+      self?.failPairingWrite("Bluetooth pairing write timed out")
+    }
+    peripheral.writeValue(pairingWriteParts.removeFirst(), for: control, type: .withResponse)
+  }
+
+  private func failPairingWrite(_ message: String) {
+    pairingWriteTimer?.invalidate()
+    pairingWriteTimer = nil
+    pairingWriteParts.removeAll()
+    let result = pairingWriteResult
+    pairingWriteResult = nil
+    result?(FlutterError(code: "UNAVAILABLE", message: message, details: nil))
+  }
+
+  /// Control frames are per central and bounded independently of metadata.
+  private func pairingCommandPart(_ data: Data, from peer: UUID) -> (accepted: Bool, command: String?) {
+    let now = Date()
+    pairingInput = pairingInput.filter { now.timeIntervalSince($0.value.started) < QuickShareBleFrame.assemblyTimeout }
+    if pairingInput[peer] == nil && pairingInput.count >= 16 { return (false, nil) }
+    var state = pairingInput[peer] ?? (assembler: QuickShareBleFrameAssembler(maxFrameBytes: 180), started: now)
+    do {
+      switch try state.assembler.accept(data) {
+      case .need:
+        pairingInput[peer] = state
+        return (true, nil)
+      case .frame(let bytes):
+        pairingInput.removeValue(forKey: peer)
+        guard let command = String(data: bytes, encoding: .utf8), QuickSharePairingControl.isValid(command) else { return (false, nil) }
+        return (true, command)
+      }
+    } catch {
+      pairingInput.removeValue(forKey: peer)
+      return (false, nil)
+    }
+  }
+
   private func writeControl(_ command: String, _ result: @escaping FlutterResult) {
     guard let peripheral = targetPeripheral else {
       result(FlutterError(code: "UNAVAILABLE", message: "no sender is connected", details: nil))
@@ -898,9 +1061,9 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
     let nameSource = advertisementData[CBAdvertisementDataLocalNameKey] == nil ? "cached-or-missing" : "advertisement"
     let publicName = !name.isEmpty && !expectedPublicName.isEmpty && expectedPublicName.hasPrefix(name) ? name : "<other-or-missing>"
     let reason: String
-    if name.hasPrefix("QuickShare-"), let expectedLocator, !expectedLocator.isEmpty, !name.contains(expectedLocator) {
+    if !pairingOnly, name.hasPrefix("QuickShare-"), let expectedLocator, !expectedLocator.isEmpty, !name.contains(expectedLocator) {
       reason = "locator_mismatch"
-    } else if name.hasPrefix("QuickShare-"), (expectedLocator == nil || expectedLocator?.isEmpty == true), let expectedSessionToken, !name.contains(String(expectedSessionToken.prefix(8))) {
+    } else if !pairingOnly, name.hasPrefix("QuickShare-"), (expectedLocator == nil || expectedLocator?.isEmpty == true), let expectedSessionToken, !name.contains(String(expectedSessionToken.prefix(8))) {
       reason = "legacy_mismatch"
     } else {
       reason = "accepted"
@@ -917,7 +1080,7 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
     // authenticates. Earlier builds advertised the first eight characters of
     // the token instead, so that match stays as the fallback — dropping it
     // would make this build unable to see them.
-    if name.hasPrefix("QuickShare-") {
+    if !pairingOnly, name.hasPrefix("QuickShare-") {
       if let expectedLocator, !expectedLocator.isEmpty {
         if !name.contains(expectedLocator) { return }
       } else if let expectedSessionToken,
@@ -938,6 +1101,7 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
   }
 
   public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+    if finishPairingDisconnect(peripheral) { return }
     guard peripheral === targetPeripheral else { return }
     centralConnectTimeoutTimer?.invalidate()
     centralConnectTimeoutTimer = nil
@@ -947,12 +1111,14 @@ extension QuickShareBluetoothPlugin: CBCentralManagerDelegate {
     }
     emit([
       "type": "receiverFailed",
-      "error": "Failed to connect: \(error?.localizedDescription ?? "unknown error")",
+      "deviceId": peripheral.identifier.uuidString,
+            "error": "Failed to connect: \(error?.localizedDescription ?? "unknown error")",
       "code": code
     ])
   }
 
   public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+    if finishPairingDisconnect(peripheral) { return }
     guard peripheral === targetPeripheral else { return }
     centralConnectTimeoutTimer?.invalidate()
     centralConnectTimeoutTimer = nil
@@ -1017,6 +1183,7 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
       metadataCentrals[central.identifier] = central
     }
     guard characteristic.uuid == QuickShareBluetoothIDs.data else { return }
+    dataCentrals.insert(central.identifier)
     senderSubscribedToData = true
     emit(["type": "centralConnected"])
   }
@@ -1024,12 +1191,17 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
   public func peripheralManager(_ peripheral: CBPeripheralManager, central: CBCentral, didUnsubscribeFrom characteristic: CBCharacteristic) {
     if characteristic.uuid == QuickShareBluetoothIDs.metadata {
       metadataCentrals.removeValue(forKey: central.identifier)
-      if metadataCentrals.isEmpty {
+      if metadataCentrals.isEmpty || outbox.contains(where: { $0.peerId == central.identifier }) {
         failOutbox(code: "UNAVAILABLE", message: "the receiver stopped listening before the frame was sent")
       }
     }
     if characteristic.uuid == QuickShareBluetoothIDs.data {
-      senderSubscribedToData = false
+      pairingInput.removeValue(forKey: central.identifier)
+      dataCentrals.remove(central.identifier)
+      senderSubscribedToData = !dataCentrals.isEmpty
+      if dataCentrals.isEmpty && !senderTransferStarted {
+        emit(["type": "pairingDisconnected"])
+      }
     }
   }
 
@@ -1045,6 +1217,26 @@ extension QuickShareBluetoothPlugin: CBPeripheralManagerDelegate {
 
       guard request.characteristic.uuid == QuickShareBluetoothIDs.control else {
         peripheral.respond(to: request, withResult: .requestNotSupported)
+        continue
+      }
+
+      if let data = request.value, data.first == QuickShareBleFrame.marker {
+        let part = pairingCommandPart(data, from: request.central.identifier)
+        peripheral.respond(to: request, withResult: part.accepted ? .success : .requestNotSupported)
+        if let command = part.command {
+          emit(["type": "pairingCommand", "command": command, "peerId": request.central.identifier.uuidString])
+        }
+        continue
+      }
+
+      if let command, command.hasPrefix("PAIR:") {
+        pairingInput.removeValue(forKey: request.central.identifier)
+        guard QuickSharePairingControl.isValid(command) else {
+          peripheral.respond(to: request, withResult: .invalidAttributeValueLength)
+          continue
+        }
+        peripheral.respond(to: request, withResult: .success)
+        emit(["type": "pairingCommand", "command": command, "peerId": request.central.identifier.uuidString])
         continue
       }
 
@@ -1107,13 +1299,13 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     if let error = error {
       centralConnectTimeoutTimer?.invalidate()
       centralConnectTimeoutTimer = nil
-      emit(["type": "receiverFailed", "error": "Service discovery failed: \(error.localizedDescription)"])
+      emit(["type": "receiverFailed", "deviceId": peripheral.identifier.uuidString, "error": "Service discovery failed: \(error.localizedDescription)"])
       return
     }
     guard let service = peripheral.services?.first(where: { $0.uuid == QuickShareBluetoothIDs.service }) else {
       centralConnectTimeoutTimer?.invalidate()
       centralConnectTimeoutTimer = nil
-      emit(["type": "receiverFailed", "error": "QuickShare service not found on device"])
+      emit(["type": "receiverFailed", "deviceId": peripheral.identifier.uuidString, "error": "QuickShare service not found on device"])
       return
     }
     peripheral.discoverCharacteristics(
@@ -1127,13 +1319,13 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     if let error = error {
       centralConnectTimeoutTimer?.invalidate()
       centralConnectTimeoutTimer = nil
-      emit(["type": "receiverFailed", "error": "Characteristic discovery failed: \(error.localizedDescription)"])
+      emit(["type": "receiverFailed", "deviceId": peripheral.identifier.uuidString, "error": "Characteristic discovery failed: \(error.localizedDescription)"])
       return
     }
     guard let characteristics = service.characteristics else {
       centralConnectTimeoutTimer?.invalidate()
       centralConnectTimeoutTimer = nil
-      emit(["type": "receiverFailed", "error": "No characteristics found on device"])
+      emit(["type": "receiverFailed", "deviceId": peripheral.identifier.uuidString, "error": "No characteristics found on device"])
       return
     }
     for characteristic in characteristics {
@@ -1155,12 +1347,25 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     if let error = error {
       centralConnectTimeoutTimer?.invalidate()
       centralConnectTimeoutTimer = nil
-      emit(["type": "receiverFailed", "error": "Failed to subscribe to notifications: \(error.localizedDescription)"])
+      emit(["type": "receiverFailed", "deviceId": peripheral.identifier.uuidString, "error": "Failed to subscribe to notifications: \(error.localizedDescription)"])
       return
     }
     if characteristic.uuid == QuickShareBluetoothIDs.metadata { metadataSubscribed = true }
     if characteristic.uuid == QuickShareBluetoothIDs.data { dataSubscribed = true }
     guard metadataSubscribed, dataSubscribed, let control = remoteControl else { return }
+    if pairingOnly {
+      guard !pairingReadyEmitted else { return }
+      pairingReadyEmitted = true
+      centralConnectTimeoutTimer?.invalidate()
+      centralConnectTimeoutTimer = nil
+      for command in pendingControlWrites {
+        let type: CBCharacteristicWriteType = control.properties.contains(.write) ? .withResponse : .withoutResponse
+        peripheral.writeValue(Data(command.utf8), for: control, type: type)
+      }
+      pendingControlWrites.removeAll()
+      emit(["type": "pairingReady", "deviceId": peripheral.identifier.uuidString])
+      return
+    }
     let writeType: CBCharacteristicWriteType = control.properties.contains(.write) ? .withResponse : .withoutResponse
 
     // Say what this build can take, before START rather than after. A sender
@@ -1193,10 +1398,28 @@ extension QuickShareBluetoothPlugin: CBPeripheralDelegate {
     centralConnectTimeoutTimer = nil
   }
 
+  public func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+    guard peripheral === targetPeripheral, characteristic.uuid == QuickShareBluetoothIDs.control,
+      pairingWriteResult != nil else { return }
+    if let error {
+      failPairingWrite("Bluetooth pairing write failed: \(error.localizedDescription)")
+      return
+    }
+    if !pairingWriteParts.isEmpty {
+      peripheral.writeValue(pairingWriteParts.removeFirst(), for: characteristic, type: .withResponse)
+    } else {
+      pairingWriteTimer?.invalidate()
+      pairingWriteTimer = nil
+      let result = pairingWriteResult
+      pairingWriteResult = nil
+      result?(nil)
+    }
+  }
+
   public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
     guard peripheral === targetPeripheral else { return }
     if let error {
-      emit(["type": "receiverFailed", "error": error.localizedDescription])
+      emit(["type": "receiverFailed", "deviceId": peripheral.identifier.uuidString, "error": error.localizedDescription])
       return
     }
     guard let value = characteristic.value else { return }

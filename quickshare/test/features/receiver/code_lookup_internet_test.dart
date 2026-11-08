@@ -387,8 +387,9 @@ void main() {
     });
   });
 
-  test('a broken local search is an error, and stops the internet search too',
+  test('a broken local search still allows an authenticated internet sender',
       () async {
+    await internetSender();
     final throwing = CodeLookup(
       browser: () => browser,
       deviceName: 'Receiving Mac',
@@ -399,9 +400,8 @@ void main() {
         pake: _inline,
       ),
     );
-
-    await expectLater(throwing.find(code), throwsStateError);
-
+    final result = await throwing.find(code).timeout(const Duration(seconds: 5));
+    expect(result, isA<CodeSessionFoundOnline>());
     expect(receiverBox!.isClosed, isTrue);
     expect(browser.log.last, 'stop');
   });

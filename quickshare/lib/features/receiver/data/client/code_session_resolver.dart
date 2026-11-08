@@ -35,6 +35,12 @@ class CodeSessionFoundOnline extends CodeSessionOutcome {
   const CodeSessionFoundOnline(this.payload);
 }
 
+/// A nearby sender authenticated over Bluetooth; carries the same offer as QR.
+class CodeSessionFoundBluetooth extends CodeSessionOutcome {
+  final String payload;
+  const CodeSessionFoundBluetooth(this.payload);
+}
+
 /// A sender that proved it holds the code, and said no.
 class CodeSessionDeclined extends CodeSessionOutcome {
   const CodeSessionDeclined();
@@ -220,8 +226,10 @@ class CodeSessionResolver {
     }
 
     var announcedMatch = false;
-    List<RendezvousCandidate> matching(List<RendezvousCandidate> heard) =>
-        [for (final c in heard) if (c.hint == hint) c];
+    List<RendezvousCandidate> matching(List<RendezvousCandidate> heard) => [
+          for (final c in heard)
+            if (c.hint == hint) c
+        ];
 
     void consider(List<RendezvousCandidate> heard) {
       for (final candidate in matching(heard)) {
@@ -242,8 +250,14 @@ class CodeSessionResolver {
       });
     }
 
-    final targets =
-        await (probeTargets ?? defaultProbeTargets)(matching(heard));
+    final probing = (probeTargets ?? defaultProbeTargets)(matching(heard));
+    final targets = await (gate == null
+            ? probing
+            : Future.any([
+                probing,
+                gate.stopped.then<List<ProbeTarget>>((_) => const []),
+              ]))
+        .timeout(candidateTimeout, onTimeout: () => const []);
     for (final target in targets) {
       launch(target.address, target.port);
     }
@@ -342,8 +356,8 @@ class CodeSessionResolver {
     // Pre-filter: a host that does not even claim to speak this protocol is
     // not worth the arithmetic. Says nothing about whether it is trusted — it
     // is a request with no secret in it, answered by whoever is there.
-    final health = await (await client.getUrl(Uri.parse('$base/v2/health')))
-        .close();
+    final health =
+        await (await client.getUrl(Uri.parse('$base/v2/health'))).close();
     if (health.statusCode != HttpStatus.ok) {
       await health.drain<void>();
       return const _Failed(_Verdict.noAnswer);
@@ -358,7 +372,8 @@ class CodeSessionResolver {
     // A share of this candidate's own: reusing one across devices would let
     // two of them compare notes.
     final begun = await CodePake.begin(code);
-    final request = await client.postUrl(Uri.parse('$base${CodePake.startPath}'));
+    final request =
+        await client.postUrl(Uri.parse('$base${CodePake.startPath}'));
     request.headers.contentType = ContentType.json;
     request.write(jsonEncode({'pA': CodePake.encode(begun.share)}));
     final response = await request.close();
@@ -378,10 +393,8 @@ class CodeSessionResolver {
     final data = jsonDecode(await _readBounded(response));
     if (data is! Map) return const _Failed(_Verdict.wrongProof);
     final pakeId = data['pakeId'];
-    final senderShare =
-        CodePake.decode(data['pB'], length: Spake2.shareLength);
-    final senderTag =
-        CodePake.decode(data['cB'], length: CodePake.tagLength);
+    final senderShare = CodePake.decode(data['pB'], length: Spake2.shareLength);
+    final senderTag = CodePake.decode(data['cB'], length: CodePake.tagLength);
     if (pakeId is! String ||
         pakeId.isEmpty ||
         pakeId.length > 64 ||

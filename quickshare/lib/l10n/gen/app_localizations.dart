@@ -209,7 +209,7 @@ abstract class AppLocalizations {
   /// No description provided for @homeAirdropAltSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'To a phone close by, no shared network needed'**
+  /// **'To a device close by, no shared network needed'**
   String get homeAirdropAltSubtitle;
 
   /// No description provided for @homeReceiveTitle.
@@ -1079,19 +1079,19 @@ abstract class AppLocalizations {
   /// No description provided for @btSendPreparingDetail.
   ///
   /// In en, this message translates to:
-  /// **'Getting the code ready for the other phone to scan'**
+  /// **'Preparing a QR and numeric code for the receiver'**
   String get btSendPreparingDetail;
 
   /// No description provided for @btSendScanPrompt.
   ///
   /// In en, this message translates to:
-  /// **'Scan this QR code with the receiving phone'**
+  /// **'Scan the QR or enter the numeric code'**
   String get btSendScanPrompt;
 
   /// No description provided for @btSendAutoConnectNote.
   ///
   /// In en, this message translates to:
-  /// **'Bluetooth receiving works on a phone: open DirectDrop there, tap Receive File and scan this code. A computer cannot receive over Bluetooth — use Wi-Fi for that.'**
+  /// **'Open DirectDrop on the receiving device and choose Receive file. Scan the QR or enter the code manually. Enable Bluetooth on both devices and keep them nearby.'**
   String get btSendAutoConnectNote;
 
   /// No description provided for @codeReceiveTitle.
@@ -1169,7 +1169,7 @@ abstract class AppLocalizations {
   /// No description provided for @codeReceiveNotFound.
   ///
   /// In en, this message translates to:
-  /// **'Sender not found. Check the code: it changes every 5 minutes. For a local network both devices must be on the same network.'**
+  /// **'Sender not found. Check the code: it changes every 5 minutes. For Nearby transfer, enable Bluetooth and keep devices nearby. For local network transfer, connect both devices to the same network.'**
   String get codeReceiveNotFound;
 
   /// No description provided for @codeReceiveSearching.
@@ -1187,7 +1187,7 @@ abstract class AppLocalizations {
   /// No description provided for @codeReceiveNoNetwork.
   ///
   /// In en, this message translates to:
-  /// **'Could not reach the internet service, and no sender was found on the local network. Check your connection and the code, then try again.'**
+  /// **'No sender found over Bluetooth or the local network, and the internet service is unavailable. Check the code, Bluetooth and your connection.'**
   String get codeReceiveNoNetwork;
 
   /// No description provided for @codeCopied.

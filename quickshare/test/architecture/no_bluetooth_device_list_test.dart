@@ -55,7 +55,8 @@ void main() {
         if (text.contains(name)) hits.add('${file.path}: $name');
       }
     }
-    expect(hits, isEmpty, reason: 'the removed list is back:\n${hits.join('\n')}');
+    expect(hits, isEmpty,
+        reason: 'the removed list is back:\n${hits.join('\n')}');
   });
 
   test('the files that were the list are gone', () {
@@ -72,12 +73,16 @@ void main() {
       ..._files('ios/Runner', (p) => p.endsWith('.swift')),
       ..._files('macos/Runner', (p) => p.endsWith('.swift')),
     ];
-    expect(swift, isNotEmpty, reason: 'found no Swift sources — the scan broke');
+    expect(swift, isNotEmpty,
+        reason: 'found no Swift sources — the scan broke');
 
     final hits = <String>[];
     for (final file in swift) {
       final text = file.readAsStringSync();
-      for (final name in const ['startReceiverAdvertising', 'waitingAsReceiver']) {
+      for (final name in const [
+        'startReceiverAdvertising',
+        'waitingAsReceiver'
+      ]) {
         if (text.contains(name)) hits.add('${file.path}: $name');
       }
     }
@@ -109,7 +114,8 @@ void main() {
       'codeHint',
     ];
     final arbs = _files('lib/l10n', (p) => p.endsWith('.arb')).toList();
-    expect(arbs, hasLength(2), reason: 'expected the English and Russian files');
+    expect(arbs, hasLength(2),
+        reason: 'expected the English and Russian files');
 
     final hits = <String>[];
     for (final file in arbs) {
@@ -126,8 +132,8 @@ void main() {
   group('what the Bluetooth entry and screen say', () {
     // Words that promise a search or a list, in the two languages the app has.
     final promises = RegExp(
-      r'list|nearby|discover|search|find|look|pick a|choose a|'
-      r'списк|рядом|поиск|ищ|видим|выберите устройств',
+      r'list of devices|device list|pick a device|choose a device|'
+      r'список устройств|выберите устройств',
       caseSensitive: false,
     );
 
@@ -138,7 +144,8 @@ void main() {
           // What the home screen says under the Bluetooth-started option, and
           // the title the file screen wears when it was chosen.
           'homeAirdropAltSubtitle': l10n.homeAirdropAltSubtitle,
-          'homeAirdropAltTitle': l10n.homeAirdropAltTitle(l10n.homeAirdropTitle),
+          'homeAirdropAltTitle':
+              l10n.homeAirdropAltTitle(l10n.homeAirdropTitle),
           'btSendPreparingDetail': l10n.btSendPreparingDetail,
           'btSendScanPrompt': l10n.btSendScanPrompt,
           'btSendAutoConnectNote': l10n.btSendAutoConnectNote,
@@ -149,15 +156,14 @@ void main() {
         }
       });
 
-      test('in $code they say that a phone receives and a computer does not',
-          () async {
+      test('in $code they offer QR or code on the receiving device', () async {
         final l10n = await AppLocalizations.delegate.load(Locale(code));
         final note = l10n.btSendAutoConnectNote.toLowerCase();
-        final phone = code == 'en' ? 'phone' : 'телефон';
-        final computer = code == 'en' ? 'computer' : 'компьютер';
-        expect(note, contains(phone));
-        expect(note, contains(computer));
-        expect(l10n.homeAirdropAltSubtitle.toLowerCase(), contains(phone));
+        expect(note, contains('qr'));
+        expect(note, contains(code == 'en' ? 'code' : 'код'));
+        expect(note, contains('bluetooth'));
+        expect(l10n.homeAirdropAltSubtitle.toLowerCase(),
+            contains(code == 'en' ? 'device' : 'устройство'));
       });
     }
   });

@@ -1399,6 +1399,9 @@ class WebRtcReceiverTransport {
       _startStatsProbe();
       unawaited(_recordSelectedPath());
     }
+    if (link is WebRtcReceiverLink) {
+      link.waitForHandledFrame = () => _handlerChain;
+    }
     final id = ++_linkId;
     _link = link;
     _linkGeneration = link.generation;

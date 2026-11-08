@@ -23,6 +23,7 @@ import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dar
 import 'package:quickshare/features/receiver/presentation/pages/code_receive_page.dart';
 import 'package:quickshare/l10n/gen/app_localizations.dart';
 import 'package:quickshare/shared/models/qr_payload.dart';
+import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
 
 import '../../support/sample_offer.dart';
 
@@ -129,7 +130,8 @@ void main() {
     expect(find.text('Looking for the sender…'), findsNothing);
   });
 
-  testWidgets('giving up stops the search, returns the field, and an answer '
+  testWidgets(
+      'giving up stops the search, returns the field, and an answer '
       'that arrives afterwards says nothing', (tester) async {
     await mount(tester);
     await submit(tester);
@@ -144,7 +146,7 @@ void main() {
 
     lookup.finish(const CodeSessionNotFound());
     await tester.pump(const Duration(milliseconds: 100));
-    expect(find.textContaining('Sender not found'), findsNothing,
+    expect(find.textContaining('Check the code: it changes'), findsNothing,
         reason: 'the person has moved on');
     expect(find.text('Receive'), findsOneWidget);
   });
@@ -188,34 +190,37 @@ void main() {
   });
 
   group('when it ends', () {
-    Future<void> endsWith(WidgetTester tester, CodeSessionOutcome outcome) async {
+    Future<void> endsWith(
+        WidgetTester tester, CodeSessionOutcome outcome) async {
       await mount(tester);
       await submit(tester);
       lookup.finish(outcome);
       await tester.pump(const Duration(milliseconds: 100));
     }
 
-    testWidgets('not found: check the code, it changes every five minutes, '
+    testWidgets(
+        'not found: check the code, it changes every five minutes, '
         'and a local network needs both devices on it — no Wi-Fi promise',
         (tester) async {
       await endsWith(tester, const CodeSessionNotFound());
 
       expect(
           find.text('Sender not found. Check the code: it changes every 5 '
-              'minutes. For a local network both devices must be on the same '
-              'network.'),
+              'minutes. For Nearby transfer, enable Bluetooth and keep devices nearby. '
+              'For local network transfer, connect both devices to the same network.'),
           findsOneWidget);
       expect(find.textContaining('Wi-Fi'), findsNothing);
-      expect(find.text('Receive'), findsOneWidget, reason: 'and it can be tried again');
+      expect(find.text('Receive'), findsOneWidget,
+          reason: 'and it can be tried again');
     });
 
     testWidgets('no network: says that, and not that the code is wrong',
         (tester) async {
       await endsWith(tester, const CodeSessionNoNetwork());
 
-      expect(find.textContaining('Could not reach the internet service'),
+      expect(find.textContaining('internet service is unavailable'),
           findsOneWidget);
-      expect(find.textContaining('Sender not found'), findsNothing);
+      expect(find.textContaining('Check the code: it changes'), findsNothing);
     });
 
     testWidgets('refused: declined', (tester) async {
@@ -254,9 +259,11 @@ void main() {
     testWidgets('the Russian sentences say what the English ones do',
         (tester) async {
       final ru = await AppLocalizations.delegate.load(const Locale('ru'));
-      expect(ru.codeReceiveNotFound,
+      expect(
+          ru.codeReceiveNotFound,
           'Отправитель не найден. Проверьте код: он меняется каждые 5 минут. '
-          'Для локальной сети оба устройства должны быть в одной сети.');
+          'Для «Аналога AirDrop» включите Bluetooth и держите устройства рядом. '
+          'Для локальной сети подключите оба устройства к одной сети.');
       expect(ru.codeReceiveNotFound, isNot(contains('Wi-Fi')));
       expect(ru.codeReceiveNoNetwork, contains('интернет'));
       expect(ru.codeReceiveAwaitingApproval, contains('подтвержд'));
@@ -264,7 +271,8 @@ void main() {
     });
   });
 
-  testWidgets('an offer found over the internet goes the way a scan goes: the '
+  testWidgets(
+      'an offer found over the internet goes the way a scan goes: the '
       'real decoder, then the preview of what is coming', (tester) async {
     await mount(tester);
     await submit(tester);
@@ -280,7 +288,32 @@ void main() {
     expect(find.text('trip.mov'), findsOneWidget);
   });
 
-  testWidgets('an offer that cannot be read is an error with the code in it, '
+  testWidgets('a Bluetooth code result decodes to the QR offer preview',
+      (tester) async {
+    await mount(tester);
+    await submit(tester);
+    final offer = const BluetoothQrPayload(
+            token: 'random-token',
+            locator: 'random-id',
+            fileName: 'nearby.mov',
+            fileSize: 1024,
+            itemCount: 1,
+            senderName: 'Sender')
+        .encode();
+    lookup.finish(CodeSessionFoundBluetooth(offer));
+    await settleBloc(tester);
+    expect(bloc.state, isA<QRParsed>());
+    final payload = (bloc.state as QRParsed).payload;
+    expect(payload.mode, QRPayloadDecoder.bluetoothMode);
+    expect(payload.token, 'random-token');
+    expect(payload.sessionId, 'random-id');
+    expect(payload.fileName, 'nearby.mov');
+    expect(find.text('File found'), findsOneWidget);
+    expect(find.text('nearby.mov'), findsOneWidget);
+  });
+
+  testWidgets(
+      'an offer that cannot be read is an error with the code in it, '
       'not a camera or a link', (tester) async {
     await mount(tester);
     await submit(tester);

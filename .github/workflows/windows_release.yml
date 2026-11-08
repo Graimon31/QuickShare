@@ -15,7 +15,7 @@ concurrency:
 jobs:
   windows:
     runs-on: windows-2022
-    timeout-minutes: 35
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: quickshare
@@ -39,6 +39,11 @@ jobs:
         run: |
           & .\scripts\build_windows.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
+
+      - name: WebRTC reconnection and send-buffer regressions
+        run: |
+          flutter test --no-pub test/core/webrtc/resume test/core/webrtc/send_buffer_test.dart --reporter=expanded
+          if ($LASTEXITCODE -ne 0) { throw 'WebRTC regression tests failed' }
 
       - name: Windows storage and native regressions
         run: |
@@ -76,6 +81,13 @@ jobs:
           $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') -Wait -PassThru
           if ($uninstall.ExitCode -ne 0) { throw "Uninstall failed: $($uninstall.ExitCode)" }
           Write-Host 'Installer files match the portable build; test uninstall succeeded.'
+
+      - name: Real Windows sender to remote Mac (64 MiB)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $peer = Get-Content -Raw -LiteralPath ..\ci-peer\windows-peer.json | ConvertFrom-Json
+          flutter test integration_test/ci_peer_sender.dart -d windows --no-pub --reporter=expanded "--dart-define=CI_PEER_CODE=$($peer.code)" "--dart-define=CI_PEER_EXPECT_NAME=$($peer.name)" "--dart-define=CI_PEER_BYTES=$($peer.bytes)" "--dart-define=CI_PEER_SEED=$($peer.seed)" --dart-define=CI_PEER_WAIT_MINUTES=25 --dart-define=CI_PEER_TRANSFER_MINUTES=8
+          if ($LASTEXITCODE -ne 0) { throw 'Real Windows sender to Mac failed' }
 
       - name: Record checksums and source
         run: |

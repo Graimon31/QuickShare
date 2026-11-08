@@ -324,7 +324,7 @@ class InviteApprovalRequested extends SenderState {
   List<Object?> get props => [request, previousState];
 }
 
-/// Bluetooth is advertising and waiting for a receiver that scanned [qrData].
+/// Bluetooth is advertising; receivers can scan [qrData] or type [code].
 class BluetoothAdvertising extends SenderState {
   final TransferSession session;
   final String qrData;
@@ -333,12 +333,9 @@ class BluetoothAdvertising extends SenderState {
   /// being flattened into an archive to fit this channel.
   final int itemCount;
 
-  /// This session's locator: random, drawn for it alone, and the same one the
-  /// QR carries. It is what an Apple or Linux device advertises as its name;
-  /// an Android phone or a Windows PC advertises nothing. It is not a code, is
-  /// derived from no code, and is shown to nobody — there are no digits on a
-  /// Bluetooth screen, only the QR.
+  /// Independent random locator; never derived from the displayed code.
   final String locator;
+  final SessionCode? code;
 
   /// When the QR above is replaced, and the advertisement restarted under a new
   /// locator and a new token.
@@ -348,6 +345,7 @@ class BluetoothAdvertising extends SenderState {
       {required this.qrData,
       this.itemCount = 1,
       this.locator = '',
+      this.code,
       this.expiresAt});
 
   BluetoothAdvertising withItemCount(int count) => BluetoothAdvertising(
@@ -355,11 +353,13 @@ class BluetoothAdvertising extends SenderState {
         qrData: qrData,
         itemCount: count,
         locator: locator,
+        code: code,
         expiresAt: expiresAt,
       );
 
   @override
-  List<Object?> get props => [session, qrData, itemCount, locator, expiresAt];
+  List<Object?> get props =>
+      [session, qrData, itemCount, locator, code, expiresAt];
 }
 
 class Transferring extends SenderState {
@@ -1281,23 +1281,25 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         }
       });
 
-      // The token that authorises the transfer and the locator that goes out
-      // over the air are random and independent of each other and of anything
-      // else, a code included. The Wi-Fi network this device raises, if it is
-      // the one that does, is named and given its passphrase when it is raised,
-      // at random, and they reach the other device sealed.
-      //
-      // They used to be one thing: the token and the identifier were both
-      // hashes of the same ten digits, so everything the radio carries — the
-      // advertised name, the `START:<token>` write, the serve frame — could be
-      // searched backwards for the digits (about 33 bits, seconds of hashing),
-      // and the digits derived the network's name and passphrase. A Bluetooth
-      // session has no digits to type, so nothing needs anything to be related.
-      // Each time the code changes (every few minutes) all of it is new.
+      // Locator, bearer token and typed code are independent secrets. The
+      // code only authenticates a SPAKE2 exchange that seals the QR offer.
       final ids = BleSession.generate();
       final token = ids.token;
       _bluetoothSession = ids;
       _directLinkStarted = false;
+      final code = SessionCode.generate();
+      final displayFile = _sessionDisplay ?? file;
+      final totalCount = (_sessionFiles ?? [file]).length;
+      final qrData = BluetoothQrPayload(
+        token: token,
+        locator: ids.locator,
+        fileName: displayFile.name,
+        fileSize: displayFile.size,
+        itemCount: totalCount,
+        senderName: describeThisDevice(),
+      ).encode();
+      _activeBluetoothTransport!.enableCodePairing(code, qrData);
+
       // Bounded, because there is no way out of the screen this runs
       // behind except killing the app. Raising an advertisement is a radio
       // operation with no deadline of its own, and when it did not come
@@ -1324,18 +1326,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         unawaited(_beginBluetoothDirectLink());
       });
 
-      final displayFile = _sessionDisplay ?? file;
-      final totalCount = (_sessionFiles ?? [file]).length;
       emit(BluetoothAdvertising(
         _makeDummySession(displayFile),
-        qrData: BluetoothQrPayload(
-          token: token,
-          locator: ids.locator,
-          fileName: displayFile.name,
-          fileSize: displayFile.size,
-          itemCount: totalCount,
-          senderName: describeThisDevice(),
-        ).encode(),
+        qrData: qrData,
+        code: code,
         itemCount: totalCount,
         locator: ids.locator,
         expiresAt: _newExpiry(),

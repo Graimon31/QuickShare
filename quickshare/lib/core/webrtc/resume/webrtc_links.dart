@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/webrtc/resume/receiver_link.dart';
@@ -61,15 +63,11 @@ class _IceWatch {
 /// as left (see below), the wait for room, and the way ICE ending is turned
 /// into the link being dead.
 ///
-/// ## Why the byte count is kept here
-///
-/// `RTCDataChannel.bufferedAmount` is a value cached on the Dart side that only
-/// moves when the native layer pushes a `dataChannelBufferedAmountChange` event
-/// across the platform channel, and it starts at zero. A tight send loop reads
-/// that stale zero, concludes there is room and sends again, so the real queue
-/// grows until libwebrtc hits its hard 16 MiB limit and closes the channel.
-/// Counting locally on every send makes backpressure immediate; the event then
-/// corrects the figure downward as bytes leave.
+/// New receivers acknowledge cumulative wire bytes after processing each frame.
+/// This supplies real backpressure on Windows, whose native WebRTC plugin does
+/// not emit buffered-amount events. Older receivers retain native event based
+/// flow control on supported platforms. The send counter also includes frames
+/// still crossing the platform channel, so a cached native zero cannot flood it.
 class WebRtcSenderLink implements SenderLink {
   WebRtcSenderLink({
     required this.generation,
@@ -81,10 +79,12 @@ class WebRtcSenderLink implements SenderLink {
   }) {
     _ice = _IceWatch(grace: stall.iceDisconnectedGrace, onDead: _die, tag: tag);
     channel.onBufferedAmountChange = (current, changed) {
+      if (_remoteFlowControl) return;
       _queuedBytes = current;
       if (current <= sendWindow) _wakeWaiter();
     };
     channel.onMessage = (message) {
+      if (!message.isBinary && _handleFlowControl(message.text)) return;
       if (!message.isBinary && !_incoming.isClosed) {
         _incoming.add(message.text);
       }
@@ -113,6 +113,33 @@ class WebRtcSenderLink implements SenderLink {
   final _opened = Completer<void>();
   Completer<void>? _drainWaiter;
   int _queuedBytes = 0;
+  int _sentBytes = 0;
+  int _acknowledgedBytes = 0;
+  bool _remoteFlowControl = false;
+
+  bool _handleFlowControl(String frame) {
+    Object? value;
+    try {
+      value = jsonDecode(frame);
+    } catch (_) {
+      return false;
+    }
+    if (value is! Map || !value.containsKey('__directdropFlow')) return false;
+    if (value['__directdropFlow'] == 'ready') {
+      _remoteFlowControl = true;
+      _queuedBytes = _sentBytes - _acknowledgedBytes;
+      _wakeWaiter();
+    } else if (value['__directdropFlow'] == 'ack' && _remoteFlowControl) {
+      final bytes = value['bytes'];
+      if (bytes is int && bytes >= _acknowledgedBytes && bytes <= _sentBytes) {
+        _acknowledgedBytes = bytes;
+        _queuedBytes = _sentBytes - bytes;
+        _wakeWaiter();
+      }
+    }
+    return true;
+  }
+
   bool _dead = false;
 
   /// What has been handed to the channel and has not yet left. For the log.
@@ -168,7 +195,9 @@ class WebRtcSenderLink implements SenderLink {
   @override
   void sendText(String frame) {
     if (!isOpen) throw const LinkLost('the channel is not open');
-    _queuedBytes += utf8.encode(frame).length;
+    final length = utf8.encode(frame).length;
+    _sentBytes += length;
+    _queuedBytes += length;
     unawaited(channel.send(RTCDataChannelMessage(frame)).catchError((Object e) {
       _die('sending a frame failed: ${e.runtimeType}');
     }));
@@ -177,6 +206,7 @@ class WebRtcSenderLink implements SenderLink {
   @override
   void sendBinary(Uint8List bytes) {
     if (!isOpen) throw const LinkLost('the channel is not open');
+    _sentBytes += bytes.length;
     _queuedBytes += bytes.length;
     unawaited(channel
         .send(RTCDataChannelMessage.fromBinary(bytes))
@@ -196,6 +226,11 @@ class WebRtcSenderLink implements SenderLink {
         stallTimeout: stallTimeout,
       );
     } on TransferStalled catch (e) {
+      if (!_remoteFlowControl &&
+          defaultTargetPlatform == TargetPlatform.windows) {
+        throw const LinkLost('The receiver does not support acknowledged flow '
+            'control. Update DirectDrop on the receiving device.');
+      }
       throw LinkLost('$e');
     }
   }
@@ -248,6 +283,20 @@ class WebRtcReceiverLink implements ReceiverLink {
   void Function(String reason)? _onClosed;
   String? _deadBecause;
   bool _closing = false;
+  bool _bound = false;
+  int _receivedWireBytes = 0;
+
+  /// The transport queues disk writes synchronously in onFrame. Acknowledging
+  /// only once that queue has processed this frame bounds receiver memory too.
+  Future<void> Function()? waitForHandledFrame;
+
+  void _advertiseFlowControl() {
+    if (_bound &&
+        isOpen &&
+        channel.state == RTCDataChannelState.RTCDataChannelOpen) {
+      sendText(jsonEncode({'__directdropFlow': 'ready'}));
+    }
+  }
 
   /// Completes when the channel is open; fails if the link dies first.
   Future<void> get opened => _opened.future;
@@ -266,6 +315,7 @@ class WebRtcReceiverLink implements ReceiverLink {
     AppLogger.info('Link $generation: data channel $state', tag: tag);
     if (state == RTCDataChannelState.RTCDataChannelOpen) {
       if (!_opened.isCompleted) _opened.complete();
+      _advertiseFlowControl();
       final waiting = List<String>.of(_pending);
       _pending.clear();
       for (final frame in waiting) {
@@ -307,7 +357,23 @@ class WebRtcReceiverLink implements ReceiverLink {
     required void Function(String reason) onClosed,
   }) {
     _onClosed = onClosed;
-    channel.onMessage = onFrame;
+    _bound = true;
+    channel.onMessage = (message) {
+      onFrame(message);
+      _receivedWireBytes += message.isBinary
+          ? message.binary.length
+          : utf8.encode(message.text).length;
+      final received = _receivedWireBytes;
+      final handled = waitForHandledFrame?.call() ?? Future<void>.value();
+      unawaited(handled.then((_) {
+        if (isOpen) {
+          sendText(jsonEncode({'__directdropFlow': 'ack', 'bytes': received}));
+        }
+      }).catchError((Object error) {
+        _die('handling a received frame failed: ${error.runtimeType}');
+      }));
+    };
+    _advertiseFlowControl();
     final already = _deadBecause;
     if (already != null) onClosed(already);
   }
