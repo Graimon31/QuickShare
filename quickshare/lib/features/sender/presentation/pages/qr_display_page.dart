@@ -366,7 +366,10 @@ class _ApprovalDialogState extends State<_ApprovalDialog> {
       }
       if (_remainingSeconds <= 1) {
         timer.cancel();
-        Navigator.of(context).pop(false);
+        final route = ModalRoute.of(context);
+        if (route != null && route.isActive) {
+          Navigator.of(context).removeRoute(route, false);
+        }
       } else {
         setState(() => _remainingSeconds--);
       }

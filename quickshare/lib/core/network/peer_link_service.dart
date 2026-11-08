@@ -160,7 +160,12 @@ class PeerLinkService {
   Future<bool> enableWifi() async {
     if (!isSupported) return false;
     try {
-      return await _channel.invokeMethod<bool>('enableWifi') ?? false;
+      return await _channel
+              .invokeMethod<bool>('enableWifi')
+              .timeout(const Duration(seconds: 4)) ??
+          false;
+    } on TimeoutException {
+      return false;
     } on PlatformException {
       return false;
     } on MissingPluginException {

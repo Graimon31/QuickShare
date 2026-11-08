@@ -211,6 +211,26 @@ void main() {
       await tester.pump();
     });
 
+    testWidgets('timeout of a covered dialog leaves the newer route intact', (tester) async {
+      final request = newRequest('covered-timeout');
+      await pumpToApprovalDialog(tester, request: request);
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+      navigator.push(MaterialPageRoute<void>(builder: (_) =>
+          const Scaffold(body: Text('Newer route'))));
+      await tester.pumpAndSettle();
+      for (var i = 0; i < 90; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(find.text('Newer route'), findsOneWidget);
+      verify(() => mockRepository.respondToApproval('covered-timeout', false))
+          .called(1);
+      navigator.pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      unawaited(bloc.close());
+      await tester.pump();
+    });
+
     testWidgets(
         'shows sender/device name, size, item count and a countdown',
         (tester) async {

@@ -259,9 +259,17 @@ class InternetCodeSearch {
         plaintext: utf8.encode('cancel'),
         random: _random,
       ).timeout(const Duration(seconds: 1));
-      await mailbox.publish(keys.confirmTopic, cancel)
-          .timeout(const Duration(seconds: 1));
-    } catch (_) {}
+      // RacingCodeMailbox.publish returns on the first success, but closing
+      // then would cancel retries on the other channels. Keep them alive long
+      // enough for a connection timeout and a retry, while bounding teardown.
+      final publish = mailbox is RacingCodeMailbox
+          ? mailbox.publishToAll(keys.confirmTopic, cancel)
+          : mailbox.publish(keys.confirmTopic, cancel);
+      await publish.timeout(const Duration(seconds: 12));
+    } catch (e) {
+      AppLogger.warning('Internet code: cancellation could not be published: '
+          '${e.runtimeType}', tag: 'INET_CODE');
+    }
   }
 
   /// The outcome a sealed payload says, or null when it says nothing this

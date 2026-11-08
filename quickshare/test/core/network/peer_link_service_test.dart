@@ -1,8 +1,29 @@
+import 'dart:async';
+
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:quickshare/core/network/peer_link_service.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('a stuck Wi-Fi enable reply is bounded', (tester) async {
+    if (!PeerLinkService.isSupported) return;
+    const channel = MethodChannel('test/peerlink-stuck');
+    final never = Completer<bool>();
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      channel,
+      (call) => never.future,
+    );
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, null));
+    final result = PeerLinkService(channel: channel).enableWifi();
+    await tester.pump(const Duration(seconds: 4));
+    expect(await result, isFalse);
+    never.complete(true);
+  });
+
   group('serviceNameFor', () {
     test('both ends derive the same name from the token they share', () {
       // Nothing about the link goes in the QR code — this is why. The sender

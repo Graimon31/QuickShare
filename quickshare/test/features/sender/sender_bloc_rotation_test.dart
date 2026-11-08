@@ -101,6 +101,7 @@ class _Repository implements SenderRepository {
   bool serverAlive = true;
   bool healthy = true;
   Completer<void>? holdStart;
+  Completer<void>? holdStop;
 
   TransferSession _session(String token) => TransferSession(
         id: 'session-$starts',
@@ -160,6 +161,7 @@ class _Repository implements SenderRepository {
   @override
   Future<Either<Failure, void>> stopServer({bool force = false}) async {
     stops++;
+    await holdStop?.future;
     return const Right(null);
   }
 
@@ -757,6 +759,30 @@ void main() {
           requestId: question(t).request.id, accepted: accepted));
       t.settle();
     }
+
+    test('a new offer survives an earlier delayed cancellation', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final oldBox = t.senderBoxes.single;
+        t.repo.holdStop = Completer<void>();
+        t.bloc.add(CancelSending());
+        t.settle();
+        t.bloc.add(const StartSendingWithTransport(file, TransportType.internet));
+        t.settle();
+        t.repo.holdStop!.complete();
+        t.pass(const Duration(milliseconds: 50));
+        expect(t.bloc.state, isA<QRReady>());
+        expect(t.senderBoxes, hasLength(2));
+        expect(oldBox.isClosed, isTrue);
+        expect(t.senderBoxes.last.isClosed, isFalse);
+        final receiver = typed(t, t.offer.code!);
+        t.settle();
+        expect(question(t).request.deviceName, 'Alice laptop');
+        answer(t, false);
+        expect(receiver.outcome, isA<CodeSessionDeclined>());
+      });
+    });
 
     test('receiver cancellation dismisses its prompt and permits retry', () {
       fakeAsync((async) {

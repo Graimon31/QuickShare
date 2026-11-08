@@ -42,6 +42,12 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
   private static let serviceType = "_directdrop._tcp"
 
   private let queue = DispatchQueue(label: "quickshare.peerlink", qos: .userInitiated)
+  #if os(macOS)
+  private let wifiPowerQueue = DispatchQueue(label: "quickshare.peerlink.wifi-power", qos: .userInitiated)
+  // Accessed only on the main queue. A stuck CoreWLAN request must not start
+  // another worker on each retry.
+  private var wifiPowerPending = false
+  #endif
   private var eventSink: FlutterEventSink?
 
   /// Host role: accepts peers and forwards each one to the local QHTP port.
@@ -152,7 +158,7 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
       result(wifiPathAvailable)
 
     case "enableWifi":
-      result(turnWifiOn())
+      turnWifiOn(result: result)
 
     case "openWifiSettings":
       result(openSettings())
@@ -176,19 +182,43 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
   /// any price: there is no public API, and the private URL scheme that used
   /// to work is grounds for rejection. All that is left there is to take the
   /// user to Settings and say plainly why.
-  private func turnWifiOn() -> Bool {
+  private func turnWifiOn(result: @escaping FlutterResult) {
     #if os(macOS)
-    guard let interface = CWWiFiClient.shared().interface() else { return false }
-    do {
-      try interface.setPower(true)
-      return true
-    } catch {
-      // A sandboxed app may be refused. Not worth an error — the caller falls
-      // back to asking the user, which was always the iOS path anyway.
-      return false
+    // A usable path already proves the radio is on, without calling CoreWLAN.
+    if wifiPathAvailable { result(true); return }
+    guard !wifiPowerPending else { result(false); return }
+    wifiPowerPending = true
+    let deadline = DispatchTime.now() + .seconds(3)
+    // Both this flag and FlutterResult are touched only on the main queue.
+    var replied = false
+    DispatchQueue.main.asyncAfter(deadline: deadline) {
+      guard !replied else { return }
+      replied = true
+      result(false)
+    }
+    wifiPowerQueue.async {
+      var enabled = false
+      if let interface = CWWiFiClient.shared().interface() {
+        if interface.powerOn() {
+          enabled = true
+        } else if DispatchTime.now() < deadline {
+          do {
+            try interface.setPower(true)
+            enabled = true
+          } catch {
+            // Refused or unavailable: let the caller fall back.
+          }
+        }
+      }
+      DispatchQueue.main.async {
+        self.wifiPowerPending = false
+        guard !replied else { return }
+        replied = true
+        result(enabled)
+      }
     }
     #else
-    return false
+    result(false)
     #endif
   }
 

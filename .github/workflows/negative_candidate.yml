@@ -84,7 +84,7 @@ jobs:
 
       - name: Internet cancellation and approval regressions
         run: |
-          flutter test --no-pub test/core/network/internet_code_exchange_test.dart test/features/sender/sender_bloc_rotation_test.dart test/features/receiver/code_lookup_internet_test.dart test/features/receiver/code_receive_page_search_test.dart test/features/sender/approval_dialog_widget_test.dart --reporter=expanded
+          flutter test --no-pub test/core/signaling test/core/network/peer_link_service_test.dart test/core/network/internet_code_exchange_test.dart test/features/sender/sender_bloc_rotation_test.dart test/features/receiver/code_lookup_internet_test.dart test/features/receiver/code_receive_page_search_test.dart test/features/sender/approval_dialog_widget_test.dart --reporter=expanded
           if ($LASTEXITCODE -ne 0) { throw 'Internet negative regression tests failed' }
 
       - name: Record checksums and source

@@ -8,7 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'package:quickshare/core/crypto/bip340.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
-import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/core/signaling/nostr_code_mailbox.dart';
 
 /// Carries the sealed answer through public Nostr relays over WSS on 443.
 ///
@@ -27,16 +27,12 @@ import 'package:quickshare/core/utils/app_logger.dart';
 /// subscribers and keep no copy afterwards, matching the "nothing is retained"
 /// property the MQTT channel got from QoS 0 without retain.
 class NostrAnswerChannel implements AnswerChannel {
-  /// Measured reachable from the target network, with the full
-  /// subscribe -> publish -> deliver round trip completing in 115-168 ms.
-  /// `relay.damus.io` and `relay.nostr.band` are kept as spares: both failed
-  /// during that probe, which is exactly the risk fan-out exists to absorb.
+  /// These endpoints passed live bidirectional signed ephemeral-event delivery
+  /// on 2026-11-08. Subscription acknowledgements alone do not prove delivery.
   static const defaultRelays = <String>[
-    'wss://nos.lol',
-    'wss://nostr.mom',
-    'wss://relay.primal.net',
-    'wss://relay.damus.io',
-    'wss://relay.nostr.band',
+    'wss://relay.nostr.net',
+    'wss://nostr-pub.wellorder.net',
+    'wss://relay.ditto.pub',
   ];
 
   /// Ephemeral range: relays forward but never store.
@@ -46,21 +42,32 @@ class NostrAnswerChannel implements AnswerChannel {
   final Duration connectTimeout;
 
   final _controller = StreamController<Uint8List>.broadcast();
-  final _connections = <String, WebSocketChannel>{};
-  final _subscriptions = <StreamSubscription<dynamic>>[];
-  final _seenEventIds = <String>{};
-
-  /// Throwaway identity, regenerated per channel. Nostr demands a signature;
-  /// it does not demand that the signer mean anything, and a stable key would
-  /// let a relay operator link one transfer to the next.
+  final _topics = <String>{};
+  StreamSubscription<dynamic>? _messages;
+  bool _closed = false;
   final Uint8List _secretKey;
+  final Duration confirmTimeout;
+  final Duration publishTimeout;
+  final WebSocketChannel Function(Uri uri)? _connect;
+  late final NostrCodeMailbox _mailbox = NostrCodeMailbox(
+    relays: relays,
+    secretKey: _secretKey,
+    connectTimeout: connectTimeout,
+    confirmTimeout: confirmTimeout,
+    publishTimeout: publishTimeout,
+    connect: _connect,
+  );
 
   NostrAnswerChannel({
     List<String>? relays,
     this.connectTimeout = const Duration(seconds: 2),
+    this.confirmTimeout = const Duration(milliseconds: 1500),
+    this.publishTimeout = const Duration(seconds: 4),
     Uint8List? secretKey,
+    WebSocketChannel Function(Uri uri)? connect,
   })  : relays = relays ?? defaultRelays,
-        _secretKey = secretKey ?? _newSecretKey();
+        _secretKey = secretKey ?? _newSecretKey(),
+        _connect = connect;
 
   static Uint8List _newSecretKey() {
     final random = Random.secure();
@@ -71,136 +78,39 @@ class NostrAnswerChannel implements AnswerChannel {
   }
 
   @override
-  String get name => 'nostr(${_connections.length}/${relays.length})';
+  String get name => _mailbox.name;
 
   @override
   Stream<Uint8List> get answers => _controller.stream;
 
   @override
   Future<void> subscribe(String topic) async {
-    // With no relays the first-wins race below has nobody to complete it and
-    // would hang forever — an empty list is a misconfiguration, fail loudly.
-    if (relays.isEmpty) {
-      throw StateError('no Nostr relays configured');
+    if (_closed || relays.isEmpty) {
+      throw StateError('no Nostr relays available');
     }
-    final first = Completer<void>();
-    var live = 0;
-    var failed = 0;
-
-    for (final relay in relays) {
-      unawaited(_openAndSubscribe(relay, topic).then((ok) {
-        if (ok) {
-          live++;
-          if (!first.isCompleted) {
-            AppLogger.info(
-                'Nostr rendezvous listening (first of ${relays.length}: $relay)',
-                tag: 'SIGNALING');
-            first.complete();
-          }
-        } else {
-          failed++;
-          if (live == 0 && failed == relays.length && !first.isCompleted) {
-            first.completeError(StateError(
-                'no Nostr relay reachable (${relays.join(', ')})'));
-          }
-        }
-      }));
-    }
-
-    await first.future;
-  }
-
-  Future<bool> _openAndSubscribe(String relay, String topic) async {
-    try {
-      final socket = WebSocketChannel.connect(Uri.parse(relay));
-      await socket.ready.timeout(connectTimeout);
-      _connections[relay] = socket;
-
-      _subscriptions.add(socket.stream.listen(
-        (raw) => _onRelayMessage(relay, raw),
-        onError: (Object e) => AppLogger.warning(
-            'Nostr relay $relay errored: $e',
-            tag: 'SIGNALING'),
-        cancelOnError: false,
-      ));
-
-      socket.sink.add(jsonEncode([
-        'REQ',
-        subscriptionId(topic),
-        {
-          'kinds': [eventKind],
-          '#t': [topic],
-        }
-      ]));
-      return true;
-    } catch (e) {
-      AppLogger.warning('Nostr relay $relay unavailable: $e', tag: 'SIGNALING');
-      return false;
-    }
-  }
-
-  void _onRelayMessage(String relay, dynamic raw) {
-    if (raw is! String) return;
-    try {
-      final message = jsonDecode(raw) as List<dynamic>;
-      if (message.isEmpty) return;
-      switch (message[0]) {
-        case 'EVENT':
-          if (message.length < 3) return;
-          final event = message[2] as Map<String, dynamic>;
-          final id = event['id'] as String?;
-          // The same answer arrives once per healthy relay.
-          if (id != null && !_seenEventIds.add(id)) return;
-          final payload = base64.decode(event['content'] as String);
-          if (!_controller.isClosed) {
-            _controller.add(Uint8List.fromList(payload));
-          }
-        case 'NOTICE':
-          AppLogger.warning('Nostr relay $relay notice: ${message.skip(1)}',
-              tag: 'SIGNALING');
-        case 'CLOSED':
-          AppLogger.warning('Nostr relay $relay closed the subscription: '
-              '${message.skip(1)}', tag: 'SIGNALING');
+    _topics.add(topic);
+    _messages ??= _mailbox.messages.listen((message) {
+      if (_topics.contains(message.topic) && !_controller.isClosed) {
+        _controller.add(message.payload);
       }
-    } catch (e) {
-      // Public relays carry the whole network's traffic; anything we cannot
-      // parse belongs to somebody else.
-      AppLogger.warning('Discarded unparsable Nostr message from $relay: $e',
-          tag: 'SIGNALING');
+    });
+    try {
+      await _mailbox.subscribe(topic);
+    } catch (_) {
+      throw StateError('no Nostr relay confirmed the answer subscription');
     }
   }
 
   @override
   Future<void> publish(String topic, Uint8List payload) async {
-    final event = buildEvent(topic, payload);
-    final encoded = jsonEncode(['EVENT', event]);
-
-    final results = await Future.wait(
-      relays.map((relay) async {
-        try {
-          var socket = _connections[relay];
-          if (socket == null) {
-            socket = WebSocketChannel.connect(Uri.parse(relay));
-            await socket.ready.timeout(connectTimeout);
-            _connections[relay] = socket;
-          }
-          socket.sink.add(encoded);
-          return true;
-        } catch (e) {
-          AppLogger.warning('Nostr publish to $relay failed: $e',
-              tag: 'SIGNALING');
-          return false;
-        }
-      }),
-    );
-
-    if (!results.contains(true)) {
-      throw StateError('could not publish the answer to any Nostr relay');
+    if (_closed || relays.isEmpty) {
+      throw StateError('no Nostr relays available');
     }
-
-    // The sink only queues the frame; give the sockets a moment to flush
-    // before the caller tears the channel down.
-    await Future<void>.delayed(const Duration(milliseconds: 250));
+    try {
+      await _mailbox.publish(topic, payload);
+    } catch (_) {
+      throw StateError('no Nostr relay accepted the answer event');
+    }
   }
 
   /// Builds a signed NIP-01 event. See [buildNostrEvent].
@@ -217,17 +127,12 @@ class NostrAnswerChannel implements AnswerChannel {
 
   @override
   Future<void> close() async {
-    for (final subscription in _subscriptions) {
-      await subscription.cancel();
-    }
-    _subscriptions.clear();
-    for (final socket in _connections.values) {
-      try {
-        await socket.sink.close();
-      } catch (_) {}
-    }
-    _connections.clear();
-    if (!_controller.isClosed) await _controller.close();
+    if (_closed) return;
+    _closed = true;
+    _topics.clear();
+    await _messages?.cancel();
+    await _mailbox.close();
+    if (!_controller.isClosed) unawaited(_controller.close());
   }
 }
 

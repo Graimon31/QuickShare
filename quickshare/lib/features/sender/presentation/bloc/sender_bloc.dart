@@ -573,6 +573,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// checks this counter before it emits, and a bumped counter means the
   /// answer is no longer wanted.
   int _sessionGeneration = 0;
+  Future<void>? _cancelInProgress;
 
   /// How many bytes the session turned out to hold, on the paths that start
   /// serving before the selection has been walked.
@@ -1050,12 +1051,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onStartSending(
       StartSending event, Emitter<SenderState> emit) async {
+    final cleanup = _cancelInProgress;
+    if (cleanup != null) await cleanup;
+    if (emit.isDone) return;
     _sessionDisplay = null;
     await _startSendingInternal(event.file, _selectedMode, emit);
   }
 
   Future<void> _onStartSendingWithTransport(
       StartSendingWithTransport event, Emitter<SenderState> emit) async {
+    final cleanup = _cancelInProgress;
+    if (cleanup != null) await cleanup;
+    if (emit.isDone) return;
     _selectedMode = event.mode;
     _sessionDisplay = null;
     await _startSendingInternal(event.file, event.mode, emit);
@@ -1365,6 +1372,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onStartQhtpSend(
       StartQhtpSend event, Emitter<SenderState> emit) async {
+    final cleanup = _cancelInProgress;
+    if (cleanup != null) await cleanup;
+    if (emit.isDone) return;
     final generation = ++_sessionGeneration;
     bool abandoned() => generation != _sessionGeneration;
     _currentPaths = event.paths;
@@ -2176,6 +2186,24 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onCancelSending(
       CancelSending event, Emitter<SenderState> emit) async {
+    final prior = _cancelInProgress;
+    if (prior != null) {
+      await prior;
+      if (emit.isDone) return;
+    }
+    final completion = Completer<void>();
+    _cancelInProgress = completion.future;
+    try {
+      await _finishCancelSending(emit);
+    } finally {
+      if (identical(_cancelInProgress, completion.future)) {
+        _cancelInProgress = null;
+      }
+      completion.complete();
+    }
+  }
+
+  Future<void> _finishCancelSending(Emitter<SenderState> emit) async {
     // Read before the server stops, not after: stopping it clears the one
     // fact — which address, if any, ever connected — that says whether this
     // was a send somebody was receiving or a QR nobody had scanned yet. A

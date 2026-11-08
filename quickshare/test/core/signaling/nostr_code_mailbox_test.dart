@@ -2,6 +2,7 @@
 // real ones: events are forwarded to whoever is subscribed at that moment and
 // kept for nobody, it checks the signature before it will forward, and it may
 // say anything at all to a subscriber.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -30,9 +31,12 @@ class _Relay {
   final subscriptionIds = <String>[];
   final closed = <String>[];
   int rejectedEvents = 0;
+  final eventIds = <String>[];
 
   /// Whether it says it has registered a subscription, as the real ones do.
   bool answersEose = true;
+  bool answersOk = true;
+  bool accepts = true;
 
   static Future<_Relay> start({int port = 0}) async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
@@ -50,8 +54,7 @@ class _Relay {
   String get url => 'ws://127.0.0.1:${_server.port}';
   int get port => _server.port;
 
-  int get subscribed =>
-      _subs.values.fold(0, (sum, subs) => sum + subs.length);
+  int get subscribed => _subs.values.fold(0, (sum, subs) => sum + subs.length);
 
   void _onFrame(WebSocket socket, String raw) {
     final frame = jsonDecode(raw) as List<dynamic>;
@@ -67,6 +70,7 @@ class _Relay {
         _subs[socket]?.remove(frame[1]);
       case 'EVENT':
         final event = frame[1] as Map<String, dynamic>;
+        eventIds.add(event['id'] as String);
         final serialized = jsonEncode([
           0,
           event['pubkey'],
@@ -85,8 +89,8 @@ class _Relay {
           socket.add(jsonEncode(['OK', event['id'], false, 'invalid: sig']));
           return;
         }
-        socket.add(jsonEncode(['OK', event['id'], true, '']));
-        forward(event);
+        if (answersOk) socket.add(jsonEncode(['OK', event['id'], accepts, '']));
+        if (accepts) forward(event);
     }
   }
 
@@ -186,6 +190,25 @@ void main() {
     expect(relay.rejectedEvents, 0, reason: 'the relay accepted the signature');
   });
 
+  test('a silent relay is not reported as a successful publication', () async {
+    relay.answersOk = false;
+    final box = NostrCodeMailbox(
+        relays: [relay.url], publishTimeout: const Duration(milliseconds: 250));
+    open.add(box);
+    await expectLater(
+        box.publish('silent', _b([1])), throwsA(isA<MailboxUnavailable>()));
+  });
+
+  test('a relay rejection is not reported as a successful publication',
+      () async {
+    relay.accepts = false;
+    final box = NostrCodeMailbox(
+        relays: [relay.url], publishTimeout: const Duration(milliseconds: 250));
+    open.add(box);
+    await expectLater(
+        box.publish('rejected', _b([1])), throwsA(isA<MailboxUnavailable>()));
+  });
+
   test('nothing is kept for a subscriber that was late', () async {
     final speaker = make();
     final listener = make();
@@ -217,13 +240,15 @@ void main() {
 
     expect(heard.map((m) => '${m.topic}:${m.payload.first}').toSet(),
         {'one:1', 'two:2'});
-    expect(relay.connections, hasLength(2), reason: 'one per mailbox, not per topic');
+    expect(relay.connections, hasLength(2),
+        reason: 'one per mailbox, not per topic');
     final ids = relay.subscriptionIds.toSet();
     expect(ids.length, 2, reason: 'a subscription id for each topic');
     expect(ids.every((id) => id.length <= 64), isTrue);
   });
 
-  test('an event for a topic nobody asked for is ignored, whatever the relay '
+  test(
+      'an event for a topic nobody asked for is ignored, whatever the relay '
       'says about it', () async {
     final listener = make();
     final heard = <MailboxMessage>[];
@@ -261,7 +286,8 @@ void main() {
     await listener.subscribe('t');
     final sub = relay.subscriptionIds.single;
 
-    Map<String, dynamic> event({Object? content, Object? tags, Object? kind}) => {
+    Map<String, dynamic> event({Object? content, Object? tags, Object? kind}) =>
+        {
           'id': 'id${heard.length}${DateTime.now().microsecondsSinceEpoch}',
           'pubkey': 'cd' * 32,
           'created_at': 1,
@@ -286,7 +312,15 @@ void main() {
       jsonEncode(['EVENT', sub, event(content: '!!! not base64 !!!')]),
       jsonEncode(['EVENT', sub, event(content: 'A' * 40000)]),
       jsonEncode(['EVENT', sub, event(tags: 'nope')]),
-      jsonEncode(['EVENT', sub, event(tags: [[], 5, ['t']])]),
+      jsonEncode([
+        'EVENT',
+        sub,
+        event(tags: [
+          [],
+          5,
+          ['t']
+        ])
+      ]),
       jsonEncode(['EVENT', sub, event(kind: 1)]),
       jsonEncode(['NOTICE', 'rate limited']),
       jsonEncode(['CLOSED', sub, 'auth-required']),
@@ -344,7 +378,8 @@ void main() {
     expect(relay.subscribed, 0);
   });
 
-  test('a relay that drops the connection is reconnected and every topic '
+  test(
+      'a relay that drops the connection is reconnected and every topic '
       'still wanted is asked for again', () async {
     final listener = make();
     final speaker = make();
@@ -383,7 +418,8 @@ void main() {
         none.publish('t', _b([1])), throwsA(isA<MailboxUnavailable>()));
   });
 
-  test('subscribing waits until the relay says it is listening, so a message '
+  test(
+      'subscribing waits until the relay says it is listening, so a message '
       'sent right after it is not lost', () async {
     final listener = make();
     final speaker = make();
@@ -397,16 +433,89 @@ void main() {
     await _until(() => heard.isNotEmpty);
   });
 
-  test('a relay that never says so is taken at its word after a moment',
-      () async {
+  test('a relay without EOSE cannot claim subscription readiness', () async {
     relay.answersEose = false;
     final listener = make();
-    final watch = Stopwatch()..start();
+    await expectLater(
+        listener.subscribe('t'), throwsA(isA<MailboxUnavailable>()));
+  });
 
-    await listener.subscribe('t');
+  test('OK must match the publication id, not merely any accepted event',
+      () async {
+    relay.answersOk = false;
+    final box = make();
+    var complete = false;
+    final publication = box.publish('t', _b([1])).then((_) => complete = true);
+    await _until(() => relay.eventIds.length == 1);
+    relay.say(jsonEncode(['OK', 'unrelated-event', true, '']));
+    await Future<void>.delayed(const Duration(milliseconds: 30));
+    expect(complete, isFalse);
+    relay.say(jsonEncode(['OK', relay.eventIds.single, true, '']));
+    await publication;
+    expect(complete, isTrue);
+  });
 
-    expect(watch.elapsed, greaterThanOrEqualTo(const Duration(milliseconds: 250)));
-    expect(watch.elapsed, lessThan(const Duration(seconds: 2)));
+  test('concurrent publications wait for their own relay acknowledgements',
+      () async {
+    relay.answersOk = false;
+    final box = make();
+    var completed = 0;
+    final first = box.publish('one', _b([1])).then((_) => completed++);
+    final second = box.publish('two', _b([2])).then((_) => completed++);
+    await _until(() => relay.eventIds.length == 2);
+    relay.say(jsonEncode(['OK', relay.eventIds.last, true, '']));
+    await _until(() => completed == 1);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(completed, 1);
+    relay.say(jsonEncode(['OK', relay.eventIds.first, true, '']));
+    await Future.wait([first, second]);
+    expect(completed, 2);
+  });
+
+  test('one accepting relay carries publication despite another rejection',
+      () async {
+    final rejecting = await _Relay.start();
+    rejecting.accepts = false;
+    addTearDown(rejecting.stop);
+    final box = make(relays: [rejecting.url, relay.url]);
+    await box.publish('t', _b([1]));
+    expect(relay.eventIds, isNotEmpty);
+  });
+
+  test('closing resolves a pending publication without waiting its timeout',
+      () async {
+    relay.answersOk = false;
+    final box = make();
+    final publication = box.publish('t', _b([1]));
+    final rejected =
+        expectLater(publication, throwsA(isA<MailboxUnavailable>()));
+    await _until(() => relay.eventIds.isNotEmpty);
+    await box.close();
+    await rejected.timeout(const Duration(milliseconds: 500));
+  });
+
+  test('disconnect resolves a pending publication instead of false success',
+      () async {
+    relay.answersOk = false;
+    final box = make();
+    final publication = box.publish('t', _b([1]));
+    final rejected =
+        expectLater(publication, throwsA(isA<MailboxUnavailable>()));
+    await _until(() => relay.eventIds.isNotEmpty);
+    await relay.dropConnections();
+    await rejected.timeout(const Duration(milliseconds: 500));
+  });
+
+  test('closing releases a subscribe still waiting for EOSE', () async {
+    relay.answersEose = false;
+    final box = NostrCodeMailbox(
+        relays: [relay.url], confirmTimeout: const Duration(seconds: 5));
+    open.add(box);
+    final rejected =
+        expectLater(box.subscribe('t'), throwsA(isA<MailboxUnavailable>()));
+    await _until(() => relay.subscribed == 1);
+    await box.close();
+    await rejected.timeout(const Duration(milliseconds: 500));
   });
 
   test('closing drops the connection and every subscription', () async {
@@ -423,7 +532,8 @@ void main() {
         listener.publish('t', _b([1])), throwsA(isA<MailboxUnavailable>()));
   });
 
-  test('a topic is never turned into a subscription id that two topics could '
+  test(
+      'a topic is never turned into a subscription id that two topics could '
       'share', () {
     expect(NostrCodeMailbox.subscriptionId('a-b_c'),
         isNot(NostrCodeMailbox.subscriptionId('abc')));

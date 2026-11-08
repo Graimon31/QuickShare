@@ -60,6 +60,31 @@ Uint8List _shareFor(SessionCode code) =>
     Spake2.start(role: Spake2Role.a, w: InternetCodePake.passwordScalar(code))
         .share;
 
+class _DelayedThirdPublish implements CodeMailbox {
+  _DelayedThirdPublish(this.inner, {this.delay = const Duration(milliseconds: 1500)});
+  final FakeMailbox inner;
+  final Duration delay;
+  int calls = 0;
+  bool completed = false;
+  @override
+  String get name => inner.name;
+  @override
+  Stream<MailboxMessage> get messages => inner.messages;
+  @override
+  Future<void> subscribe(String topic) => inner.subscribe(topic);
+  @override
+  Future<void> unsubscribe(String topic) => inner.unsubscribe(topic);
+  @override
+  Future<void> publish(String topic, Uint8List payload) async {
+    calls++;
+    if (calls == 3) await Future<void>.delayed(delay);
+    await inner.publish(topic, payload);
+    if (calls == 3) completed = true;
+  }
+  @override
+  Future<void> close() => inner.close();
+}
+
 /// Everything a test needs: the fake mailbox, a sender listening on it, and a
 /// receiver search that can be started against it.
 class _World {
@@ -1321,6 +1346,36 @@ void main() {
   });
 
   group('cancelling', () {
+    test('cancellation closes a channel that never finishes in time', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        final delayed = _DelayedThirdPublish(w.hub.endpoint('delayed'),
+            delay: const Duration(seconds: 20));
+        w.search(mailbox: () => RacingCodeMailbox([delayed]));
+        w.control.cancel();
+        w.settle();
+        w.pass(const Duration(seconds: 12));
+        expect(delayed.inner.isClosed, isTrue);
+        expect(w.outcome, isA<CodeSessionNotFound>());
+        w.pass(const Duration(seconds: 8));
+      });
+    });
+    test('cancellation lets a delayed channel finish even if another sent first', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        final quick = w.hub.endpoint('quick');
+        final delayed = _DelayedThirdPublish(w.hub.endpoint('delayed'));
+        w.search(mailbox: () => RacingCodeMailbox([quick, delayed]));
+        expect(w.dialogs, ['Alice laptop']);
+        w.control.cancel();
+        w.settle();
+        expect(delayed.inner.isClosed, isFalse);
+        w.pass(const Duration(milliseconds: 1500));
+        expect(delayed.completed, isTrue);
+        expect(w.withdrawals, 1);
+        expect(delayed.inner.isClosed, isTrue);
+      });
+    });
     test('a declined receiver can retry immediately', () {
       fakeAsync((async) {
         final w = _World(async)..autoApprove = false..startSender();

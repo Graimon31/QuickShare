@@ -41,6 +41,7 @@ class _Lookup extends CodeLookup {
   var _outcome = Completer<CodeSessionOutcome>();
 
   void finish(CodeSessionOutcome outcome) => _outcome.complete(outcome);
+  Completer<CodeSessionOutcome> get pending => _outcome;
 
   @override
   Future<CodeSessionOutcome> find(SessionCode code,
@@ -188,6 +189,37 @@ void main() {
     expect(lookup.asked, hasLength(2));
     expect(lookup.control!.isCancelled, isFalse, reason: 'a fresh search');
   });
+
+  for (final staleError in [false, true]) {
+    testWidgets(
+        'a cancelled search returning ${staleError ? 'an error' : 'an offer'} '
+        'cannot replace a fresh search', (tester) async {
+      await mount(tester);
+      await submit(tester);
+      final previous = lookup.pending;
+      await tester.tap(find.byKey(const ValueKey('code-search-cancel')));
+      await tester.pump();
+      await tester.tap(find.text('Receive'));
+      await tester.pump(const Duration(milliseconds: 100));
+      final current = lookup.pending;
+      expect(identical(previous, current), isFalse);
+      if (staleError) {
+        previous.completeError(StateError('old search failed late'));
+      } else {
+        previous.complete(CodeSessionFoundOnline(sampleOffer(name: 'old.bin')));
+      }
+      await settleBloc(tester);
+      expect(find.text('Looking for the sender…'), findsOneWidget);
+      expect(find.text('old.bin'), findsNothing);
+      expect(bloc.state, isA<ReceiverInitial>());
+      expect(lookup.control!.isCancelled, isFalse);
+      current.complete(CodeSessionFoundOnline(sampleOffer(name: 'fresh.bin')));
+      await settleBloc(tester);
+      expect(bloc.state, isA<QRParsed>());
+      expect((bloc.state as QRParsed).payload.fileName, 'fresh.bin');
+      expect(find.text('fresh.bin'), findsOneWidget);
+    });
+  }
 
   group('when it ends', () {
     Future<void> endsWith(
