@@ -82,8 +82,10 @@ class _World {
   final dialogs = <String>[];
   final holds = <String>[];
   final pendingAnswers = <Completer<bool>>[];
+  int withdrawals = 0;
   bool autoApprove = true;
   int offerReads = 0;
+  Completer<void>? offerBarrier;
 
   late FakeMailbox senderBox;
   late InternetCodeSender sender;
@@ -100,6 +102,7 @@ class _World {
       code: forCode ?? code,
       offer: () async {
         offerReads++;
+        await offerBarrier?.future;
         return offer;
       },
       approve: (name) {
@@ -109,6 +112,7 @@ class _World {
         pendingAnswers.add(answer);
         return answer.future;
       },
+      withdrawApproval: () => withdrawals++,
       hold: (r) => holds.add('hold $r'),
       release: (r) => holds.add('release $r'),
       timings: timings,
@@ -349,7 +353,9 @@ void main() {
         expect(w.outcome, isA<CodeSessionFoundOnline>());
         expect(w.receiverBox!.isClosed, isTrue);
         expect(w.receiverBox!.subscribed, isEmpty);
-        // The sender is still listening on the request topic and nothing else.
+        // The sender retains the cancel topic until the offer is answered.
+        w.sender.answered();
+        w.settle();
         expect(w.hub.listenedTopics, {w.requestTopic});
       });
     });
@@ -1315,6 +1321,103 @@ void main() {
   });
 
   group('cancelling', () {
+    test('a declined receiver can retry immediately', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        w.search(name: 'first');
+        w.pendingAnswers.first.complete(false);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionDeclined>());
+        w.search(name: 'retry');
+        expect(w.dialogs, ['first', 'retry']);
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+        expect(w.sender.attempts, 2);
+      });
+    });
+
+    test('withdraws the dialog and immediately permits another receiver', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        w.search(name: 'first');
+        w.control.cancel();
+        w.settle();
+        expect(w.outcome, isA<CodeSessionNotFound>());
+        expect(w.withdrawals, 1);
+        w.search(name: 'second');
+        expect(w.dialogs, ['first', 'second']);
+        w.pendingAnswers.first.complete(true);
+        w.settle();
+        expect(w.outcome, isNull, reason: 'old approval cannot answer new request');
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+      });
+    });
+
+    test('forged and stale cancels cannot withdraw another request', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        w.search(name: 'first');
+        w.control.cancel();
+        w.settle();
+        final oldCancel = w.hub.published.lastWhere((m) => m.by == 'receiver');
+        w.search(name: 'second');
+        final currentTopic = w.senderBox.subscribed.singleWhere(
+            (topic) => topic != w.requestTopic);
+        w.hub.inject(currentTopic, oldCancel.payload);
+        w.hub.inject(currentTopic, Uint8List.fromList(List.filled(64, 42)));
+        w.hub.inject(oldCancel.topic, oldCancel.payload);
+        w.settle();
+        expect(w.withdrawals, 1);
+        expect(w.dialogs, ['first', 'second']);
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+      });
+    });
+
+    test('a cancellation racing approval cannot disturb a later request', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        w.search(name: 'first');
+        w.pendingAnswers.first.complete(true);
+        w.control.cancel();
+        w.settle();
+        expect(w.outcome, isA<CodeSessionNotFound>());
+        expect(w.withdrawals, lessThanOrEqualTo(1));
+        w.search(name: 'second');
+        expect(w.dialogs, ['first', 'second']);
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+      });
+    });
+
+    test('cancellation while preparing an approved offer blocks the late offer', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        final barrier = Completer<void>();
+        w.offerBarrier = barrier;
+        w.search(name: 'first');
+        w.pendingAnswers.first.complete(true);
+        w.settle();
+        expect(w.offerReads, 1);
+        w.control.cancel();
+        w.settle();
+        expect(w.outcome, isA<CodeSessionNotFound>());
+        w.offerBarrier = null;
+        w.search(name: 'second');
+        expect(w.dialogs, ['first', 'second']);
+        barrier.complete();
+        w.settle();
+        expect(w.outcome, isNull);
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+      });
+    });
     test('before anything is published', () {
       fakeAsync((async) {
         final w = _World(async)..startSender();

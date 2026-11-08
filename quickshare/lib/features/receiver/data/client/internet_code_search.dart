@@ -68,6 +68,7 @@ class InternetCodeSearch {
     SessionCode code, {
     required String deviceName,
     required SearchGate gate,
+    void Function(Future<void> Function())? onOfferCancellation,
   }) async {
     CodeMailbox? mailbox;
     StreamSubscription<MailboxMessage>? listening;
@@ -75,7 +76,7 @@ class InternetCodeSearch {
     try {
       mailbox = _mailbox();
       return await _run(code, deviceName, gate, mailbox, (s) => listening = s,
-          timers);
+          timers, onOfferCancellation);
     } on _Stopped {
       return const CodeSessionNotFound();
     } on MailboxUnavailable catch (e) {
@@ -109,6 +110,7 @@ class InternetCodeSearch {
     CodeMailbox mailbox,
     void Function(StreamSubscription<MailboxMessage>) keep,
     List<Timer> timers,
+    void Function(Future<void> Function())? onOfferCancellation,
   ) async {
     final n = InternetCode.randomBytes(InternetCode.nonceLength, _random);
     final replyTopic = InternetCode.newReplyTopic(_random);
@@ -210,17 +212,56 @@ class InternetCodeSearch {
       })),
       random: _random,
     );
-    await _race(mailbox.publish(sessionKeys.confirmTopic, confirmation), gate);
-    AppLogger.info('Internet code search: sender proved the code; waiting for '
-        'its person', tag: 'INET_CODE');
-
+    var finished = false;
     try {
-      return await _race(
+      await _race(mailbox.publish(sessionKeys.confirmTopic, confirmation), gate);
+      AppLogger.info('Internet code search: sender proved the code; waiting for '
+          'its person', tag: 'INET_CODE');
+      final outcome = await _race(
           _within(done.future, timings.approvalWait, timers), gate);
+      if (outcome is CodeSessionFoundOnline) {
+        onOfferCancellation?.call(() async {
+          CodeMailbox? fresh;
+          try {
+            fresh = _mailbox();
+            await _sendCancellation(fresh, sessionKeys, n);
+          } catch (_) {
+            // The cancellation is best effort, including mailbox creation.
+          } finally {
+            try {
+              await fresh?.close().timeout(const Duration(seconds: 1));
+            } catch (_) {}
+          }
+        });
+      }
+      finished = true;
+      return outcome;
     } on TimeoutException {
       // It proved itself and then went quiet: not a wrong code.
       return const CodeSessionUnreachable();
+    } finally {
+      if (!finished) {
+        // Best effort and bounded: the sender may be an older version, or the
+        // mailbox may have gone away. The per-run key and AAD bind this to
+        // exactly this exchange and keep confirmation replays distinct.
+        await _sendCancellation(mailbox, sessionKeys, n);
+      }
     }
+  }
+
+  Future<void> _sendCancellation(
+      CodeMailbox mailbox, InternetCodeKeys keys, Uint8List n) async {
+    try {
+      final cancel = await InternetCodeSeal.seal(
+        key: keys.aeadKey,
+        role: SealRole.cancel,
+        n: n,
+        plaintext: utf8.encode('cancel'),
+        random: _random,
+      ).timeout(const Duration(seconds: 1));
+      await mailbox.publish(keys.confirmTopic, cancel)
+          .timeout(const Duration(seconds: 1));
+    } catch (_) {}
   }
 
   /// The outcome a sealed payload says, or null when it says nothing this

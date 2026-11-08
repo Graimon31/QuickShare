@@ -818,7 +818,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     repository.respondToApproval(event.requestId, event.accepted);
     _internetApprovals.remove(event.requestId)?.complete(event.accepted);
     final current = state;
-    if (current is InviteApprovalRequested) {
+    if (current is InviteApprovalRequested &&
+        current.request.id == event.requestId) {
       emit(current.previousState);
     }
   }
@@ -849,6 +850,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       code: code,
       offer: () async => _internetOffer,
       approve: _askAboutInternetReceiver,
+      withdrawApproval: () {
+        for (final request in _internetApprovals.values.toList()) {
+          request.complete(false);
+          if (!isClosed) {
+            add(RespondToInviteApproval(requestId: request.id, accepted: false));
+          }
+        }
+      },
       hold: _rotation.hold,
       release: _rotation.release,
       timings: _codeTimings,
@@ -1041,12 +1050,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onStartSending(
       StartSending event, Emitter<SenderState> emit) async {
+    _sessionDisplay = null;
     await _startSendingInternal(event.file, _selectedMode, emit);
   }
 
   Future<void> _onStartSendingWithTransport(
       StartSendingWithTransport event, Emitter<SenderState> emit) async {
     _selectedMode = event.mode;
+    _sessionDisplay = null;
     await _startSendingInternal(event.file, event.mode, emit);
   }
 
@@ -2362,7 +2373,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await _activeBluetoothTransport?.stopSharing();
     _activeBluetoothTransport = null;
     _subscribeToWifiProgress();
-    final completedFile = _currentFile;
+    final completedFile = _sessionDisplay ?? _currentFile;
     if (completedFile != null) {
       emit(TransferComplete(completedFile));
     } else {

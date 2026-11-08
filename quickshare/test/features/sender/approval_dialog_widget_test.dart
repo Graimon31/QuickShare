@@ -108,7 +108,7 @@ void main() {
 
   tearDown(() async {
     await approvalController.close();
-    await bloc.close();
+    if (!bloc.isClosed) await bloc.close();
   });
 
   /// Pumps `QRDisplayPage` wired to a fresh `SenderBloc`, drives it to
@@ -164,6 +164,53 @@ void main() {
   }
 
   group('B2 — approval dialog', () {
+    TransferApprovalRequest newRequest(String id) => TransferApprovalRequest(
+      id: id, remoteAddress: null, deviceName: 'Receiver',
+      itemCount: 1, totalBytes: 3,
+    );
+
+    testWidgets('a withdrawn request dismisses its dialog', (tester) async {
+      final request = newRequest('withdrawn');
+      await pumpToApprovalDialog(tester, request: request);
+      expect(find.byType(AlertDialog), findsOneWidget);
+      request.complete(false);
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(AlertDialog), findsNothing);
+      unawaited(bloc.close());
+      await tester.pump();
+    });
+
+    testWidgets('an already resolved request does not leave a dialog', (tester) async {
+      final request = newRequest('resolved')..complete(false);
+      await pumpToApprovalDialog(tester, request: request);
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(find.byType(AlertDialog), findsNothing);
+      unawaited(bloc.close());
+      await tester.pump();
+    });
+
+    testWidgets('withdrawing a covered dialog leaves the newer route intact', (tester) async {
+      final request = newRequest('covered');
+      await pumpToApprovalDialog(tester, request: request);
+      final navigator = tester.state<NavigatorState>(find.byType(Navigator).first);
+      navigator.push(MaterialPageRoute<void>(builder: (_) =>
+          const Scaffold(body: Text('Newer route'))));
+      await tester.pumpAndSettle();
+      request.complete(false);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text('Newer route'), findsOneWidget);
+      navigator.pop();
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      unawaited(bloc.close());
+      await tester.pump();
+    });
+
     testWidgets(
         'shows sender/device name, size, item count and a countdown',
         (tester) async {

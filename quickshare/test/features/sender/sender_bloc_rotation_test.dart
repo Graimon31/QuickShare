@@ -758,6 +758,30 @@ void main() {
       t.settle();
     }
 
+    test('receiver cancellation dismisses its prompt and permits retry', () {
+      fakeAsync((async) {
+        final t = internet(async);
+        start(t);
+        final code = t.offer.code!;
+        final first = typed(t, code);
+        t.settle();
+        final oldRequest = question(t).request.id;
+        first.control.cancel();
+        t.settle();
+        expect(first.outcome, isA<CodeSessionNotFound>());
+        expect(t.bloc.state, isA<QRReady>());
+        final second = typed(t, code, name: 'second');
+        t.settle();
+        final next = question(t);
+        expect(next.request.deviceName, 'second');
+        t.bloc.add(RespondToInviteApproval(requestId: oldRequest, accepted: false));
+        t.settle();
+        expect(question(t).request.id, next.request.id);
+        answer(t, true);
+        expect(second.outcome, isA<CodeSessionFoundOnline>());
+      });
+    });
+
     test('shows a ten-digit code beside the QR, with the same countdown', () {
       fakeAsync((async) {
         final t = internet(async);
@@ -1258,7 +1282,6 @@ class _FakeBluetooth extends BluetoothTransferTransport {
 /// A receiver that types a code, through the public mailbox the harness owns.
 class _Receiver {
   _Receiver(this.t, SessionCode code, String name) {
-    final control = CodeSearchControl();
     InternetCodeSearch(
       mailbox: () => t.hub.endpoint('receiver'),
       pake: const InternetCodePake(inline: true),
@@ -1270,6 +1293,7 @@ class _Receiver {
   }
 
   final _Harness t;
+  final control = CodeSearchControl();
   CodeSessionOutcome? outcome;
 }
 

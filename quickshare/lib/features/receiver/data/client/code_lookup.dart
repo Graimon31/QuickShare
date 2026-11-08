@@ -78,8 +78,11 @@ class CodeLookup {
         return const CodeSessionNotFound();
       },
     );
+    Future<void> Function()? cancelInternetOffer;
     final internet = _internet?.run(code,
-            deviceName: name, gate: arbiter.gate('internet')) ??
+            deviceName: name,
+            gate: arbiter.gate('internet'),
+            onOfferCancellation: (cancel) => cancelInternetOffer = cancel) ??
         Future<CodeSessionOutcome>.value(const CodeSessionNotFound());
 
     final bluetooth = _bluetooth?.run(code, gate: arbiter.gate('bluetooth')) ??
@@ -95,7 +98,10 @@ class CodeLookup {
 
     // The person gave up: whatever the searches made of being stopped is not
     // an answer.
-    if (cancelled) return const CodeSessionNotFound();
+    if (cancelled) {
+      await cancelInternetOffer?.call();
+      return const CodeSessionNotFound();
+    }
 
     // Whoever won is the answer, whatever the other made of being stopped.
     switch (arbiter.winner) {

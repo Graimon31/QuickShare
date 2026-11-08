@@ -347,6 +347,18 @@ class _ApprovalDialogState extends State<_ApprovalDialog> {
   @override
   void initState() {
     super.initState();
+    widget.request.decision.then((_) {
+      // The request can end while this route is still being built, or while
+      // another route is above it. Remove this particular route after the
+      // frame rather than popping whichever route happens to be on top.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final route = ModalRoute.of(context);
+        if (route != null && route.isActive) {
+          Navigator.of(context).removeRoute(route);
+        }
+      });
+    });
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) {
         timer.cancel();
