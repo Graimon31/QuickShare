@@ -170,4 +170,44 @@ void main() {
     await sender.waitForRoom(0, stallTimeout: const Duration(milliseconds: 50));
     expect(sender.queuedBytes, 0);
   });
+  test('failed receiver write closes link without acknowledging payload',
+      () async {
+    final channel = _Channel();
+    final receiver = WebRtcReceiverLink(
+        generation: 1, connection: _Connection(), channel: channel);
+    addTearDown(receiver.close);
+    final written = Completer<void>();
+    final closed = Completer<String>();
+    receiver.waitForHandledFrame = () => written.future;
+    receiver.bind(onFrame: (_) {}, onClosed: closed.complete);
+    channel.onMessage!(RTCDataChannelMessage.fromBinary(Uint8List(128)));
+    written.completeError(StateError('disk write failed'));
+    expect(await closed.future.timeout(const Duration(seconds: 1)),
+        contains('handling a received frame failed'));
+    expect(receiver.isOpen, isFalse);
+    final controls = channel.sent
+        .where((m) => !m.isBinary)
+        .map((m) => jsonDecode(m.text) as Map);
+    expect(controls.where((m) => m['__directdropFlow'] == 'ack'), isEmpty);
+  });
+
+  test('late or repeated ready never resets bytes already acknowledged',
+      () async {
+    final channel = _Channel();
+    final sender = WebRtcSenderLink(
+        generation: 1,
+        connection: _Connection(),
+        channel: channel,
+        sendWindow: 128);
+    addTearDown(sender.close);
+    sender.sendBinary(Uint8List(128));
+    channel.receive({'__directdropFlow': 'ack', 'bytes': 128});
+    expect(sender.queuedBytes, 128,
+        reason: 'ACK before negotiation is ignored');
+    channel.receive({'__directdropFlow': 'ready'});
+    expect(sender.queuedBytes, 128);
+    channel.receive({'__directdropFlow': 'ack', 'bytes': 64});
+    channel.receive({'__directdropFlow': 'ready'});
+    expect(sender.queuedBytes, 64);
+  });
 }
