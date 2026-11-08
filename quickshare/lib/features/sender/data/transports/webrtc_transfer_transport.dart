@@ -44,6 +44,7 @@ class WebRtcTransferTransport implements TransferTransport {
   ResumeSenderSignaling? _resumeSignaling;
   WebRtcSenderLink? _senderLink;
   ResumableSender? _sender;
+  bool _sendEnded = false;
   String? lastFailureCode;
   int _transferBytes = 0;
   bool _resumeRelayBlocked = false;
@@ -494,6 +495,7 @@ class WebRtcTransferTransport implements TransferTransport {
       AppLogger.error('WebRTC send failed: $e', tag: 'WEBRTC_SENDER');
       if (!_stopping) _statusController.add(TransferStatus.failed);
     } finally {
+      _sendEnded = true;
       _sender = null;
       await _resumeSignaling?.close();
       _resumeSignaling = null;
@@ -704,44 +706,20 @@ class WebRtcTransferTransport implements TransferTransport {
 
   int _debugSessionSent = 0;
 
-  /// Whether the channel is still in a state that can carry bytes.
-  ///
-  /// `null` counts as open: the channel is created before the first send and
-  /// a missing state must not be read as a closed one.
-  bool _isChannelOpen() {
-    final state = _dataChannel?.state;
-    if (_dataChannel == null) return false;
-    return state == null || state == RTCDataChannelState.RTCDataChannelOpen;
-  }
-
   @override
   Future<void> stopSharing() async {
+    final activeSender = _sender;
     _stopping = true;
     if (!_stopped.isCompleted) _stopped.complete();
     await _connectingPeer?.close();
     _statusController.add(TransferStatus.cancelled);
-    await _sender?.cancel();
+    await activeSender?.cancel();
     await _resumeSignaling?.close();
 
-    // Tell the far side before tearing anything down. Without this the
-    // receiver only sees the channel go quiet, which is indistinguishable
-    // from a dropped network — it would sit through its whole disconnect
-    // grace period and then report a connection error for what was actually
-    // somebody pressing Cancel.
-    //
-    // Best-effort: if the channel is already gone there is nobody to tell,
-    // and failing to send a courtesy message must not block the teardown.
-    try {
-      if (_isChannelOpen()) {
-        _dataChannel
-            ?.send(RTCDataChannelMessage(TransferProtocol.buildCancelled()));
-        // The frame is only queued by send(); give it a moment on the wire
-        // before the channel closes underneath it.
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-      }
-    } catch (e) {
-      AppLogger.warning('Could not announce cancellation: $e',
-          tag: 'WEBRTC_SENDER');
+    // Use the current link, including after reconnection. A queued frame and a
+    // fixed delay are not delivery when megabytes of payload precede it.
+    if (activeSender == null && !_sendEnded) {
+      await _senderLink?.notifyCancellation();
     }
 
     _iceRecoveryTimer?.cancel();
@@ -752,8 +730,14 @@ class WebRtcTransferTransport implements TransferTransport {
     _turnRefresher?.cancel(); // §9
     _turnRefresher = null;
     await _wakelockGuard.release(); // §6
-    await _dataChannel?.close();
-    await _peerConnection?.close();
+    final link = _senderLink;
+    _senderLink = null;
+    if (link != null) {
+      await link.close();
+    } else {
+      await _dataChannel?.close();
+      await _peerConnection?.close();
+    }
     _dataChannel = null;
     _peerConnection = null;
     if (!_noPathController.isClosed) {

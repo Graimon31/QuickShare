@@ -7,10 +7,73 @@ import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, TargetPlatform;
 
 import 'package:quickshare/core/utils/app_logger.dart';
+import 'package:quickshare/core/webrtc/transfer_protocol.dart';
+import 'package:quickshare/core/webrtc/resume/cancellation_notifier.dart';
 import 'package:quickshare/core/webrtc/resume/receiver_link.dart';
 import 'package:quickshare/core/webrtc/resume/reconnect_policy.dart';
 import 'package:quickshare/core/webrtc/resume/resumable_sender.dart';
 import 'package:quickshare/core/webrtc/send_buffer.dart';
+
+/// A cancellation acknowledgement is transport control, hidden from the engine.
+/// The recipient keeps the channel alive until the initiator closes it, so an
+/// asynchronous native send cannot lose the acknowledgement during teardown.
+class _CancellationHandshake {
+  _CancellationHandshake(this.send, this.isOpen);
+  final Future<void> Function(String frame) send;
+  final bool Function() isOpen;
+  final _peerClosed = Completer<void>();
+  Completer<void>? _ack;
+  Future<void>? _notification;
+  bool _receivedCancellation = false;
+
+  bool observe(String text) {
+    Object? frame;
+    try {
+      frame = jsonDecode(text);
+    } catch (_) {
+      return false;
+    }
+    if (frame is! Map) return false;
+    if (frame['__directdropFlow'] == 'cancel-ack') {
+      final ack = _ack;
+      if (ack != null && !ack.isCompleted) ack.complete();
+      return true;
+    }
+    if (frame['type'] == TransferProtocol.cancelled) {
+      _receivedCancellation = true;
+      unawaited(send(jsonEncode({'__directdropFlow': 'cancel-ack'}))
+          .catchError((Object _) {}));
+    }
+    return false;
+  }
+
+  Future<void> notify(Duration timeout) => _notification ??= _notify(timeout);
+
+  Future<void> _notify(Duration timeout) async {
+    if (!isOpen() || _receivedCancellation) return;
+    final ack = _ack = Completer<void>();
+    try {
+      await (() async {
+        await send(TransferProtocol.buildCancelled());
+        await Future.any<void>([ack.future, _peerClosed.future]);
+      })()
+          .timeout(timeout);
+    } catch (_) {
+      // Best effort on broken networks and legacy peers; never an endless wait.
+    }
+  }
+
+  void peerClosed() {
+    if (!_peerClosed.isCompleted) _peerClosed.complete();
+  }
+
+  Future<void> beforeClose() async {
+    if (!_receivedCancellation || _peerClosed.isCompleted) return;
+    try {
+      await _peerClosed.future.timeout(const Duration(seconds: 3));
+    } on TimeoutException {/* legacy initiator does not close promptly */}
+  }
+}
 
 /// A peer connection's ICE state, reduced to what a link has to know: is it
 /// still carrying bytes, has it stopped for good, or is it somewhere between.
@@ -68,7 +131,7 @@ class _IceWatch {
 /// not emit buffered-amount events. Older receivers retain native event based
 /// flow control on supported platforms. The send counter also includes frames
 /// still crossing the platform channel, so a cached native zero cannot flood it.
-class WebRtcSenderLink implements SenderLink {
+class WebRtcSenderLink implements SenderLink, CancellationNotifier {
   WebRtcSenderLink({
     required this.generation,
     required this.connection,
@@ -84,6 +147,7 @@ class WebRtcSenderLink implements SenderLink {
       if (current <= sendWindow) _wakeWaiter();
     };
     channel.onMessage = (message) {
+      if (!message.isBinary && _cancellation.observe(message.text)) return;
       if (!message.isBinary && _handleFlowControl(message.text)) return;
       if (!message.isBinary && !_incoming.isClosed) {
         _incoming.add(message.text);
@@ -104,6 +168,14 @@ class WebRtcSenderLink implements SenderLink {
   final int sendWindow;
   final StallPolicy stall;
   final String tag;
+
+  late final _CancellationHandshake _cancellation = _CancellationHandshake(
+      (frame) => channel.send(RTCDataChannelMessage(frame)), () => isOpen);
+
+  @override
+  Future<void> notifyCancellation(
+          {Duration timeout = const Duration(seconds: 8)}) =>
+      _cancellation.notify(timeout);
 
   late final _IceWatch _ice;
   // Frames that arrive before the engine has started listening are kept, so
@@ -170,6 +242,7 @@ class WebRtcSenderLink implements SenderLink {
       if (!_opened.isCompleted) _opened.complete();
     } else if (state == RTCDataChannelState.RTCDataChannelClosed ||
         state == RTCDataChannelState.RTCDataChannelClosing) {
+      _cancellation.peerClosed();
       _die('the data channel closed');
     }
   }
@@ -237,6 +310,7 @@ class WebRtcSenderLink implements SenderLink {
 
   @override
   Future<void> close() async {
+    await _cancellation.beforeClose();
     _die('closed here');
     _ice.cancel();
     try {
@@ -254,7 +328,7 @@ class WebRtcSenderLink implements SenderLink {
 /// A frame the receiver wants to send before the channel is open (its `hello`,
 /// on the first link, goes out the moment the channel is announced) is held
 /// and sent when it opens, in order.
-class WebRtcReceiverLink implements ReceiverLink {
+class WebRtcReceiverLink implements ReceiverLink, CancellationNotifier {
   WebRtcReceiverLink({
     required this.generation,
     required this.connection,
@@ -276,6 +350,14 @@ class WebRtcReceiverLink implements ReceiverLink {
   final RTCDataChannel channel;
   final StallPolicy stall;
   final String tag;
+
+  late final _CancellationHandshake _cancellation = _CancellationHandshake(
+      (frame) => channel.send(RTCDataChannelMessage(frame)), () => isOpen);
+
+  @override
+  Future<void> notifyCancellation(
+          {Duration timeout = const Duration(seconds: 8)}) =>
+      _cancellation.notify(timeout);
 
   late final _IceWatch _ice;
   final _opened = Completer<void>();
@@ -323,6 +405,7 @@ class WebRtcReceiverLink implements ReceiverLink {
       }
     } else if (state == RTCDataChannelState.RTCDataChannelClosed ||
         state == RTCDataChannelState.RTCDataChannelClosing) {
+      _cancellation.peerClosed();
       _die('the data channel closed');
     }
   }
@@ -359,6 +442,7 @@ class WebRtcReceiverLink implements ReceiverLink {
     _onClosed = onClosed;
     _bound = true;
     channel.onMessage = (message) {
+      if (!message.isBinary && _cancellation.observe(message.text)) return;
       onFrame(message);
       _receivedWireBytes += message.isBinary
           ? message.binary.length
@@ -381,6 +465,7 @@ class WebRtcReceiverLink implements ReceiverLink {
   @override
   Future<void> close() async {
     if (_closing) return;
+    await _cancellation.beforeClose();
     _closing = true;
     _ice.cancel();
     if (!_opened.isCompleted) {

@@ -23,6 +23,7 @@ import 'package:quickshare/core/webrtc/idle_watchdog.dart';
 import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/core/webrtc/sdp_compressor.dart';
 import 'package:quickshare/core/webrtc/resume/item_digest.dart';
+import 'package:quickshare/core/webrtc/resume/cancellation_notifier.dart';
 import 'package:quickshare/core/webrtc/resume/receiver_link.dart';
 import 'package:quickshare/core/webrtc/resume/reconnect_policy.dart';
 import 'package:quickshare/core/webrtc/resume/resume_signaling.dart';
@@ -855,8 +856,8 @@ class WebRtcReceiverTransport {
           // is kept — a cancelled transfer leaves no debris.
           AppLogger.info('Sender cancelled the transfer',
               tag: 'WEBRTC_RECEIVER');
-          await _discardInFlight();
           _cancelledBySender = true;
+          await _discardInFlight();
           _idleWatchdog?.cancel();
           _fail('The sender cancelled the transfer');
 
@@ -2067,14 +2068,16 @@ class WebRtcReceiverTransport {
   }
 
   Future<void> cancel() async {
-    // Tell the sender before anything is torn down, so that it stops at once
-    // instead of spending minutes looking for a receiver that has left.
     final link = _link;
-    if (!_failed && link != null && link.isOpen) {
-      link.sendText(TransferProtocol.buildCancelled());
-      await Future<void>.delayed(const Duration(milliseconds: 150));
-    }
+    final notify = !_failed && link != null && link.isOpen;
     _failed = true;
+    if (notify) {
+      if (link is CancellationNotifier) {
+        await (link as CancellationNotifier).notifyCancellation();
+      } else {
+        link.sendText(TransferProtocol.buildCancelled());
+      }
+    }
     await _discardInFlight();
     _statusController.add(TransferStatus.cancelled);
     if (!_completion.isCompleted) {

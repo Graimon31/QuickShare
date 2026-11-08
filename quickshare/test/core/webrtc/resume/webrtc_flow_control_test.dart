@@ -17,6 +17,9 @@ class _Connection extends Fake implements RTCPeerConnection {
 class _Channel extends RTCDataChannel {
   final sent = <RTCDataChannelMessage>[];
   _Channel? peer;
+  bool holdCancelAck = false;
+  final heldAcks = <RTCDataChannelMessage>[];
+  int closeCalls = 0;
   @override
   RTCDataChannelState get state => RTCDataChannelState.RTCDataChannelOpen;
   @override
@@ -28,16 +31,116 @@ class _Channel extends RTCDataChannel {
   @override
   Future<void> send(RTCDataChannelMessage message) async {
     sent.add(message);
+    if (!message.isBinary &&
+        holdCancelAck &&
+        message.text.contains('cancel-ack')) {
+      heldAcks.add(message);
+      return;
+    }
     scheduleMicrotask(() => peer?.onMessage?.call(message));
   }
 
   @override
-  Future<void> close() async {}
+  Future<void> close() async {
+    closeCalls++;
+  }
+
   void receive(Map<String, Object> frame) =>
       onMessage!(RTCDataChannelMessage(jsonEncode(frame)));
 }
 
 void main() {
+  test('cancellation waits for peer acknowledgement before teardown', () async {
+    final outgoing = _Channel();
+    final incoming = _Channel()..holdCancelAck = true;
+    outgoing.peer = incoming;
+    incoming.peer = outgoing;
+    final sender = WebRtcSenderLink(
+        generation: 1,
+        connection: _Connection(),
+        channel: outgoing,
+        sendWindow: 1024);
+    final receiver = WebRtcReceiverLink(
+        generation: 1, connection: _Connection(), channel: incoming);
+    var gotCancel = false;
+    Future<void>? closing;
+    receiver.bind(
+        onFrame: (frame) {
+          if (!frame.isBinary && frame.text.contains('cancelled')) {
+            gotCancel = true;
+            closing = receiver.close();
+          }
+        },
+        onClosed: (_) {});
+    var acknowledged = false;
+    final notification = sender
+        .notifyCancellation(timeout: const Duration(seconds: 1))
+        .then((_) => acknowledged = true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(gotCancel, isTrue);
+    expect(acknowledged, isFalse);
+    expect(incoming.closeCalls, 0,
+        reason: 'do not drop queued acknowledgement');
+    expect(incoming.heldAcks, hasLength(1));
+    outgoing.onMessage!(incoming.heldAcks.single);
+    await notification;
+    expect(acknowledged, isTrue);
+    incoming.onDataChannelState!(RTCDataChannelState.RTCDataChannelClosed);
+    await closing;
+    await sender.close();
+    expect(incoming.closeCalls, 1);
+  });
+
+  test('receiver cancellation acknowledgement is hidden from transfer frames',
+      () async {
+    final outgoing = _Channel()..holdCancelAck = true;
+    final incoming = _Channel();
+    outgoing.peer = incoming;
+    incoming.peer = outgoing;
+    final sender = WebRtcSenderLink(
+        generation: 1,
+        connection: _Connection(),
+        channel: outgoing,
+        sendWindow: 1024);
+    final receiver = WebRtcReceiverLink(
+        generation: 1, connection: _Connection(), channel: incoming);
+    final seen = <String>[];
+    final sub = sender.incoming.listen(seen.add);
+    final receiverFrames = <String>[];
+    receiver.bind(
+        onFrame: (frame) => receiverFrames.add(frame.text), onClosed: (_) {});
+    var finished = false;
+    final notifying = receiver
+        .notifyCancellation(timeout: const Duration(seconds: 1))
+        .then((_) => finished = true);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(seen.where((s) => s.contains('cancelled')), hasLength(1));
+    expect(finished, isFalse);
+    incoming.onMessage!(outgoing.heldAcks.single);
+    await notifying;
+    expect(receiverFrames, isEmpty);
+    outgoing.onDataChannelState!(RTCDataChannelState.RTCDataChannelClosed);
+    await sub.cancel();
+    await receiver.close();
+    await sender.close();
+  });
+
+  test(
+      'missing cancellation acknowledgement is bounded on legacy or dead peers',
+      () async {
+    final channel = _Channel();
+    final sender = WebRtcSenderLink(
+        generation: 1,
+        connection: _Connection(),
+        channel: channel,
+        sendWindow: 1024);
+    await sender
+        .notifyCancellation(timeout: const Duration(milliseconds: 20))
+        .timeout(const Duration(milliseconds: 200));
+    expect(channel.sent.single.text, contains('cancelled'));
+    await sender.close();
+  });
+
   test('Windows sender crosses multiple windows without native buffer events',
       () async {
     const window = 256 * 1024;

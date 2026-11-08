@@ -9,6 +9,7 @@ import 'package:archive/archive.dart';
 import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/webrtc/resume/item_digest.dart';
+import 'package:quickshare/core/webrtc/resume/cancellation_notifier.dart';
 import 'package:quickshare/core/webrtc/resume/reconnect_policy.dart';
 import 'package:quickshare/core/webrtc/transfer_protocol.dart';
 
@@ -233,14 +234,31 @@ class ResumableSender {
   static String hex(List<int> bytes) =>
       bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
 
-  /// Stops the transfer. The receiver is told, if the link can still carry it.
-  Future<void> cancel() async {
-    if (_cancelled) return;
+  Future<void>? _cancelOperation;
+
+  /// Stops producing bytes immediately, then lets the stop frame reach the peer.
+  Future<void> cancel() {
+    if (_finished || _peerCancelled) return Future<void>.value();
+    return _cancelOperation ??= _cancelAndNotify();
+  }
+
+  Future<void> _cancelAndNotify() async {
     _cancelled = true;
-    try {
-      if (_link.isOpen) _link.sendText(TransferProtocol.buildCancelled());
-    } catch (_) {}
     _wake();
+    final link = _link;
+    try {
+      if (!link.isOpen) return;
+      if (link is CancellationNotifier) {
+        await (link as CancellationNotifier).notifyCancellation();
+      } else {
+        link.sendText(TransferProtocol.buildCancelled());
+        await link
+            .waitForRoom(0, stallTimeout: const Duration(seconds: 8))
+            .timeout(const Duration(seconds: 8));
+      }
+    } catch (_) {
+      // A vanished peer must never prevent local cancellation.
+    }
   }
 
   void _wake() {
@@ -273,7 +291,7 @@ class ResumableSender {
           _finished = true;
           return;
         } on LinkLost catch (e) {
-          if (_cancelled) throw const SendCancelled();
+          _check();
           AppLogger.warning('Sender: $e', tag: tag);
           final resumed = await _recover(e);
           if (resumed == null) {
@@ -297,6 +315,10 @@ class ResumableSender {
 
   void _check() {
     if (_cancelled) throw const SendCancelled();
+    if (_peerCancelled) {
+      throw const SendFailure(FailureCode.cancelledByReceiver,
+          'the receiver cancelled the transfer');
+    }
   }
 
   // ─── Frames from the receiver ──────────────────────────────────────────
