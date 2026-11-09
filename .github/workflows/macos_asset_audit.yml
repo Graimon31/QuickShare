@@ -1,0 +1,50 @@
+name: Verify published macOS runtime
+on:
+  push:
+    branches: ['codex/macos-asset-audit-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  macos-published-runtime:
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+      - name: Download and verify public DMG
+        run: |
+          mkdir -p audit
+          curl --fail --location --retry 3 https://github.com/Graimon31/QuickShare/releases/download/all-platforms-2026-11-09-cdb1651/DirectDrop-macos.dmg -o audit/DirectDrop.dmg
+          echo 'b1e0b4d2c77209b7c66a542636c527858743683364d8846ce218d9ddba18eee5  audit/DirectDrop.dmg' | shasum -a 256 -c -
+          hdiutil verify audit/DirectDrop.dmg
+          mkdir audit/mounted
+          hdiutil attach -readonly -nobrowse -mountpoint "$PWD/audit/mounted" audit/DirectDrop.dmg
+          ditto audit/mounted/DirectDrop.app audit/DirectDrop.app
+          hdiutil detach "$PWD/audit/mounted"
+          codesign --verify --deep --strict audit/DirectDrop.app
+      - name: Launch the actual app and require Flutter initialization
+        run: |
+          open -n -o "$PWD/audit/stdout.log" --stderr "$PWD/audit/stderr.log" "$PWD/audit/DirectDrop.app"
+          sleep 30
+          cat audit/stdout.log audit/stderr.log
+          grep -q 'AppLogger initialized' audit/stdout.log
+          if grep -E 'Unhandled Exception|Failed to load dynamic library|Library not loaded|MissingPluginException|\[ERROR\]' audit/stdout.log audit/stderr.log; then exit 1; fi
+          python3 - <<'PY'
+          import subprocess,json,pathlib
+          path=str(pathlib.Path('audit/DirectDrop.app/Contents/MacOS/DirectDrop').resolve())
+          rows=subprocess.check_output(['ps','-axo','pid=,comm='],text=True).splitlines()
+          pids=[int(row.split(None,1)[0]) for row in rows if len(row.split(None,1))==2 and row.split(None,1)[1].strip()==path]
+          assert len(pids)==1,pids
+          subprocess.run(['sample',str(pids[0]),'1','10','-file','audit/process-sample.txt'],check=True)
+          sample=pathlib.Path('audit/process-sample.txt').read_text()
+          assert 'io.flutter' in sample or 'DartWorker' in sample or 'DartWorker' in subprocess.check_output(['ps','-M',str(pids[0])],text=True),'Flutter engine threads not found'
+          pathlib.Path('audit/result.json').write_text(json.dumps({'public_dmg_sha256':'passed','codesign':'passed','flutter_main_initialized':True,'alive_after_seconds':30,'pid':pids[0]},indent=2))
+          subprocess.run(['kill','-TERM',str(pids[0])],check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-published-runtime-audit
+          path: |
+            audit/*.log
+            audit/*.txt
+            audit/result.json
