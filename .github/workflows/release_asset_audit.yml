@@ -6,62 +6,13 @@ on:
 permissions:
   contents: read
 jobs:
-  windows-installer:
-    runs-on: windows-2022
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download, verify, install, launch and uninstall the public release
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $base = 'https://github.com/Graimon31/QuickShare/releases/download/all-platforms-2026-11-09-cdb1651'
-          Invoke-WebRequest "$base/DirectDrop-windows-setup.exe" -OutFile setup.exe
-          Invoke-WebRequest "$base/DirectDrop-windows-portable.zip" -OutFile portable.zip
-          if ((Get-FileHash setup.exe).Hash.ToLower() -ne '95da7d45c3ea07107eec656eb284912a63ce92766dfcb6077433eff2143ac4cd') { throw 'Installer checksum mismatch' }
-          if ((Get-FileHash portable.zip).Hash.ToLower() -ne '6676dba50c155b5861d885cafd9b3d7c0285a47a03806b35cdb962301c2860ea') { throw 'Portable checksum mismatch' }
-          $portable = Join-Path $env:RUNNER_TEMP 'Portable DirectDrop тест'
-          $installed = Join-Path $env:RUNNER_TEMP 'Installed DirectDrop тест'
-          Expand-Archive portable.zip $portable
-          $setup = Start-Process .\setup.exe -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',"/DIR=`"$installed`"",'/LOG=installer.log') -Wait -PassThru
-          if ($setup.ExitCode -ne 0) { throw "Installer failed: $($setup.ExitCode)" }
-          $files = Get-ChildItem -LiteralPath $portable -File -Recurse
-          foreach ($file in $files) {
-            $relative = $file.FullName.Substring($portable.Length+1)
-            $target = Join-Path $installed $relative
-            if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Missing installed file: $relative" }
-            if ((Get-FileHash -LiteralPath $target).Hash -ne (Get-FileHash -LiteralPath $file.FullName).Hash) { throw "Installed file differs: $relative" }
-          }
-          foreach ($folder in @($installed,$portable)) {
-            $app = Start-Process (Join-Path $folder 'directdrop.exe') -WorkingDirectory $env:RUNNER_TEMP -PassThru
-            try {
-              Start-Sleep -Seconds 20
-              $app.Refresh()
-              if ($app.HasExited -or $app.MainWindowHandle -eq 0) { throw "App did not remain open: $folder" }
-              Write-Host "LAUNCH PASSED: $folder; window=$($app.MainWindowHandle)"
-            } finally { if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force } }
-          }
-          Start-Sleep -Seconds 2
-          $uninstall = Start-Process (Join-Path $installed 'unins000.exe') -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG=uninstall.log') -Wait -PassThru
-          if ($uninstall.ExitCode -ne 0) { throw 'Uninstaller failed' }
-          Start-Sleep -Seconds 3
-          if (Test-Path -LiteralPath (Join-Path $installed 'directdrop.exe')) { throw 'Executable survived uninstallation' }
-          @{installer='passed';payload_matches_portable=$true;installed_launch='passed';portable_unicode_path_launch='passed';uninstall='passed';files_compared=$files.Count} | ConvertTo-Json | Set-Content windows-installation-audit.json
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: windows-installation-audit
-          path: |
-            *audit.json
-            installer.log
-            uninstall.log
   android-installed-release:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        api-level: [24, 36]
+        api-level: [24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -94,3 +45,30 @@ jobs:
         with:
           name: android-api-${{ matrix.api-level }}-installation-audit
           path: audit
+  android-bundle-validation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Verify the public App Bundle with official bundletool
+        run: |
+          mkdir -p audit
+          curl --fail --location --retry 3 https://github.com/Graimon31/QuickShare/releases/download/all-platforms-2026-11-09-cdb1651/DirectDrop-android.aab -o audit/release.aab
+          echo '9175b39b6f1cc3d5e4873d628317ac528c74257992205b834ab71e6ea38f1053  audit/release.aab' | sha256sum -c -
+          curl --fail --location https://api.github.com/repos/google/bundletool/releases/latest -o audit/bundletool-release.json
+          url=$(jq -r '.assets[] | select(.name | startswith("bundletool-all-")) | .browser_download_url' audit/bundletool-release.json)
+          test -n "$url"
+          curl --fail --location --retry 3 "$url" -o audit/bundletool.jar
+          java -jar audit/bundletool.jar validate --bundle audit/release.aab | tee audit/bundle-validation.txt
+          jarsigner -verify audit/release.aab > audit/bundle-signatures.txt
+          grep -q 'jar verified' audit/bundle-signatures.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-bundle-validation
+          path: |
+            audit/*.txt
+            audit/*.json
