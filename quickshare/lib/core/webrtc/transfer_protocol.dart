@@ -42,6 +42,25 @@ import 'dart:convert';
 /// does the first `file-start` arrive. Sessions small enough to fit keep
 /// sending the single `manifest` frame.
 ///
+/// ## Reconnection (version 2)
+///
+/// A connection that dies halfway is replaced by a new one, and the transfer
+/// goes on from where the receiver says it is. What that adds to the channel:
+///
+/// ```
+/// receiver -> {"type":"hello","v":2,"gen":1}                  (first thing on every link)
+/// sender   -> {"type":"manifest","v":2,"sid":"<32 hex>",...}
+/// sender   -> {"type":"file-start","index":3,"offset":1048576}   (offset only when resuming)
+/// sender   -> {"type":"file-end","index":3,"sha256":"<64 hex>"}  (of the whole file)
+/// receiver -> {"type":"done","ok":true}                       (every item checked and in place)
+/// ```
+///
+/// and, on a replacement link, `hello` carries what the receiver holds
+/// (`sid`, `next` items whole, `offset` bytes of the next), the sender answers
+/// with `resume` naming where it will continue, and either end puts a `ping` on
+/// an otherwise quiet channel so that silence means a dead link and not an idle
+/// one. `bye` is the sender's last word after `done`.
+///
 /// ## Compatibility
 ///
 /// A sender that only knows the old single-file protocol opens with
@@ -60,6 +79,29 @@ class TransferProtocol {
   static const fileStart = 'file-start';
   static const fileEnd = 'file-end';
   static const complete = 'complete';
+
+  /// The protocol this build speaks. 1 is everything above this paragraph; 2
+  /// adds the frames below, and a peer announces it with `hello` (receiver) or
+  /// `"v":2` in the manifest (sender). A peer that announces nothing is taken
+  /// for version 1 and is spoken to as before.
+  static const int version = 2;
+
+  /// The receiver's first word on every link, and the only one that says it
+  /// can resume.
+  static const hello = 'hello';
+
+  /// The sender's answer to a replacement link's `hello`: where it continues.
+  static const resume = 'resume';
+
+  /// The receiver has checked every item and has them all in place (or could
+  /// not accept them, with `ok: false` and a `code`).
+  static const done = 'done';
+
+  /// Proof of life on a channel with nothing else to say.
+  static const ping = 'ping';
+
+  /// The sender's last frame after `done`: nothing more will come.
+  static const bye = 'bye';
 
   /// The sender is stopping on purpose.
   ///
@@ -86,11 +128,31 @@ class TransferProtocol {
   /// envelope, not the encoder's exact output.
   static const int maxManifestFrameBytes = 49152;
 
-  static String buildManifest(List<TransferItem> files) => jsonEncode({
+  static String buildManifest(List<TransferItem> files, {String? sessionId}) =>
+      jsonEncode({
         'type': manifest,
+        // Only a sender that can resume says so; the rest of the frame is what
+        // every build has always sent.
+        if (sessionId != null) 'v': version,
+        if (sessionId != null) 'sid': sessionId,
         'files': [for (final f in files) f.toJson()],
         'totalBytes': files.fold<int>(0, (sum, f) => sum + f.size),
       });
+
+  /// Whether a manifest frame (or the first of its parts) says its sender can
+  /// resume, and which session it opens. `(version: 1, sessionId: null)` for
+  /// every sender that predates reconnection.
+  static ({int version, String? sessionId}) sessionOf(
+      Map<String, dynamic> json) {
+    final v = json['v'];
+    final sid = json['sid'];
+    return (
+      version: v is int && v >= 1 ? v : 1,
+      sessionId: sid is String && RegExp(r'^[0-9a-f]{32}$').hasMatch(sid)
+          ? sid
+          : null,
+    );
+  }
 
   /// The manifest as the frames it actually has to be sent in.
   ///
@@ -103,8 +165,9 @@ class TransferProtocol {
   static List<String> buildManifestFrames(
     List<TransferItem> files, {
     int maxFrameBytes = maxManifestFrameBytes,
+    String? sessionId,
   }) {
-    final single = buildManifest(files);
+    final single = buildManifest(files, sessionId: sessionId);
     if (utf8.encode(single).length <= maxFrameBytes) return [single];
 
     final totalBytes = files.fold<int>(0, (sum, f) => sum + f.size);
@@ -130,6 +193,8 @@ class TransferProtocol {
 
     frames.add(jsonEncode({
       'type': manifestBegin,
+      if (sessionId != null) 'v': version,
+      if (sessionId != null) 'sid': sessionId,
       'count': files.length,
       'totalBytes': totalBytes,
       'parts': parts.length,
@@ -144,11 +209,59 @@ class TransferProtocol {
     return frames;
   }
 
-  static String buildFileStart(int index) =>
-      jsonEncode({'type': fileStart, 'index': index});
+  /// [offset], when above zero, says the item continues from that byte: the
+  /// receiver already holds the bytes before it.
+  static String buildFileStart(int index, {int? offset}) => jsonEncode({
+        'type': fileStart,
+        'index': index,
+        if (offset != null && offset > 0) 'offset': offset,
+      });
 
-  static String buildFileEnd(int index) =>
-      jsonEncode({'type': fileEnd, 'index': index});
+  /// [sha256] is the digest of the *whole* item, 64 lowercase hex digits.
+  static String buildFileEnd(int index, {String? sha256}) => jsonEncode({
+        'type': fileEnd,
+        'index': index,
+        if (sha256 != null) 'sha256': sha256,
+      });
+
+  /// The receiver's first word on a link. [sessionId], [next] and [offset] say
+  /// what it holds: nothing, on the first link.
+  static String buildHello({
+    required int generation,
+    String? sessionId,
+    int next = 0,
+    int offset = 0,
+  }) =>
+      jsonEncode({
+        'type': hello,
+        'v': version,
+        'gen': generation,
+        if (sessionId != null) 'sid': sessionId,
+        'next': next,
+        'offset': offset,
+      });
+
+  static String buildResume({
+    required String sessionId,
+    required int generation,
+    required int next,
+    required int offset,
+  }) =>
+      jsonEncode({
+        'type': resume,
+        'sid': sessionId,
+        'gen': generation,
+        'next': next,
+        'offset': offset,
+      });
+
+  /// [code] names why, when [ok] is false: `integrity`, `disk`, `error`.
+  static String buildDone({required bool ok, String? code}) =>
+      jsonEncode({'type': done, 'ok': ok, if (code != null) 'code': code});
+
+  static String buildPing() => jsonEncode({'type': ping});
+
+  static String buildBye() => jsonEncode({'type': bye});
 
   static String buildComplete() => jsonEncode({'type': complete});
 

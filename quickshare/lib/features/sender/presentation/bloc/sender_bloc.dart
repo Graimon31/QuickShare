@@ -40,6 +40,8 @@ import 'package:quickshare/core/utils/app_logger.dart';
 import 'package:quickshare/core/utils/device_name.dart';
 import 'package:uuid/uuid.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
+import 'package:quickshare/core/webrtc/resume/receiver_link.dart';
+import 'package:quickshare/core/webrtc/resume/resume_keys.dart';
 import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/shared/models/bluetooth_qr_payload.dart';
@@ -188,9 +190,10 @@ class NoPathFound extends SenderEvent {
 
 class TransferProgressEvent extends SenderEvent {
   final double progress;
-  const TransferProgressEvent(this.progress);
+  final bool? reconnecting;
+  const TransferProgressEvent(this.progress, {this.reconnecting});
   @override
-  List<Object?> get props => [progress];
+  List<Object?> get props => [progress, reconnecting];
 }
 
 // States
@@ -321,7 +324,7 @@ class InviteApprovalRequested extends SenderState {
   List<Object?> get props => [request, previousState];
 }
 
-/// Bluetooth is advertising and waiting for a receiver that scanned [qrData].
+/// Bluetooth is advertising; receivers can scan [qrData] or type [code].
 class BluetoothAdvertising extends SenderState {
   final TransferSession session;
   final String qrData;
@@ -330,12 +333,9 @@ class BluetoothAdvertising extends SenderState {
   /// being flattened into an archive to fit this channel.
   final int itemCount;
 
-  /// This session's locator: random, drawn for it alone, and the same one the
-  /// QR carries. It is what an Apple or Linux device advertises as its name;
-  /// an Android phone or a Windows PC advertises nothing. It is not a code, is
-  /// derived from no code, and is shown to nobody — there are no digits on a
-  /// Bluetooth screen, only the QR.
+  /// Independent random locator; never derived from the displayed code.
   final String locator;
+  final SessionCode? code;
 
   /// When the QR above is replaced, and the advertisement restarted under a new
   /// locator and a new token.
@@ -345,6 +345,7 @@ class BluetoothAdvertising extends SenderState {
       {required this.qrData,
       this.itemCount = 1,
       this.locator = '',
+      this.code,
       this.expiresAt});
 
   BluetoothAdvertising withItemCount(int count) => BluetoothAdvertising(
@@ -352,19 +353,22 @@ class BluetoothAdvertising extends SenderState {
         qrData: qrData,
         itemCount: count,
         locator: locator,
+        code: code,
         expiresAt: expiresAt,
       );
 
   @override
-  List<Object?> get props => [session, qrData, itemCount, locator, expiresAt];
+  List<Object?> get props =>
+      [session, qrData, itemCount, locator, code, expiresAt];
 }
 
 class Transferring extends SenderState {
   final double progress;
   final int speedBps;
-  const Transferring(this.progress, this.speedBps);
+  final bool reconnecting;
+  const Transferring(this.progress, this.speedBps, {this.reconnecting = false});
   @override
-  List<Object?> get props => [progress, speedBps];
+  List<Object?> get props => [progress, speedBps, reconnecting];
 }
 
 class TransferComplete extends SenderState {
@@ -569,6 +573,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
   /// checks this counter before it emits, and a bumped counter means the
   /// answer is no longer wanted.
   int _sessionGeneration = 0;
+  Future<void>? _cancelInProgress;
 
   /// How many bytes the session turned out to hold, on the paths that start
   /// serving before the selection has been walked.
@@ -814,7 +819,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     repository.respondToApproval(event.requestId, event.accepted);
     _internetApprovals.remove(event.requestId)?.complete(event.accepted);
     final current = state;
-    if (current is InviteApprovalRequested) {
+    if (current is InviteApprovalRequested &&
+        current.request.id == event.requestId) {
       emit(current.previousState);
     }
   }
@@ -845,6 +851,14 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       code: code,
       offer: () async => _internetOffer,
       approve: _askAboutInternetReceiver,
+      withdrawApproval: () {
+        for (final request in _internetApprovals.values.toList()) {
+          request.complete(false);
+          if (!isClosed) {
+            add(RespondToInviteApproval(requestId: request.id, accepted: false));
+          }
+        }
+      },
       hold: _rotation.hold,
       release: _rotation.release,
       timings: _codeTimings,
@@ -893,8 +907,8 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     // Like the server's own questions, this one ends when nobody answers: the
     // receiver is told no, and the dialog goes with the question instead of
     // staying up over an offer that has already moved on.
-    final decided = request.decision.timeout(_codeTimings.dialogTimeout,
-        onTimeout: () {
+    final decided =
+        request.decision.timeout(_codeTimings.dialogTimeout, onTimeout: () {
       request.complete(false);
       return false;
     });
@@ -925,6 +939,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         fileSize: bytes,
         itemCount: itemCount,
       );
+      _activeWebRtcTransport?.configureResume(ResumeSetup(
+        keys: ResumeKeys.derive(
+            seed: qr.seed, offerFingerprint: qr.offerFingerprint),
+        mailboxFactory: _codeMailboxFactory,
+      ));
       final topic = await qr.topic;
 
       // The Worker's mailbox takes anything from anyone, and its channel
@@ -1032,12 +1051,20 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onStartSending(
       StartSending event, Emitter<SenderState> emit) async {
+    final cleanup = _cancelInProgress;
+    if (cleanup != null) await cleanup;
+    if (emit.isDone) return;
+    _sessionDisplay = null;
     await _startSendingInternal(event.file, _selectedMode, emit);
   }
 
   Future<void> _onStartSendingWithTransport(
       StartSendingWithTransport event, Emitter<SenderState> emit) async {
+    final cleanup = _cancelInProgress;
+    if (cleanup != null) await cleanup;
+    if (emit.isDone) return;
     _selectedMode = event.mode;
+    _sessionDisplay = null;
     await _startSendingInternal(event.file, event.mode, emit);
   }
 
@@ -1138,8 +1165,15 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       _statusSubscription =
           _activeWebRtcTransport!.statusStream.listen((status) {
         if (status == TransferStatus.failed) {
-          add(const TransferFailed('Transfer failed unexpectedly',
-              code: FailureCode.transferFailedUnexpectedly));
+          add(TransferFailed('Transfer failed unexpectedly',
+              code: _activeWebRtcTransport?.lastFailureCode ??
+                  FailureCode.transferFailedUnexpectedly));
+        } else if (status == TransferStatus.reconnecting ||
+            status == TransferStatus.transferring) {
+          final current = state;
+          add(TransferProgressEvent(
+              current is Transferring ? current.progress : 0,
+              reconnecting: status == TransferStatus.reconnecting));
         } else if (status == TransferStatus.completed) {
           add(TransferCompleted());
         }
@@ -1234,6 +1268,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
       _activeBluetoothTransport =
           _bluetoothTransportFactory?.call() ?? BluetoothTransferTransport();
       await _activeBluetoothTransport!.initialize();
+      if (generation != _sessionGeneration || isClosed) return;
 
       _progressSubscription?.cancel();
       _progressSubscription =
@@ -1264,23 +1299,25 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         }
       });
 
-      // The token that authorises the transfer and the locator that goes out
-      // over the air are random and independent of each other and of anything
-      // else, a code included. The Wi-Fi network this device raises, if it is
-      // the one that does, is named and given its passphrase when it is raised,
-      // at random, and they reach the other device sealed.
-      //
-      // They used to be one thing: the token and the identifier were both
-      // hashes of the same ten digits, so everything the radio carries — the
-      // advertised name, the `START:<token>` write, the serve frame — could be
-      // searched backwards for the digits (about 33 bits, seconds of hashing),
-      // and the digits derived the network's name and passphrase. A Bluetooth
-      // session has no digits to type, so nothing needs anything to be related.
-      // Each time the code changes (every few minutes) all of it is new.
+      // Locator, bearer token and typed code are independent secrets. The
+      // code only authenticates a SPAKE2 exchange that seals the QR offer.
       final ids = BleSession.generate();
       final token = ids.token;
       _bluetoothSession = ids;
       _directLinkStarted = false;
+      final code = SessionCode.generate();
+      final displayFile = _sessionDisplay ?? file;
+      final totalCount = (_sessionFiles ?? [file]).length;
+      final qrData = BluetoothQrPayload(
+        token: token,
+        locator: ids.locator,
+        fileName: displayFile.name,
+        fileSize: displayFile.size,
+        itemCount: totalCount,
+        senderName: describeThisDevice(),
+      ).encode();
+      _activeBluetoothTransport!.enableCodePairing(code, qrData);
+
       // Bounded, because there is no way out of the screen this runs
       // behind except killing the app. Raising an advertisement is a radio
       // operation with no deadline of its own, and when it did not come
@@ -1290,6 +1327,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
           .startSharing(file, token,
               files: _sessionFiles ?? [file], locator: ids.locator)
           .timeout(_bluetoothStartBudget);
+      // Cancellation can stop and clear this transport while the native
+      // advertising callback is still outstanding.
+      if (generation != _sessionGeneration || isClosed) return;
       // The direct-link negotiation starts the moment a generation-4
       // receiver is connected — the Bluetooth channel is the rendezvous,
       // the file crosses the Wi-Fi link the coordinator builds. Subscription
@@ -1304,29 +1344,18 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         unawaited(_beginBluetoothDirectLink());
       });
 
-      if (generation != _sessionGeneration || isClosed) {
-        await _activeBluetoothTransport?.stopSharing();
-        _activeBluetoothTransport = null;
-        return;
-      }
-
-      final displayFile = _sessionDisplay ?? file;
-      final totalCount = (_sessionFiles ?? [file]).length;
       emit(BluetoothAdvertising(
         _makeDummySession(displayFile),
-        qrData: BluetoothQrPayload(
-          token: token,
-          locator: ids.locator,
-          fileName: displayFile.name,
-          fileSize: displayFile.size,
-          itemCount: totalCount,
-          senderName: describeThisDevice(),
-        ).encode(),
+        qrData: qrData,
+        code: code,
         itemCount: totalCount,
         locator: ids.locator,
         expiresAt: _newExpiry(),
       ));
     } catch (e) {
+      // A cancelled or replaced start must not report an error, or stop the
+      // newer transport that now occupies the shared active slot.
+      if (generation != _sessionGeneration || isClosed) return;
       debugPrint('Bluetooth init error: $e');
       await _activeBluetoothTransport?.stopSharing();
       _activeBluetoothTransport = null;
@@ -1343,6 +1372,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onStartQhtpSend(
       StartQhtpSend event, Emitter<SenderState> emit) async {
+    final cleanup = _cancelInProgress;
+    if (cleanup != null) await cleanup;
+    if (emit.isDone) return;
     final generation = ++_sessionGeneration;
     bool abandoned() => generation != _sessionGeneration;
     _currentPaths = event.paths;
@@ -2049,9 +2081,11 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await old?.stopSharing();
     if (generation != _sessionGeneration || isClosed) return;
 
-    AppLogger.info('Internet offer unanswered after '
+    AppLogger.info(
+        'Internet offer unanswered after '
         '${AppConstants.sessionCodeLifetime.inMinutes} minutes; building a '
-        'fresh one', tag: 'SENDER');
+        'fresh one',
+        tag: 'SENDER');
     await _startInternetOffer(file, TransportType.internet, emit, generation);
   }
 
@@ -2081,8 +2115,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     }
     if (generation != _sessionGeneration || isClosed) return;
 
-    AppLogger.info('Bluetooth offer rotated: restarting the advertisement '
-        'under a new code', tag: 'SENDER');
+    AppLogger.info(
+        'Bluetooth offer rotated: restarting the advertisement '
+        'under a new code',
+        tag: 'SENDER');
     await _startBluetoothOffer(file, emit, generation);
   }
 
@@ -2109,8 +2145,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     if (generation != _sessionGeneration || isClosed) return;
     final data = qr.fold<String?>((_) => null, (q) => q);
     if (data == null) {
-      await _offerEnded(qr.fold((f) => f, (_) => null), emit,
-          hotspotUp: true);
+      await _offerEnded(qr.fold((f) => f, (_) => null), emit, hotspotUp: true);
       return;
     }
     if (state is! LocalNetworkReady) return;
@@ -2151,6 +2186,24 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
 
   Future<void> _onCancelSending(
       CancelSending event, Emitter<SenderState> emit) async {
+    final prior = _cancelInProgress;
+    if (prior != null) {
+      await prior;
+      if (emit.isDone) return;
+    }
+    final completion = Completer<void>();
+    _cancelInProgress = completion.future;
+    try {
+      await _finishCancelSending(emit);
+    } finally {
+      if (identical(_cancelInProgress, completion.future)) {
+        _cancelInProgress = null;
+      }
+      completion.complete();
+    }
+  }
+
+  Future<void> _finishCancelSending(Emitter<SenderState> emit) async {
     // Read before the server stops, not after: stopping it clears the one
     // fact — which address, if any, ever connected — that says whether this
     // was a send somebody was receiving or a QR nobody had scanned yet. A
@@ -2230,9 +2283,10 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         state is LocalNetworkReady ||
         state is Transferring) {
       final totalBytes = _sessionTotalBytes;
-      if (totalBytes <= 0) return;
-      final currentBytes =
-          (event.progress.clamp(0.0, 1.0) * totalBytes).round();
+      final current = state;
+      final progress = max(event.progress.clamp(0.0, 1.0),
+          current is Transferring ? current.progress : 0.0);
+      final currentBytes = (progress * totalBytes).round();
       if (currentBytes > _reportedSentBytes) {
         _reportedSentBytes = currentBytes;
       }
@@ -2257,7 +2311,9 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
         _lastBytes = currentBytes;
       }
 
-      emit(Transferring(event.progress, speedBps));
+      emit(Transferring(progress, speedBps,
+          reconnecting: event.reconnecting ??
+              (state is Transferring && (state as Transferring).reconnecting)));
     }
   }
 
@@ -2345,7 +2401,7 @@ class SenderBloc extends Bloc<SenderEvent, SenderState> {
     await _activeBluetoothTransport?.stopSharing();
     _activeBluetoothTransport = null;
     _subscribeToWifiProgress();
-    final completedFile = _currentFile;
+    final completedFile = _sessionDisplay ?? _currentFile;
     if (completedFile != null) {
       emit(TransferComplete(completedFile));
     } else {

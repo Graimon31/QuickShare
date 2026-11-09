@@ -60,6 +60,31 @@ Uint8List _shareFor(SessionCode code) =>
     Spake2.start(role: Spake2Role.a, w: InternetCodePake.passwordScalar(code))
         .share;
 
+class _DelayedThirdPublish implements CodeMailbox {
+  _DelayedThirdPublish(this.inner, {this.delay = const Duration(milliseconds: 1500)});
+  final FakeMailbox inner;
+  final Duration delay;
+  int calls = 0;
+  bool completed = false;
+  @override
+  String get name => inner.name;
+  @override
+  Stream<MailboxMessage> get messages => inner.messages;
+  @override
+  Future<void> subscribe(String topic) => inner.subscribe(topic);
+  @override
+  Future<void> unsubscribe(String topic) => inner.unsubscribe(topic);
+  @override
+  Future<void> publish(String topic, Uint8List payload) async {
+    calls++;
+    if (calls == 3) await Future<void>.delayed(delay);
+    await inner.publish(topic, payload);
+    if (calls == 3) completed = true;
+  }
+  @override
+  Future<void> close() => inner.close();
+}
+
 /// Everything a test needs: the fake mailbox, a sender listening on it, and a
 /// receiver search that can be started against it.
 class _World {
@@ -82,8 +107,10 @@ class _World {
   final dialogs = <String>[];
   final holds = <String>[];
   final pendingAnswers = <Completer<bool>>[];
+  int withdrawals = 0;
   bool autoApprove = true;
   int offerReads = 0;
+  Completer<void>? offerBarrier;
 
   late FakeMailbox senderBox;
   late InternetCodeSender sender;
@@ -100,6 +127,7 @@ class _World {
       code: forCode ?? code,
       offer: () async {
         offerReads++;
+        await offerBarrier?.future;
         return offer;
       },
       approve: (name) {
@@ -109,6 +137,7 @@ class _World {
         pendingAnswers.add(answer);
         return answer.future;
       },
+      withdrawApproval: () => withdrawals++,
       hold: (r) => holds.add('hold $r'),
       release: (r) => holds.add('release $r'),
       timings: timings,
@@ -349,7 +378,9 @@ void main() {
         expect(w.outcome, isA<CodeSessionFoundOnline>());
         expect(w.receiverBox!.isClosed, isTrue);
         expect(w.receiverBox!.subscribed, isEmpty);
-        // The sender is still listening on the request topic and nothing else.
+        // The sender retains the cancel topic until the offer is answered.
+        w.sender.answered();
+        w.settle();
         expect(w.hub.listenedTopics, {w.requestTopic});
       });
     });
@@ -1315,6 +1346,133 @@ void main() {
   });
 
   group('cancelling', () {
+    test('cancellation closes a channel that never finishes in time', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        final delayed = _DelayedThirdPublish(w.hub.endpoint('delayed'),
+            delay: const Duration(seconds: 20));
+        w.search(mailbox: () => RacingCodeMailbox([delayed]));
+        w.control.cancel();
+        w.settle();
+        w.pass(const Duration(seconds: 12));
+        expect(delayed.inner.isClosed, isTrue);
+        expect(w.outcome, isA<CodeSessionNotFound>());
+        w.pass(const Duration(seconds: 8));
+      });
+    });
+    test('cancellation lets a delayed channel finish even if another sent first', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        final quick = w.hub.endpoint('quick');
+        final delayed = _DelayedThirdPublish(w.hub.endpoint('delayed'));
+        w.search(mailbox: () => RacingCodeMailbox([quick, delayed]));
+        expect(w.dialogs, ['Alice laptop']);
+        w.control.cancel();
+        w.settle();
+        expect(delayed.inner.isClosed, isFalse);
+        w.pass(const Duration(milliseconds: 1500));
+        expect(delayed.completed, isTrue);
+        expect(w.withdrawals, 1);
+        expect(delayed.inner.isClosed, isTrue);
+      });
+    });
+    test('a declined receiver can retry immediately', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        w.search(name: 'first');
+        w.pendingAnswers.first.complete(false);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionDeclined>());
+        w.search(name: 'retry');
+        expect(w.dialogs, ['first', 'retry']);
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+        expect(w.sender.attempts, 2);
+      });
+    });
+
+    test('withdraws the dialog and immediately permits another receiver', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        w.search(name: 'first');
+        w.control.cancel();
+        w.settle();
+        expect(w.outcome, isA<CodeSessionNotFound>());
+        expect(w.withdrawals, 1);
+        w.search(name: 'second');
+        expect(w.dialogs, ['first', 'second']);
+        w.pendingAnswers.first.complete(true);
+        w.settle();
+        expect(w.outcome, isNull, reason: 'old approval cannot answer new request');
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+      });
+    });
+
+    test('forged and stale cancels cannot withdraw another request', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        w.search(name: 'first');
+        w.control.cancel();
+        w.settle();
+        final oldCancel = w.hub.published.lastWhere((m) => m.by == 'receiver');
+        w.search(name: 'second');
+        final currentTopic = w.senderBox.subscribed.singleWhere(
+            (topic) => topic != w.requestTopic);
+        w.hub.inject(currentTopic, oldCancel.payload);
+        w.hub.inject(currentTopic, Uint8List.fromList(List.filled(64, 42)));
+        w.hub.inject(oldCancel.topic, oldCancel.payload);
+        w.settle();
+        expect(w.withdrawals, 1);
+        expect(w.dialogs, ['first', 'second']);
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+      });
+    });
+
+    test('a cancellation racing approval cannot disturb a later request', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        w.search(name: 'first');
+        w.pendingAnswers.first.complete(true);
+        w.control.cancel();
+        w.settle();
+        expect(w.outcome, isA<CodeSessionNotFound>());
+        expect(w.withdrawals, lessThanOrEqualTo(1));
+        w.search(name: 'second');
+        expect(w.dialogs, ['first', 'second']);
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+      });
+    });
+
+    test('cancellation while preparing an approved offer blocks the late offer', () {
+      fakeAsync((async) {
+        final w = _World(async)..autoApprove = false..startSender();
+        final barrier = Completer<void>();
+        w.offerBarrier = barrier;
+        w.search(name: 'first');
+        w.pendingAnswers.first.complete(true);
+        w.settle();
+        expect(w.offerReads, 1);
+        w.control.cancel();
+        w.settle();
+        expect(w.outcome, isA<CodeSessionNotFound>());
+        w.offerBarrier = null;
+        w.search(name: 'second');
+        expect(w.dialogs, ['first', 'second']);
+        barrier.complete();
+        w.settle();
+        expect(w.outcome, isNull);
+        w.pendingAnswers.last.complete(true);
+        w.settle();
+        expect(w.outcome, isA<CodeSessionFoundOnline>());
+      });
+    });
     test('before anything is published', () {
       fakeAsync((async) {
         final w = _World(async)..startSender();

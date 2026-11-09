@@ -43,6 +43,10 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
 
   private let queue = DispatchQueue(label: "quickshare.peerlink", qos: .userInitiated)
   private var eventSink: FlutterEventSink?
+  // CoreWLAN can block in an XPC call even when the radio is already on.
+  // Keep it off both the UI thread and the peer-link networking queue.
+  private let wifiControlQueue = DispatchQueue(label: "quickshare.wifi-control", qos: .utility)
+  private var wifiEnableInFlight = false // main-thread confined
 
   /// Host role: accepts peers and forwards each one to the local QHTP port.
   private var peerListener: NWListener?
@@ -152,7 +156,7 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
       result(wifiPathAvailable)
 
     case "enableWifi":
-      result(turnWifiOn())
+      turnWifiOn(result: result)
 
     case "openWifiSettings":
       result(openSettings())
@@ -176,19 +180,58 @@ public class PeerLinkPlugin: NSObject, FlutterStreamHandler {
   /// any price: there is no public API, and the private URL scheme that used
   /// to work is grounds for rejection. All that is left there is to take the
   /// user to Settings and say plainly why.
-  private func turnWifiOn() -> Bool {
+  private func turnWifiOn(result: @escaping FlutterResult) {
     #if os(macOS)
-    guard let interface = CWWiFiClient.shared().interface() else { return false }
-    do {
-      try interface.setPower(true)
-      return true
-    } catch {
-      // A sandboxed app may be refused. Not worth an error — the caller falls
-      // back to asking the user, which was always the iOS path anyway.
-      return false
+    // A usable Wi-Fi path already proves the radio is on. Do not make a
+    // redundant, potentially blocking CoreWLAN call during app startup.
+    if wifiPathAvailable {
+      result(true)
+      return
+    }
+    // A timed-out CoreWLAN request may still be blocked inside the OS. Never
+    // accumulate more worker threads or another power request behind it.
+    guard !wifiEnableInFlight else {
+      result(false)
+      return
+    }
+    wifiEnableInFlight = true
+    let deadline = DispatchTime.now() + .seconds(3)
+    var replied = false // read/written only on the main queue
+    let finish: (Bool) -> Void = { enabled in
+      guard !replied else { return }
+      replied = true
+      result(enabled)
+    }
+    DispatchQueue.main.asyncAfter(deadline: deadline) {
+      finish(false)
+    }
+    wifiControlQueue.async {
+      let enabled: Bool
+      if let interface = CWWiFiClient.shared().interface() {
+        if interface.powerOn() {
+          enabled = true
+        } else if DispatchTime.now() < deadline {
+          do {
+            // Only enable an off radio. Never turn it off or reconfigure the
+            // current network; active internet transfers must stay intact.
+            try interface.setPower(true)
+            enabled = true
+          } catch {
+            enabled = false
+          }
+        } else {
+          enabled = false
+        }
+      } else {
+        enabled = false
+      }
+      DispatchQueue.main.async {
+        self.wifiEnableInFlight = false
+        finish(enabled)
+      }
     }
     #else
-    return false
+    result(false)
     #endif
   }
 

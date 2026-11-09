@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:quickshare/core/storage/media_saver.dart';
 import 'package:quickshare/core/storage/received_item.dart';
 import 'package:quickshare/core/storage/save_destination.dart';
@@ -52,6 +54,9 @@ class SaveCoordinator {
   /// the gallery rejects one should still deliver nineteen.
   Future<List<SaveOutcome>> runAutomatic(List<ReceivedItem> items) async {
     final outcomes = <SaveOutcome>[];
+    if (items.every((item) => item.isSaved)) {
+      return [for (final item in items) SaveOutcome(item: item)];
+    }
 
     // Resolved once for the whole batch rather than per item: on macOS this
     // opens a security scope, and opening/closing it twenty times for twenty
@@ -62,18 +67,32 @@ class SaveCoordinator {
     // phone (SaveDestination.intentFor returns gallery or ask there), so
     // there is nothing here that would ever consult it — only a reason to
     // touch a plugin channel a mobile run has no need to know about.
-    final customDir = destination.isDesktop
-        ? await saveLocation.resolveForWriting()
-        : null;
-    final effectiveSaver =
-        customDir == null ? saver : saver.withDownloadsHook(() async => customDir);
+    Directory? customDir;
+    try {
+      customDir =
+          destination.isDesktop ? await saveLocation.resolveForWriting() : null;
+    } on SaveLocationUnavailableException catch (e) {
+      return [
+        for (final item in items)
+          item.isSaved
+              ? SaveOutcome(item: item)
+              : SaveOutcome(item: item, error: '$e', awaitingDecision: true),
+      ];
+    }
+    final effectiveSaver = customDir == null
+        ? saver
+        : saver.withDownloadsHook(() async => customDir);
 
     try {
       for (final item in items) {
+        if (item.isSaved) {
+          outcomes.add(SaveOutcome(item: item));
+          continue;
+        }
         switch (destination.intentFor(item)) {
           case SaveIntent.automatic:
-            outcomes.add(
-                await _attempt(item, () => effectiveSaver.saveToDownloads(item)));
+            outcomes.add(await _attempt(
+                item, () => effectiveSaver.saveToDownloads(item)));
           case SaveIntent.gallery:
             outcomes.add(_survivable(
                 await _attempt(item, () => saver.saveToGallery(item))));

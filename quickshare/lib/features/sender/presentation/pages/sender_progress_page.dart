@@ -130,14 +130,18 @@ class SenderProgressPage extends StatelessWidget {
                           color: Colors.transparent,
                           child: CustomProgressIndicator(
                             progress: state.progress,
-                            speedBytesPerSec: state.speedBps.toDouble(),
+                            speedBytesPerSec: state.reconnecting
+                                ? 0
+                                : state.speedBps.toDouble(),
                             fileName: '',
                           ),
                         ),
                       ).animate().fadeIn(),
                       const SizedBox(height: 32),
                       Text(
-                        l10n.senderProgressSending,
+                        state.reconnecting
+                            ? l10n.transferReconnecting
+                            : l10n.senderProgressSending,
                         style: Theme.of(context).textTheme.titleLarge,
                       ),
                       const SizedBox(height: 16),

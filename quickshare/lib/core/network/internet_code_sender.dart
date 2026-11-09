@@ -43,6 +43,7 @@ class InternetCodeSender {
     required this.code,
     required this.offer,
     required this.approve,
+    this.withdrawApproval,
     this.hold,
     this.release,
     this.timings = const InternetCodeTimings(),
@@ -64,6 +65,9 @@ class InternetCodeSender {
   /// text a stranger typed into a public mailbox, cleaned and shortened; it is
   /// to be shown as data and nothing else.
   final Future<bool> Function(String deviceName) approve;
+
+  /// Withdraws the current question when its authenticated asker leaves.
+  final void Function()? withdrawApproval;
 
   /// Keeps the code from being replaced for [reason], until [release]d.
   final void Function(Object reason)? hold;
@@ -104,6 +108,7 @@ class InternetCodeSender {
   bool _busy = false;
   bool _dialogHeld = false;
   bool _payloadHeld = false;
+  _Exchange? _active;
 
   /// How many requests this code has paid for.
   int get attempts => _attempts;
@@ -137,6 +142,9 @@ class InternetCodeSender {
     _payloadTimer = null;
     _letGo(payload: true);
     _busy = false;
+    final active = _active;
+    _active = null;
+    if (active != null) _drop(active);
   }
 
   /// Stops listening and drops everything pending. A question already put to
@@ -174,7 +182,7 @@ class InternetCodeSender {
       }
       final exchange = _exchanges[message.topic];
       if (exchange != null) {
-        unawaited(_onConfirmation(exchange, message.payload).catchError(
+        unawaited(_onExchangeMessage(exchange, message.payload).catchError(
             (Object e) {
           AppLogger.warning(
               'Internet code: a confirmation failed: ${e.runtimeType}',
@@ -271,6 +279,34 @@ class InternetCodeSender {
 
   // ─── Confirmation, the question, the hand-over ─────────────────────────
 
+  Future<void> _onExchangeMessage(_Exchange exchange, Uint8List raw) async {
+    if (exchange.closed || raw.length > InternetCode.maxConfirmBytes) return;
+    final cancel = await InternetCodeSeal.open(
+      key: exchange.keys.aeadKey,
+      role: SealRole.cancel,
+      n: exchange.n,
+      envelope: raw,
+    );
+    if (exchange.closed) return;
+    if (cancel != null && utf8.decode(cancel, allowMalformed: true) == 'cancel') {
+      final active = identical(_active, exchange);
+      _drop(exchange);
+      // A valid cancellation proves possession of this exchange's key.
+      // Keep the total guessing budget, but let its owner retry immediately.
+      _lastRun = null;
+      if (active) {
+        _active = null;
+        _payloadTimer?.cancel();
+        _payloadTimer = null;
+        if (_dialogHeld) withdrawApproval?.call();
+        _busy = false;
+        _letGo(dialog: true, payload: true);
+      }
+      return;
+    }
+    if (!exchange.confirmed) await _onConfirmation(exchange, raw);
+  }
+
   Future<void> _onConfirmation(_Exchange exchange, Uint8List raw) async {
     if (exchange.closed || exchange.confirmed) return;
     if (raw.length > InternetCode.maxConfirmBytes) return;
@@ -299,8 +335,6 @@ class InternetCodeSender {
 
     exchange.confirmed = true;
     exchange.timer?.cancel();
-    _exchanges.remove(exchange.confirmTopic);
-    unawaited(mailbox.unsubscribe(exchange.confirmTopic).catchError((_) {}));
 
     await _ask(exchange, InternetCode.cleanName(parsed.name));
   }
@@ -329,9 +363,11 @@ class InternetCodeSender {
       // One question per code. The second asker is told no rather than left
       // waiting for an answer that is not coming.
       await _refuse(exchange);
+      _drop(exchange);
       return;
     }
     _busy = true;
+    _active = exchange;
     _holdFor(dialog: true);
 
     var approved = false;
@@ -341,11 +377,15 @@ class InternetCodeSender {
     } catch (_) {
       approved = false;
     }
-    if (_stopped) return;
+    if (_stopped || exchange.closed || !identical(_active, exchange)) return;
 
     if (!approved) {
-      _busy = false;
       await _refuse(exchange);
+      if (exchange.closed || !identical(_active, exchange)) return;
+      _busy = false;
+      _lastRun = null;
+      _active = null;
+      _drop(exchange);
       _letGo(dialog: true);
       return;
     }
@@ -356,36 +396,41 @@ class InternetCodeSender {
     } catch (_) {
       offerString = null;
     }
-    if (_stopped) return;
+    if (_stopped || exchange.closed || !identical(_active, exchange)) return;
     if (offerString == null ||
         offerString.isEmpty ||
         offerString.length > InternetCode.maxOfferChars) {
-      _busy = false;
       await _refuse(exchange);
+      if (exchange.closed || !identical(_active, exchange)) return;
+      _busy = false;
+      _active = null;
+      _drop(exchange);
       _letGo(dialog: true);
       return;
     }
 
     try {
-      await mailbox.publish(
-        exchange.keys.payloadTopic,
-        await InternetCodeSeal.seal(
+      final sealed = await InternetCodeSeal.seal(
           key: exchange.keys.aeadKey,
           role: SealRole.payload,
           n: exchange.n,
           plaintext:
               utf8.encode(jsonEncode({'k': 'offer', 'qs': offerString})),
           random: _random,
-        ),
-      );
+        );
+      if (_stopped || exchange.closed || !identical(_active, exchange)) return;
+      await mailbox.publish(exchange.keys.payloadTopic, sealed);
     } catch (e) {
       AppLogger.warning('Internet code: could not hand the offer over: '
           '${e.runtimeType}', tag: 'INET_CODE');
+      if (exchange.closed || !identical(_active, exchange)) return;
       _busy = false;
+      _active = null;
+      _drop(exchange);
       _letGo(dialog: true);
       return;
     }
-    if (_stopped) return;
+    if (_stopped || exchange.closed || !identical(_active, exchange)) return;
 
     // The new hold before the old one is let go: with none held in between,
     // a deadline that passed meanwhile would fire into the gap.
@@ -399,6 +444,8 @@ class InternetCodeSender {
           tag: 'INET_CODE');
       _letGo(payload: true);
       _busy = false;
+      _active = null;
+      _drop(exchange);
     });
   }
 

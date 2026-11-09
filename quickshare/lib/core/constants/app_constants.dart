@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:quickshare/core/webrtc/ice_servers.dart';
 
 class AppConstants {
@@ -109,6 +110,48 @@ class AppConstants {
     defaultValue: false,
   );
 
+  /// Debug builds only: log one line a second about each live peer connection
+  /// (selected pair, relay transport, bytes at the ICE, DTLS and data-channel
+  /// layers), so a transfer that stops can be read from the two ends' logs
+  /// side by side. See `TransferStatsSampler`.
+  ///
+  ///   `--dart-define=QUICKSHARE_STATS_PROBE=true`
+  static const bool statsProbe = bool.fromEnvironment(
+    'QUICKSHARE_STATS_PROBE',
+    defaultValue: false,
+  );
+
+  /// Debug builds only: offer ICE only the TURN URLs that use this transport,
+  /// `udp`, `tcp` (TURN over plain TCP) or `tls` (TURN over TLS, port 443).
+  /// Anything else, and release builds, offer all of them. Used to find out
+  /// which relay transport a stalled transfer was on and whether another one
+  /// would have carried it. See [IceServers.configurationWithTurnServers].
+  ///
+  ///   `--dart-define=QUICKSHARE_TURN_TRANSPORT=tls`
+  static const String turnTransportOnly = String.fromEnvironment(
+    'QUICKSHARE_TURN_TRANSPORT',
+    defaultValue: '',
+  );
+
+  /// Debug builds only: pace the WebRTC sender to this many KiB a second
+  /// (0: not at all). A probe for "does a lower rate keep the relay path
+  /// alive".
+  ///
+  ///   `--dart-define=QUICKSHARE_SEND_RATE_KIB=2048`
+  static const int debugSendRateKiB = int.fromEnvironment(
+    'QUICKSHARE_SEND_RATE_KIB',
+    defaultValue: 0,
+  );
+
+  /// Debug builds only: replace [webRtcMaxBufferedAmount] (bytes), to see
+  /// whether a smaller window changes how a relayed transfer ends.
+  ///
+  ///   `--dart-define=QUICKSHARE_MAX_BUFFERED=524288`
+  static const int debugMaxBufferedAmount = int.fromEnvironment(
+    'QUICKSHARE_MAX_BUFFERED',
+    defaultValue: 0,
+  );
+
   /// Every TURN transport to offer ICE, best first.
   ///
   /// Credentials are deliberately not here: they arrive through
@@ -206,6 +249,13 @@ class AppConstants {
   /// of a transfer are this same app.
   static const int webRtcChunkSizeBytes = 65536;
   static const int webRtcMaxBufferedAmount = 4194304; // 4 MB
+
+  /// The window the sender actually uses: [webRtcMaxBufferedAmount], or in a
+  /// debug build the override of [debugMaxBufferedAmount].
+  static int get webRtcSendWindow =>
+      kDebugMode && debugMaxBufferedAmount > 0
+          ? debugMaxBufferedAmount
+          : webRtcMaxBufferedAmount;
   static const int maxFileSizeBytes = 2 * 1024 * 1024 * 1024; // 2 GB limit
   static const int qhtpSessionTimeoutSeconds = 1800; // 30 min for heavy transfers
   static const int qhtpPayloadVersion = 2;

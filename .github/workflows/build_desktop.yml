@@ -298,8 +298,9 @@ jobs:
           QUICKSHARE_KEY_PASSWORD: ${{ secrets.QUICKSHARE_KEY_PASSWORD }}
         run: |
           flutter pub get
-          flutter build apk --release --no-pub --split-per-abi
-          flutter build appbundle --release --no-pub
+          # Release must regenerate plugin registration without dev plugins.
+          flutter build apk --release --split-per-abi
+          flutter build appbundle --release
 
       - uses: actions/upload-artifact@v4
         with:

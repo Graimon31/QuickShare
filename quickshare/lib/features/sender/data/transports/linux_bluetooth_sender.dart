@@ -63,6 +63,33 @@ class LinuxBluetoothSender {
   LinuxBluetoothStatus? _onStatus;
   LinuxBluetoothApOffer? _onApOffer;
   LinuxBluetoothPeerKey? _onPeerKey;
+  void Function(String, String)? _onPairing;
+
+  final _pairingFrames = <String, BleFrameAssembler>{};
+
+  void _acceptPairingPart(String peer, Uint8List bytes) {
+    if (peer.isEmpty) return;
+    if (!_pairingFrames.containsKey(peer) && _pairingFrames.length >= 8) return;
+    final assembler = _pairingFrames.putIfAbsent(
+        peer,
+        () => BleFrameAssembler(
+              maxFrameBytes: 180,
+              onFrame: (frame) {
+                _pairingFrames.remove(peer)?.dispose();
+                _onPairing?.call(
+                    peer, utf8.decode(frame, allowMalformed: true));
+              },
+              onFault: (_) => _pairingFrames.remove(peer)?.dispose(),
+            ));
+    assembler.add(bytes);
+  }
+
+  @visibleForTesting
+  void debugAcceptPairingPart(String peer, Uint8List bytes,
+      void Function(String peer, String command) onPairing) {
+    _onPairing = onPairing;
+    _acceptPairingPart(peer, bytes);
+  }
 
   Future<void> start(
     String token, {
@@ -70,6 +97,7 @@ class LinuxBluetoothSender {
     required LinuxBluetoothStatus onStatus,
     LinuxBluetoothApOffer? onApOffer,
     LinuxBluetoothPeerKey? onPeerKey,
+    void Function(String, String)? onPairing,
   }) async {
     await stop();
     _peerGeneration = null;
@@ -79,6 +107,7 @@ class LinuxBluetoothSender {
     _onStatus = onStatus;
     _onApOffer = onApOffer;
     _onPeerKey = onPeerKey;
+    _onPairing = onPairing;
     _stopping = false;
 
     try {
@@ -102,7 +131,7 @@ class LinuxBluetoothSender {
         servicePath: servicePath,
         uuid: controlUuid,
         flags: const ['write', 'write-without-response'],
-        onWrite: (bytes, mtu) async {
+        onWrite: (bytes, mtu, peer) async {
           // Returns false to refuse the write; BlueZ turns that into an ATT
           // error for the peer, which is the only way this side can say no.
 
@@ -111,6 +140,15 @@ class LinuxBluetoothSender {
           if (mtu != null) _peerMtu = mtu;
 
           final command = utf8.decode(bytes, allowMalformed: true);
+          if (bytes.isNotEmpty && bytes.first == BleFrame.marker) {
+            _acceptPairingPart(peer, Uint8List.fromList(bytes));
+            return true;
+          }
+          if (command.startsWith('PAIR:') && bytes.length <= 180) {
+            if (peer.isEmpty) return false;
+            _onPairing?.call(peer, command);
+            return true;
+          }
           // Always ahead of START, so it is on record before the decision
           // about what this session may send is taken.
           final generation = BleControlProtocol.parseCapabilities(command);
@@ -159,6 +197,7 @@ class LinuxBluetoothSender {
         flags: const ['read', 'notify'],
         onNotifyChanged: (notifying) async {
           _dataNotifying = notifying;
+          if (!notifying && !_transferStarted) _onStatus?.call('advertising');
           if (notifying) {
             _onStatus?.call('connected');
             await _maybeStartTransfer();
@@ -199,8 +238,7 @@ class LinuxBluetoothSender {
       final advertisement = _BleAdvertisement(
         DBusObjectPath('/com/directdrop/app_advertisement/instance'),
         serviceUuid: serviceUuid,
-        localName:
-            'QuickShare-${locator.isNotEmpty ? locator : 'directdrop'}',
+        localName: 'QuickShare-${locator.isNotEmpty ? locator : 'directdrop'}',
       );
       _advertisement = advertisement;
       await bus.registerObject(advertisementRoot);
@@ -268,8 +306,13 @@ class LinuxBluetoothSender {
     final emit = debugEmit ?? _metadata?.setValue;
     if (emit == null) return;
     final bytes = Uint8List.fromList(utf8.encode(jsonEncode(frame)));
-    final parts =
-        _splitter.split(bytes, notificationBytes: notificationBytes(_peerMtu));
+    // BlueZ broadcasts these notifications to all subscribed centrals, and
+    // the most recent write's MTU may belong to a different pairing peer.
+    // Pairing responses must therefore fit the minimum MTU for every listener.
+    final limit = frame.containsKey('pair')
+        ? BleFrame.defaultNotificationBytes
+        : notificationBytes(_peerMtu);
+    final parts = _splitter.split(bytes, notificationBytes: limit);
     for (final part in parts) {
       if (_stopping) return;
       await emit(part);
@@ -304,6 +347,21 @@ class LinuxBluetoothSender {
       // Not a dictionary of variants, or not a number: not said.
     }
     return null;
+  }
+
+  static String peerOfWrite(List<DBusValue> arguments) {
+    if (arguments.length >= 2) {
+      try {
+        for (final entry in arguments[1].asDict().entries) {
+          if (entry.key.asString() == 'device') {
+            return entry.value.asVariant().asObjectPath().value;
+          }
+        }
+      } catch (_) {}
+    }
+    // BlueZ is expected to supply the central's object path; an absent one
+    // cannot authorize a numeric-code exchange.
+    return '';
   }
 
   /// Where a part goes instead of the characteristic, for a test that has no
@@ -390,6 +448,11 @@ class LinuxBluetoothSender {
     _onStatus = null;
     _onApOffer = null;
     _onPeerKey = null;
+    _onPairing = null;
+    for (final frames in _pairingFrames.values) {
+      frames.dispose();
+    }
+    _pairingFrames.clear();
     _dataNotifying = false;
     _startReceived = false;
     _transferStarted = false;
@@ -444,7 +507,8 @@ class _GattService extends _GattObject {
 
 /// Handles one write. False refuses it, which BlueZ answers as an ATT error
 /// for the peer; true accepts.
-typedef _GattWriteHandler = Future<bool> Function(List<int> value, int? mtu);
+typedef _GattWriteHandler = Future<bool> Function(
+    List<int> value, int? mtu, String peer);
 typedef _GattNotifyHandler = Future<void> Function(bool notifying);
 
 class _GattCharacteristic extends _GattObject {
@@ -493,13 +557,13 @@ class _GattCharacteristic extends _GattObject {
         }
         final accepted = await onWrite!(
             methodCall.values.first.asByteArray().toList(),
-            LinuxBluetoothSender.mtuOfWrite(methodCall.values));
+            LinuxBluetoothSender.mtuOfWrite(methodCall.values),
+            LinuxBluetoothSender.peerOfWrite(methodCall.values));
         if (!accepted) {
           // BlueZ maps this to insufficient authentication for the peer —
           // the same answer Apple's bridges give, and the same one Android
           // gives through its ATT status.
-          return DBusMethodErrorResponse(
-              'org.bluez.Error.NotAuthorized',
+          return DBusMethodErrorResponse('org.bluez.Error.NotAuthorized',
               [const DBusString('the session token is missing or wrong')]);
         }
         return DBusMethodSuccessResponse();

@@ -67,7 +67,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get homeAirdropAltSubtitle =>
-      'To a phone close by, no shared network needed';
+      'To a device close by, no shared network needed';
 
   @override
   String get homeReceiveTitle => 'Receive File';
@@ -589,14 +589,14 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get btSendPreparingDetail =>
-      'Getting the code ready for the other phone to scan';
+      'Preparing a QR and numeric code for the receiver';
 
   @override
-  String get btSendScanPrompt => 'Scan this QR code with the receiving phone';
+  String get btSendScanPrompt => 'Scan the QR or enter the numeric code';
 
   @override
   String get btSendAutoConnectNote =>
-      'Bluetooth receiving works on a phone: open DirectDrop there, tap Receive File and scan this code. A computer cannot receive over Bluetooth — use Wi-Fi for that.';
+      'Open DirectDrop on the receiving device and choose Receive file. Scan the QR or enter the code manually. Enable Bluetooth on both devices and keep them nearby.';
 
   @override
   String get codeReceiveTitle => 'Receive a file';
@@ -637,7 +637,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get codeReceiveNotFound =>
-      'Sender not found. Check the code: it changes every 5 minutes. For a local network both devices must be on the same network.';
+      'Sender not found. Check the code: it changes every 5 minutes. For Nearby transfer, enable Bluetooth and keep devices nearby. For local network transfer, connect both devices to the same network.';
 
   @override
   String get codeReceiveSearching => 'Looking for the sender…';
@@ -648,7 +648,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get codeReceiveNoNetwork =>
-      'Could not reach the internet service, and no sender was found on the local network. Check your connection and the code, then try again.';
+      'No sender found over Bluetooth or the local network, and the internet service is unavailable. Check the code, Bluetooth and your connection.';
 
   @override
   String get codeCopied => 'Code copied to clipboard';
@@ -697,6 +697,17 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get downloadVerifyingDetail => 'Checking file integrity';
+
+  @override
+  String get downloadSaveFolderUnavailable =>
+      'The save folder is unavailable. Connect the drive or choose another folder.';
+
+  @override
+  String get downloadChooseFolder => 'Choose folder';
+
+  @override
+  String get downloadSaveFolderChooseError =>
+      'Could not use that folder. Please choose another folder.';
 
   @override
   String get downloadPreparing => 'Preparing download…';
@@ -967,4 +978,26 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get qrDisplayStillCounting => 'Still counting the files…';
+
+  @override
+  String get errorCancelledByReceiver => 'The receiver cancelled the transfer.';
+
+  @override
+  String get errorConnectionLostNotRecovered =>
+      'The connection was lost during the transfer and could not be restored after several attempts. Send again; nothing is reported as received that did not arrive whole.';
+
+  @override
+  String get errorConnectionLostPeerTooOld =>
+      'The connection was lost, and the other device runs an older version of DirectDrop that cannot continue an interrupted transfer. Update the app on that device and send again.';
+
+  @override
+  String get errorIntegrityMismatch =>
+      'A file arrived damaged: its checksum (SHA-256) does not match the original, so it was discarded and the transfer is not reported as complete. Send again.';
+
+  @override
+  String get transferReconnecting => 'Connection lost, reconnecting…';
+
+  @override
+  String get transferReconnectingHint =>
+      'What was already transferred is kept. The transfer will continue from where it stopped.';
 }

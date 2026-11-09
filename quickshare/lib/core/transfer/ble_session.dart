@@ -16,10 +16,8 @@ import 'ble_gatt.dart';
 /// bonded. A listener who read either one recovered the code, and from the
 /// code the network name and the network's passphrase.
 ///
-/// A Bluetooth session has no digits to type — the screen shows a QR and
-/// nothing else — so nothing needs the values to come from a code. They are
-/// drawn independently from a cryptographic source, and a session is bound to
-/// them by a QR only the receiver that was shown it has.
+/// The typed code is independently random. A PAKE authenticates it before
+/// handing over this session's QR under an authenticated encryption key.
 class BleSession {
   const BleSession({required this.locator, required this.token});
 

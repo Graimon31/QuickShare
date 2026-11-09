@@ -56,6 +56,7 @@ class BluetoothReceiverSession {
   /// done what it is for. From here a dropped Bluetooth connection is nothing.
   bool _served = false;
   int? _peerLinkPort;
+  final Completer<bool> _linkReady = Completer<bool>();
 
   BluetoothReceiverSession({
     BleReceiver? transport,
@@ -96,8 +97,16 @@ class BluetoothReceiverSession {
           code == null ? Exception(message) : FileException(message, code));
     }
 
+    // A powered-off or unauthorized radio can fail during discovery, before
+    // any device exists to connect to. Subscribe before starting the scan.
+    _failureSub = _transport.failures.listen((failure) {
+      if (_served) return;
+      fail(failure.message, code: failure.code);
+    });
+
     _searchTimeout = Timer(const Duration(seconds: 25), () {
-      fail('Timed out searching for sender. Make sure Bluetooth is enabled and sender is advertising.');
+      fail(
+          'Timed out searching for sender. Make sure Bluetooth is enabled and sender is advertising.');
     });
 
     _deviceSub = _transport.devices.listen((device) async {
@@ -109,21 +118,18 @@ class BluetoothReceiverSession {
       _connecting = true;
       unawaited(_deviceSub?.cancel());
 
-      AppLogger.info('BluetoothReceiverSession: connecting to ${device.name} (${device.id})', tag: 'BT_RECEIVER');
-
-      // Anything the radio reports before the serve frame ends the session:
-      // the negotiation rides on it, and it cannot go on without it. After the
-      // serve frame the file crosses Wi-Fi, so the radio dropping is not news.
-      _failureSub = _transport.failures.listen((failure) {
-        if (_served) return;
-        fail(failure.message, code: failure.code);
-      });
+      AppLogger.info(
+          'BluetoothReceiverSession: connecting to ${device.name} (${device.id})',
+          tag: 'BT_RECEIVER');
 
       _serveSub = _transport.serveInfos.listen((serve) async {
-        if (_cancelled || _completed) return;
+        if (_cancelled || _completed || _served) return;
         _served = true;
-        AppLogger.info('BluetoothReceiverSession: received serve frame on ${serve.ip}:${serve.port}', tag: 'BT_RECEIVER');
+        AppLogger.info(
+            'BluetoothReceiverSession: received serve frame on ${serve.ip}:${serve.port}',
+            tag: 'BT_RECEIVER');
         try {
+          if (!await _linkReady.future || _cancelled || _completed) return;
           final result = await _qhtpReceiver.downloadSession(
             payload: QRPayload(
               version: 2,
@@ -155,7 +161,8 @@ class BluetoothReceiverSession {
           // finishes. The failure branch must reach fail() with it unset.
           await result.fold(
             (failure) async => fail(failure.message,
-                code: FailureCode.isStorage(failure.code) ? failure.code : null),
+                code:
+                    FailureCode.isStorage(failure.code) ? failure.code : null),
             (received) async {
               _completed = true;
               _cleanup();
@@ -202,9 +209,10 @@ class BluetoothReceiverSession {
               'within ${_handshakeBudget.inSeconds} seconds.');
         });
       } catch (e) {
-        fail(e is TimeoutException
-            ? (e.message ?? e.toString())
-            : e.toString().replaceFirst('Exception: ', ''),
+        fail(
+            e is TimeoutException
+                ? (e.message ?? e.toString())
+                : e.toString().replaceFirst('Exception: ', ''),
             code: e is TimeoutException ? FailureCode.linkPeerLost : null);
         return;
       }
@@ -213,7 +221,9 @@ class BluetoothReceiverSession {
       // The negotiation starts once the handshake is done, not beside it: its
       // first act is a write to the sender, and a write to a device whose
       // services are not discovered yet is a write that fails.
-      unawaited(_negotiate(fail, locator));
+      unawaited(_negotiate(fail, locator).then((ready) {
+        if (!_linkReady.isCompleted) _linkReady.complete(ready);
+      }));
     });
 
     try {
@@ -228,7 +238,7 @@ class BluetoothReceiverSession {
   /// Settles with the sender which of them raises the Wi-Fi network, and
   /// joins or raises it. The file is pulled afterwards, when the serve frame
   /// says where.
-  Future<void> _negotiate(
+  Future<bool> _negotiate(
       void Function(String, {String? code}) fail, String locator) async {
     try {
       final outcome = await DirectLinkCoordinator(
@@ -246,26 +256,34 @@ class BluetoothReceiverSession {
         },
       ).runReceiver(sessionId: locator);
 
-      if (_cancelled || _completed) return;
+      if (_cancelled || _completed) return false;
       switch (outcome) {
         case DirectLinkUnavailable(message: final msg, code: final code):
           // No link, so no serve frame is coming. It used to be logged and the
           // screen sat there waiting for a transfer that could not start.
           AppLogger.info('DirectLink unavailable: $msg', tag: 'BT_RECEIVER');
-          if (!_served) fail(msg, code: code);
+          fail(msg, code: code);
+          return false;
         case DirectLinkOverPeerLink(localPort: final port):
+          if (port == null) {
+            fail('The peer link did not provide a local port.');
+            return false;
+          }
           _peerLinkPort = port;
         case DirectLinkReady(hosting: final hosting):
           if (!hosting) {
             _joinedAsGuest = true;
           }
       }
+      return true;
     } catch (e) {
-      if (!_served) fail('Could not set up the direct Wi-Fi link: $e');
+      fail('Could not set up the direct Wi-Fi link: $e');
+      return false;
     }
   }
 
   void _cleanup() {
+    if (!_linkReady.isCompleted) _linkReady.complete(false);
     _searchTimeout?.cancel();
     _deviceSub?.cancel();
     _failureSub?.cancel();

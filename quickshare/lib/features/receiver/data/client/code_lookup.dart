@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'bluetooth_code_search.dart';
 import 'package:quickshare/core/network/lan_discovery.dart';
 import 'package:quickshare/core/network/session_code.dart';
 import 'package:quickshare/core/utils/device_name.dart';
@@ -8,9 +9,9 @@ import 'package:quickshare/features/receiver/data/client/code_session_resolver.d
 import 'package:quickshare/features/receiver/data/client/internet_code_search.dart';
 
 /// Finds the device offering a typed code, wherever it is: on the local
-/// network, or anywhere on the internet.
+/// network, over Bluetooth nearby, or anywhere on the internet.
 ///
-/// The two searches run side by side, because a code does not say which kind
+/// The searches run side by side, because a code does not say which kind
 /// of offer it belongs to. **The first to prove the code wins** and the other
 /// is stopped and cleaned up before this returns; neither is ever believed on
 /// what a device or a mailbox says about itself, only on a proof that nobody
@@ -32,13 +33,16 @@ class CodeLookup {
     this.probeTargets,
     InternetCodeSearch? internet,
     bool lanOnly = false,
+    BluetoothCodeSearch? bluetooth,
   })  : _browser = browser ?? NsdRendezvousBrowser.new,
         _deviceName = deviceName,
-        _internet = lanOnly ? null : (internet ?? InternetCodeSearch());
+        _internet = lanOnly ? null : (internet ?? InternetCodeSearch()),
+        _bluetooth = lanOnly ? null : (bluetooth ?? BluetoothCodeSearch());
 
   final RendezvousBrowser Function() _browser;
   final String? _deviceName;
   final InternetCodeSearch? _internet;
+  final BluetoothCodeSearch? _bluetooth;
 
   /// How long to keep listening for an announcement that has not arrived yet
   /// before concluding there is nobody.
@@ -70,24 +74,34 @@ class CodeLookup {
         // The other search is pointless once this one is broken.
         lanError = e;
         lanStack = st;
-        arbiter.abort();
+        // A failed LAN browse must not prevent a Bluetooth sender answering.
         return const CodeSessionNotFound();
       },
     );
+    Future<void> Function()? cancelInternetOffer;
     final internet = _internet?.run(code,
-            deviceName: name, gate: arbiter.gate('internet')) ??
+            deviceName: name,
+            gate: arbiter.gate('internet'),
+            onOfferCancellation: (cancel) => cancelInternetOffer = cancel) ??
         Future<CodeSessionOutcome>.value(const CodeSessionNotFound());
 
-    final results = await Future.wait([lan, internet]);
+    final bluetooth = _bluetooth?.run(code, gate: arbiter.gate('bluetooth')) ??
+        Future<CodeSessionOutcome>.value(const CodeSessionNotFound());
+    final results = await Future.wait([lan, internet, bluetooth]);
     // Read before the control is let go: letting it go cancels it.
     final cancelled = own.isCancelled;
     if (control == null) await own.dispose();
 
-    if (lanError != null) Error.throwWithStackTrace(lanError!, lanStack!);
+    if (lanError != null && arbiter.winner == null && !cancelled) {
+      Error.throwWithStackTrace(lanError!, lanStack!);
+    }
 
     // The person gave up: whatever the searches made of being stopped is not
     // an answer.
-    if (cancelled) return const CodeSessionNotFound();
+    if (cancelled) {
+      await cancelInternetOffer?.call();
+      return const CodeSessionNotFound();
+    }
 
     // Whoever won is the answer, whatever the other made of being stopped.
     switch (arbiter.winner) {
@@ -95,6 +109,8 @@ class CodeLookup {
         return results[0];
       case 'internet':
         return results[1];
+      case 'bluetooth':
+        return results[2];
     }
 
     // Nobody proved anything. The most useful thing to say, in order: the
@@ -111,7 +127,15 @@ class CodeLookup {
       SessionCode code, SearchGate gate) async {
     final browser = _browser();
     try {
-      final listening = await browser.start();
+      final starting = browser.start();
+      unawaited(starting.then((_) async {
+        if (gate.isStopped) await browser.stop();
+      }).catchError((Object _) {}));
+      final listening = await Future.any([
+        starting,
+        gate.stopped.then((_) => false),
+      ]).timeout(const Duration(seconds: 5), onTimeout: () => false);
+      if (gate.isStopped) return const CodeSessionNotFound();
       return await CodeSessionResolver(
         peers: () => browser.current,
         // A browse the platform would not start has nothing to wait for.
@@ -122,7 +146,9 @@ class CodeLookup {
         discoveryWindow: discoveryWindow,
       ).resolve(code, gate: gate);
     } finally {
-      await browser.stop();
+      await browser
+          .stop()
+          .timeout(const Duration(seconds: 2), onTimeout: () {});
     }
   }
 }

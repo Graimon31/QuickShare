@@ -37,7 +37,8 @@ class _FakeBookmark extends SaveLocationBookmark {
       throw const SaveLocationBookmarkException('bookmark no longer resolves');
     }
     final entry = _bookmarks.entries.firstWhere((e) => e.value == bookmark,
-        orElse: () => throw const SaveLocationBookmarkException('unknown bookmark'));
+        orElse: () =>
+            throw const SaveLocationBookmarkException('unknown bookmark'));
     return BookmarkAccess(path: entry.key, stale: staleOnNextStart);
   }
 
@@ -75,44 +76,43 @@ void main() {
 
   group('choosing a folder', () {
     test('round-trips through read after set', () async {
-      await store.set('/Users/someone/Desktop');
+      await store.set(root.path);
       final saved = await store.read();
-      expect(saved?.path, equals('/Users/someone/Desktop'));
+      expect(saved?.path, equals(root.path));
     });
 
     test('survives being read by a fresh store instance', () async {
-      await store.set('/Users/someone/Desktop');
+      await store.set(root.path);
 
       final reopened =
           SaveLocationStore(overrideDir: () => root, bookmark: bookmark);
       final saved = await reopened.read();
 
-      expect(saved?.path, equals('/Users/someone/Desktop'),
+      expect(saved?.path, equals(root.path),
           reason: 'the whole point is that this survives a restart');
     });
 
     test('clear reverts to the default', () async {
-      await store.set('/Users/someone/Desktop');
+      await store.set(root.path);
       await store.clear();
       expect(await store.read(), isNull);
     });
   });
 
-  group('resolveForWriting on the platform bookmarks actually matter on',
-      () {
+  group('resolveForWriting on the platform bookmarks actually matter on', () {
     test('opens the bookmark rather than trusting the raw path', () async {
-      await store.set('/Users/someone/Desktop');
+      await store.set(root.path);
 
       final dir = await store.resolveForWriting();
 
       expect(bookmark.startCalled, isTrue,
           reason: 'a stored path alone is not enough on this platform; the '
               'bookmark is what actually still grants access');
-      expect(dir?.path, equals('/Users/someone/Desktop'));
+      expect(dir?.path, equals(root.path));
     });
 
     test('release stops the security scope that was opened', () async {
-      await store.set('/Users/someone/Desktop');
+      await store.set(root.path);
       await store.resolveForWriting();
       await store.release();
 
@@ -120,7 +120,7 @@ void main() {
     });
 
     test('a stale bookmark still hands back a working path', () async {
-      await store.set('/Users/someone/Desktop');
+      await store.set(root.path);
       bookmark.staleOnNextStart = true;
 
       final dir = await store.resolveForWriting();
@@ -129,15 +129,13 @@ void main() {
           reason: 'stale means the folder moved, not that access failed');
     });
 
-    test('a bookmark that no longer resolves falls back to the default',
+    test('a bookmark that no longer resolves reports the saved folder',
         () async {
-      await store.set('/Users/someone/Desktop');
+      await store.set(root.path);
       bookmark.failStart = true;
 
-      // Must not throw: null is the "use the platform default" signal, and
-      // a dead bookmark — the folder was deleted, the drive is unplugged —
-      // must not wedge the save that is waiting on this answer.
-      expect(await store.resolveForWriting(), isNull);
+      await expectLater(store.resolveForWriting(),
+          throwsA(isA<SaveLocationUnavailableException>()));
 
       expect(await store.read(), isNotNull,
           reason: 'the choice is kept: a disconnected drive is transient, '
@@ -151,7 +149,7 @@ void main() {
       bookmark.failCreate = true;
 
       await expectLater(
-        store.set('/Users/someone/Desktop'),
+        store.set(root.path),
         throwsA(isA<SaveLocationBookmarkException>()),
       );
       expect(await store.read(), isNull,

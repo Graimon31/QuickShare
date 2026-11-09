@@ -1,0 +1,211 @@
+name: All platform release builds
+on:
+  push:
+    branches: ['codex/all-platforms-release-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: all-platforms-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: quickshare
+        shell: pwsh
+    env:
+      JAVA_HOME: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          cache: true
+      - name: Install packaging tools
+        run: choco install innosetup --no-progress -y
+      - name: Build Windows portable and installer
+        run: |
+          & .\scripts\build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
+      - name: Verify Windows native storage and launch
+        run: |
+          flutter test --no-pub test/platform/windows_native_test.dart --reporter=expanded
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native regressions failed' }
+          $folder = Join-Path $env:RUNNER_TEMP 'DirectDrop portable smoke'
+          Expand-Archive dist\windows\DirectDrop-windows-portable.zip $folder
+          $app = Start-Process (Join-Path $folder 'directdrop.exe') -WorkingDirectory $folder -PassThru
+          try {
+            Start-Sleep -Seconds 8
+            $app.Refresh()
+            if ($app.HasExited -or $app.MainWindowHandle -eq 0) { throw 'Portable app did not stay open with a window' }
+          } finally { if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force } }
+          @{platform='windows';architecture='x64';source_commit=$env:GITHUB_SHA;run_id=$env:GITHUB_RUN_ID;configuration='release';portable_launch='passed';native_storage_tests='passed';signed=$false} | ConvertTo-Json | Set-Content dist\windows\WINDOWS-BUILD-INFO.json -Encoding utf8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: quickshare/dist/windows/*
+          if-no-files-found: error
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 50
+    defaults:
+      run:
+        working-directory: quickshare
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          cache: true
+      - name: Build macOS
+        run: |
+          flutter pub get
+          flutter build macos --release
+      - name: Verify and package macOS
+        run: |
+          codesign --verify --deep --strict build/macos/Build/Products/Release/DirectDrop.app
+          mkdir -p dist/macos
+          stage="$(mktemp -d)"
+          ditto build/macos/Build/Products/Release/DirectDrop.app "$stage/DirectDrop.app"
+          ln -s /Applications "$stage/Applications"
+          hdiutil create -volname DirectDrop -srcfolder "$stage" -format UDZO dist/macos/DirectDrop-macos.dmg
+          hdiutil verify dist/macos/DirectDrop-macos.dmg
+          python3 - <<'PY'
+          import json,os,subprocess
+          arch=subprocess.check_output(['lipo','-archs','build/macos/Build/Products/Release/DirectDrop.app/Contents/MacOS/DirectDrop'],text=True).split()
+          assert set(arch)=={'arm64','x86_64'},arch
+          json.dump(dict(platform='macos',architecture=arch,source_commit=os.environ['GITHUB_SHA'],run_id=os.environ['GITHUB_RUN_ID'],configuration='release',codesign='ad hoc; deep strict verification passed',notarized=False,disk_image='verified'),open('dist/macos/MACOS-BUILD-INFO.json','w'),indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: quickshare/dist/macos/*
+          if-no-files-found: error
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: quickshare
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libasound2t64 libpulse0 libgl1 xvfb dbus-x11
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          cache: true
+      - name: Build Linux and run focused regressions
+        run: |
+          flutter pub get
+          flutter test --no-pub test/core/theme/bundled_fonts_test.dart test/core/webrtc/resume test/core/storage/save_location_store_test.dart
+          flutter build linux --release
+      - name: Check Linux launch and package
+        run: |
+          bundle=build/linux/x64/release/bundle
+          test -x "$bundle/directdrop"
+          if ldd "$bundle/directdrop" | grep 'not found'; then exit 1; fi
+          set +e
+          (cd "$bundle" && GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a timeout 8 ./directdrop) > /tmp/directdrop-linux-smoke.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/directdrop-linux-smoke.log
+          if [ "$result" -ne 124 ]; then echo 'Linux application did not remain running'; exit 1; fi
+          mkdir -p dist/linux
+          tar -czf dist/linux/DirectDrop-linux-x64.tar.gz -C "$bundle" .
+          tar -tzf dist/linux/DirectDrop-linux-x64.tar.gz > /dev/null
+          python3 - <<'PY'
+          import json,os
+          json.dump(dict(platform='linux',architecture='x64',source_commit=os.environ['GITHUB_SHA'],run_id=os.environ['GITHUB_RUN_ID'],configuration='release',build_environment='Ubuntu24.04',requires='GTK3; glibc2.39 or compatible',launch='passed under Xvfb',regressions='passed'),open('dist/linux/LINUX-BUILD-INFO.json','w'),indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: quickshare/dist/linux/*
+          if-no-files-found: error
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    defaults:
+      run:
+        working-directory: quickshare
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          cache: true
+      - name: Configure release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.QUICKSHARE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/directdrop-release.jks"
+          echo "QUICKSHARE_KEYSTORE=$RUNNER_TEMP/directdrop-release.jks" >> "$GITHUB_ENV"
+      - name: Build signed Android APKs and bundle
+        env:
+          QUICKSHARE_KEYSTORE_PASSWORD: ${{ secrets.QUICKSHARE_KEYSTORE_PASSWORD }}
+          QUICKSHARE_KEY_ALIAS: ${{ secrets.QUICKSHARE_KEY_ALIAS }}
+          QUICKSHARE_KEY_PASSWORD: ${{ secrets.QUICKSHARE_KEY_PASSWORD }}
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi
+          flutter build appbundle --release
+          mkdir -p dist/android
+          for abi in arm64-v8a armeabi-v7a x86_64; do cp "build/app/outputs/flutter-apk/app-$abi-release.apk" "dist/android/DirectDrop-android-$abi.apk"; done
+          cp build/app/outputs/bundle/release/app-release.aab dist/android/DirectDrop-android.aab
+          signer="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)"
+          for apk in dist/android/*.apk; do "$signer" verify --verbose "$apk"; done
+          jarsigner -verify dist/android/DirectDrop-android.aab
+          python3 - <<'PY'
+          import json,os
+          json.dump(dict(platform='android',architecture=['arm64-v8a','armeabi-v7a','x86_64'],source_commit=os.environ['GITHUB_SHA'],run_id=os.environ['GITHUB_RUN_ID'],configuration='release',signed=True,signature_verification='APK apksigner and AAB jarsigner passed'),open('dist/android/ANDROID-BUILD-INFO.json','w'),indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-android
+          path: quickshare/dist/android/*
+          if-no-files-found: error
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 55
+    defaults:
+      run:
+        working-directory: quickshare
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          cache: true
+      - name: Build iOS device application without signing
+        run: |
+          flutter pub get
+          flutter build ios --release --no-codesign
+      - name: Package unsigned iOS IPA
+        run: |
+          test -d build/ios/iphoneos/Runner.app
+          mkdir -p dist/ios
+          stage="$(mktemp -d)"
+          mkdir -p "$stage/Payload"
+          ditto build/ios/iphoneos/Runner.app "$stage/Payload/Runner.app"
+          ditto -c -k --sequesterRsrc --keepParent "$stage/Payload" dist/ios/DirectDrop-ios-unsigned.ipa
+          unzip -t dist/ios/DirectDrop-ios-unsigned.ipa > /dev/null
+          python3 - <<'PY'
+          import json,os
+          json.dump(dict(platform='ios',architecture='arm64',source_commit=os.environ['GITHUB_SHA'],run_id=os.environ['GITHUB_RUN_ID'],configuration='release',signed=False,installation='Requires signing with an Apple certificate and a matching provisioning profile before installation; not an App Store or TestFlight distribution'),open('dist/ios/IOS-BUILD-INFO.json','w'),indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-ios
+          path: quickshare/dist/ios/*
+          if-no-files-found: error

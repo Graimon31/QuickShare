@@ -11,6 +11,7 @@
 // channel under `flutter test`, so it is replaced by a mock that fails the way
 // the real one now does; the bloc, the failure code and the translation are
 // the real ones.
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/widgets.dart';
@@ -18,11 +19,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:quickshare/core/errors/failures.dart';
+import 'package:quickshare/core/errors/exceptions.dart';
 import 'package:quickshare/core/l10n/localized_labels.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
 import 'package:quickshare/core/webrtc/compact_sdp.dart';
 import 'package:quickshare/core/webrtc/relay_availability.dart';
+import 'package:quickshare/core/webrtc/resume/receiver_link.dart';
+import 'package:quickshare/core/webrtc/resume/resume_keys.dart';
 import 'package:quickshare/features/receiver/data/qr/qr_payload_decoder.dart';
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
@@ -91,7 +95,8 @@ void main() {
     answerPathProviderWith(sandbox.path);
 
     transport = _MockTransport();
-    when(() => transport.progressStream).thenAnswer((_) => const Stream.empty());
+    when(() => transport.progressStream)
+        .thenAnswer((_) => const Stream.empty());
     when(() => transport.cancel()).thenAnswer((_) async {});
 
     bloc = ReceiverBloc(
@@ -111,6 +116,7 @@ void main() {
           any(),
           targetDir: any(named: 'targetDir'),
           deliverAnswer: any(named: 'deliverAnswer'),
+          resume: any(named: 'resume'),
         )).thenThrow(error);
   }
 
@@ -123,6 +129,73 @@ void main() {
   }
 
   group('the receiver names the relay\'s state in its own failure', () {
+    test('reconnection exhaustion keeps its translated failure code', () async {
+      failWith(const NetworkException(
+          'reconnection exhausted', FailureCode.connectionLostNotRecovered));
+      final error = await runAndGetError();
+      expect(error.code, FailureCode.connectionLostNotRecovered);
+      expect(error.message, 'reconnection exhausted');
+    });
+
+    test('resume keys belong to the scanned offer and seed', () async {
+      failWith(Exception('stop after capturing the setup'));
+      await runAndGetError();
+      final setup = verify(() => transport.receiveWithSdpOffer(
+            any(),
+            targetDir: any(named: 'targetDir'),
+            deliverAnswer: any(named: 'deliverAnswer'),
+            resume: captureAny(named: 'resume'),
+          )).captured.single as ResumeSetup;
+      final qr = ServerlessQr.decode(payload.sdpOffer!);
+      final expected = ResumeKeys.derive(
+          seed: qr.seed, offerFingerprint: qr.offerFingerprint);
+      expect(setup.keys.offerTopic, expected.offerTopic);
+      expect(setup.keys.answerTopic, expected.answerTopic);
+    });
+
+    test('reconnecting preserves progress and resumes without a terminal state',
+        () async {
+      final progress = StreamController<WebRtcReceiveProgress>();
+      final receiving = Completer<String>();
+      final started = Completer<void>();
+      when(() => transport.progressStream).thenAnswer((_) => progress.stream);
+      when(() => transport.receiveWithSdpOffer(
+            any(),
+            targetDir: any(named: 'targetDir'),
+            deliverAnswer: any(named: 'deliverAnswer'),
+            resume: any(named: 'resume'),
+          )).thenAnswer((_) {
+        started.complete();
+        return receiving.future;
+      });
+      bloc.add(StartDownload(payload: payload));
+      await started.future;
+      Future<Downloading> update(String phase, int received) async {
+        final next = bloc.stream.firstWhere((s) => s is Downloading);
+        progress.add(WebRtcReceiveProgress(
+            phase: phase,
+            fileName: 'photo.jpg',
+            received: received,
+            total: 1024,
+            speedBps: 100));
+        return await next as Downloading;
+      }
+
+      expect((await update('transferring', 512)).progress, 0.5);
+      final recovering = await update('reconnecting', 400);
+      expect(recovering.progress, 0.5);
+      expect(recovering.reconnecting, isTrue);
+      expect(recovering.speedBps, 0);
+      final resumed = await update('transferring', 768);
+      expect(resumed.progress, 0.75);
+      expect(resumed.reconnecting, isFalse);
+      final stopped = bloc.stream.firstWhere((s) => s is ReceiverError);
+      receiving.completeError(const NetworkException(
+          'stopped', FailureCode.connectionLostNotRecovered));
+      await stopped;
+      await progress.close();
+    });
+
     const cases = <String, ({NoPathDiagnosis diagnosis, String code})>{
       'rate limited': (
         diagnosis: NoPathDiagnosis(

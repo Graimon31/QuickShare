@@ -18,6 +18,7 @@ import 'package:quickshare/core/storage/transfer_cache.dart';
 /// bookmark mechanics themselves — those have their own test file.
 class _FakeBookmark extends SaveLocationBookmark {
   final Map<String, String> _bookmarks = {};
+  bool failStart = false;
 
   @override
   Future<String> create(String path) async {
@@ -28,6 +29,7 @@ class _FakeBookmark extends SaveLocationBookmark {
 
   @override
   Future<BookmarkAccess> startAccessing(String bookmark) async {
+    if (failStart) throw const SaveLocationBookmarkException('unavailable');
     final entry = _bookmarks.entries.firstWhere((e) => e.value == bookmark);
     return BookmarkAccess(path: entry.key, stale: false);
   }
@@ -129,9 +131,8 @@ void main() {
         for (var i = 0; i < 3; i++) await cached('IMG_$i.jpg', 'image/jpeg'),
       ];
 
-      final outcomes =
-          await coordinator(isDesktop: false, galleryFails: true)
-              .runAutomatic(items);
+      final outcomes = await coordinator(isDesktop: false, galleryFails: true)
+          .runAutomatic(items);
 
       expect(outcomes, hasLength(3));
       expect(outcomes.every((o) => o.failed), isTrue);
@@ -150,7 +151,8 @@ void main() {
       final outcomes = await coordinator(isDesktop: false, galleryFails: true)
           .runAutomatic(items);
 
-      expect(outcomes.single.failed, isTrue, reason: 'the reason is not hidden');
+      expect(outcomes.single.failed, isTrue,
+          reason: 'the reason is not hidden');
       expect(outcomes.single.awaitingDecision, isTrue,
           reason: 'and it can still be saved by hand');
     });
@@ -173,8 +175,8 @@ void main() {
       final target = Directory(p.join(root.path, 'picked'))..createSync();
       final item = await cached('contract.pdf', 'application/pdf');
 
-      final outcomes = await coordinator(isDesktop: false)
-          .saveChosen([item], target.path);
+      final outcomes =
+          await coordinator(isDesktop: false).saveChosen([item], target.path);
 
       expect(outcomes.single.item.isSaved, isTrue);
       expect(File(p.join(target.path, 'contract.pdf')).existsSync(), isTrue);
@@ -228,6 +230,65 @@ void main() {
   });
 
   group('a chosen save location', () {
+    test('missing folder leaves unsaved items available for another choice',
+        () async {
+      final chosen = Directory(p.join(root.path, 'chosen_folder'))
+        ..createSync();
+      final location =
+          SaveLocationStore(overrideDir: () => root, bookmark: _FakeBookmark());
+      await location.set(chosen.path);
+      final savedLocation = await location.read();
+      await chosen.delete();
+      final item = await cached('report.pdf', 'application/pdf');
+      final alreadySaved = (await cached('saved.pdf', 'application/pdf'))
+          .copyWith(savedPath: '/elsewhere/saved.pdf');
+      final coord = SaveCoordinator(
+        destination: const SaveDestination(
+            isDesktop: true, gallery: GalleryFormats(GalleryPlatform.none)),
+        saver: saver(),
+        cache: cache,
+        saveLocation: location,
+      );
+
+      final outcomes = await coord.runAutomatic([item, alreadySaved]);
+      expect(outcomes.first.failed, isTrue);
+      expect(outcomes.first.awaitingDecision, isTrue);
+      expect(outcomes.last.item.isSaved, isTrue);
+      expect(outcomes.last.failed, isFalse);
+      expect(outcomes.last.awaitingDecision, isFalse);
+      expect(await File(item.cachePath).exists(), isTrue);
+      expect(await chosen.exists(), isFalse);
+      expect((await location.read())?.toJson(), savedLocation?.toJson());
+      expect(downloads.listSync(), isEmpty);
+
+      final alternate = Directory(p.join(root.path, 'alternate'))..createSync();
+      final retried = await coord.saveChosen([item], alternate.path);
+      expect(retried.single.item.isSaved, isTrue);
+      expect(File(p.join(alternate.path, item.name)).existsSync(), isTrue);
+    });
+
+    test('unavailable bookmark produces a recoverable outcome', () async {
+      final chosen = Directory(p.join(root.path, 'chosen_folder'))
+        ..createSync();
+      final bookmark = _FakeBookmark();
+      final location =
+          SaveLocationStore(overrideDir: () => root, bookmark: bookmark);
+      await location.set(chosen.path);
+      bookmark.failStart = true;
+      final item = await cached('report.pdf', 'application/pdf');
+      final outcomes = await SaveCoordinator(
+        destination: const SaveDestination(
+            isDesktop: true, gallery: GalleryFormats(GalleryPlatform.none)),
+        saver: saver(),
+        cache: cache,
+        saveLocation: location,
+      ).runAutomatic([item]);
+      expect(outcomes.single.failed, isTrue);
+      expect(outcomes.single.awaitingDecision, isTrue);
+      expect(await File(item.cachePath).exists(), isTrue);
+      expect(downloads.listSync(), isEmpty);
+    }, skip: !SaveLocationBookmark.isSupported);
+
     test('automatic items land there instead of the platform default',
         () async {
       final chosen = Directory(p.join(root.path, 'chosen_folder'))
@@ -254,7 +315,8 @@ void main() {
           reason: 'the platform default was never touched');
     });
 
-    test('gallery items on mobile ignore it — there is no gallery folder to '
+    test(
+        'gallery items on mobile ignore it — there is no gallery folder to '
         'redirect', () async {
       final chosen = Directory(p.join(root.path, 'chosen_folder'))
         ..createSync();

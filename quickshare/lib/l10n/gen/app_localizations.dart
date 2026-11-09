@@ -209,7 +209,7 @@ abstract class AppLocalizations {
   /// No description provided for @homeAirdropAltSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'To a phone close by, no shared network needed'**
+  /// **'To a device close by, no shared network needed'**
   String get homeAirdropAltSubtitle;
 
   /// No description provided for @homeReceiveTitle.
@@ -1079,19 +1079,19 @@ abstract class AppLocalizations {
   /// No description provided for @btSendPreparingDetail.
   ///
   /// In en, this message translates to:
-  /// **'Getting the code ready for the other phone to scan'**
+  /// **'Preparing a QR and numeric code for the receiver'**
   String get btSendPreparingDetail;
 
   /// No description provided for @btSendScanPrompt.
   ///
   /// In en, this message translates to:
-  /// **'Scan this QR code with the receiving phone'**
+  /// **'Scan the QR or enter the numeric code'**
   String get btSendScanPrompt;
 
   /// No description provided for @btSendAutoConnectNote.
   ///
   /// In en, this message translates to:
-  /// **'Bluetooth receiving works on a phone: open DirectDrop there, tap Receive File and scan this code. A computer cannot receive over Bluetooth — use Wi-Fi for that.'**
+  /// **'Open DirectDrop on the receiving device and choose Receive file. Scan the QR or enter the code manually. Enable Bluetooth on both devices and keep them nearby.'**
   String get btSendAutoConnectNote;
 
   /// No description provided for @codeReceiveTitle.
@@ -1169,7 +1169,7 @@ abstract class AppLocalizations {
   /// No description provided for @codeReceiveNotFound.
   ///
   /// In en, this message translates to:
-  /// **'Sender not found. Check the code: it changes every 5 minutes. For a local network both devices must be on the same network.'**
+  /// **'Sender not found. Check the code: it changes every 5 minutes. For Nearby transfer, enable Bluetooth and keep devices nearby. For local network transfer, connect both devices to the same network.'**
   String get codeReceiveNotFound;
 
   /// No description provided for @codeReceiveSearching.
@@ -1187,7 +1187,7 @@ abstract class AppLocalizations {
   /// No description provided for @codeReceiveNoNetwork.
   ///
   /// In en, this message translates to:
-  /// **'Could not reach the internet service, and no sender was found on the local network. Check your connection and the code, then try again.'**
+  /// **'No sender found over Bluetooth or the local network, and the internet service is unavailable. Check the code, Bluetooth and your connection.'**
   String get codeReceiveNoNetwork;
 
   /// No description provided for @codeCopied.
@@ -1279,6 +1279,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Checking file integrity'**
   String get downloadVerifyingDetail;
+
+  /// No description provided for @downloadSaveFolderUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'The save folder is unavailable. Connect the drive or choose another folder.'**
+  String get downloadSaveFolderUnavailable;
+
+  /// No description provided for @downloadChooseFolder.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose folder'**
+  String get downloadChooseFolder;
+
+  /// No description provided for @downloadSaveFolderChooseError.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not use that folder. Please choose another folder.'**
+  String get downloadSaveFolderChooseError;
 
   /// No description provided for @downloadPreparing.
   ///
@@ -1712,6 +1730,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Still counting the files…'**
   String get qrDisplayStillCounting;
+
+  /// No description provided for @errorCancelledByReceiver.
+  ///
+  /// In en, this message translates to:
+  /// **'The receiver cancelled the transfer.'**
+  String get errorCancelledByReceiver;
+
+  /// No description provided for @errorConnectionLostNotRecovered.
+  ///
+  /// In en, this message translates to:
+  /// **'The connection was lost during the transfer and could not be restored after several attempts. Send again; nothing is reported as received that did not arrive whole.'**
+  String get errorConnectionLostNotRecovered;
+
+  /// No description provided for @errorConnectionLostPeerTooOld.
+  ///
+  /// In en, this message translates to:
+  /// **'The connection was lost, and the other device runs an older version of DirectDrop that cannot continue an interrupted transfer. Update the app on that device and send again.'**
+  String get errorConnectionLostPeerTooOld;
+
+  /// No description provided for @errorIntegrityMismatch.
+  ///
+  /// In en, this message translates to:
+  /// **'A file arrived damaged: its checksum (SHA-256) does not match the original, so it was discarded and the transfer is not reported as complete. Send again.'**
+  String get errorIntegrityMismatch;
+
+  /// No description provided for @transferReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Connection lost, reconnecting…'**
+  String get transferReconnecting;
+
+  /// No description provided for @transferReconnectingHint.
+  ///
+  /// In en, this message translates to:
+  /// **'What was already transferred is kept. The transfer will continue from where it stopped.'**
+  String get transferReconnectingHint;
 }
 
 class _AppLocalizationsDelegate

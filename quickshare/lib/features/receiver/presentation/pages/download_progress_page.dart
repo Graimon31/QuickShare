@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:quickshare/core/storage/save_location_store.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:quickshare/core/utils/background_hold.dart';
@@ -15,8 +17,14 @@ import 'package:quickshare/shared/widgets/transfer_phase_loader.dart';
 
 class DownloadProgressPage extends StatefulWidget {
   final QRPayload? initialPayload;
+  final SaveLocationStore saveLocation;
+  final Future<String?> Function(String title)? pickFolder;
 
-  const DownloadProgressPage({super.key, this.initialPayload});
+  const DownloadProgressPage(
+      {super.key,
+      this.initialPayload,
+      this.saveLocation = const SaveLocationStore(),
+      this.pickFolder});
 
   @override
   State<DownloadProgressPage> createState() => _DownloadProgressPageState();
@@ -24,6 +32,7 @@ class DownloadProgressPage extends StatefulWidget {
 
 class _DownloadProgressPageState extends State<DownloadProgressPage> {
   bool _downloadStarted = false;
+  bool _choosingFolder = false;
 
   @override
   void initState() {
@@ -120,6 +129,39 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
     context.go('/');
   }
 
+  void _leave() {
+    context.read<ReceiverBloc>().add(CancelDownload());
+    context.go('/');
+  }
+
+  Future<void> _chooseFolder() async {
+    if (_choosingFolder) return;
+    setState(() => _choosingFolder = true);
+    final l10n = AppLocalizations.of(context);
+    final bloc = context.read<ReceiverBloc>();
+    final request = bloc.state;
+    try {
+      final title = l10n.settingsSaveLocationPickerTitle;
+      final path = widget.pickFolder != null
+          ? await widget.pickFolder!(title)
+          : await FilePicker.platform.getDirectoryPath(dialogTitle: title);
+      if (path == null || !mounted || !identical(bloc.state, request)) {
+        return;
+      }
+      await widget.saveLocation.set(path);
+      if (mounted && identical(bloc.state, request)) {
+        bloc.add(const StartDownload());
+      }
+    } catch (_) {
+      if (mounted && identical(bloc.state, request)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l10n.downloadSaveFolderChooseError)));
+      }
+    } finally {
+      if (mounted) setState(() => _choosingFolder = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
@@ -148,6 +190,9 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
                 state is Verifying) {
               WakelockPlus.enable();
               unawaited(BackgroundHold.begin());
+            } else if (state is ReceiverDestinationUnavailable) {
+              WakelockPlus.disable();
+              unawaited(BackgroundHold.end());
             } else if (state is DownloadComplete) {
               WakelockPlus.disable();
               unawaited(BackgroundHold.end());
@@ -160,13 +205,44 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
             } else if (state is ReceiverError) {
               WakelockPlus.disable();
               unawaited(BackgroundHold.end());
-              ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(_errorMessage(l10n, state), style: const TextStyle(color: Colors.white))));
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(_errorMessage(l10n, state),
+                      style: const TextStyle(color: Colors.white))));
               context.go('/');
             }
           },
           builder: (context, state) {
-            if (state is Connecting) {
+            if (state is ReceiverDestinationUnavailable) {
+              return Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(l10n.downloadSaveFolderUnavailable,
+                          textAlign: TextAlign.center),
+                      const SizedBox(height: 24),
+                      FilledButton(
+                        onPressed: _choosingFolder
+                            ? null
+                            : () => context
+                                .read<ReceiverBloc>()
+                                .add(const StartDownload()),
+                        child: Text(l10n.commonRetry),
+                      ),
+                      TextButton(
+                        onPressed: _choosingFolder ? null : _chooseFolder,
+                        child: Text(l10n.downloadChooseFolder),
+                      ),
+                      TextButton(
+                        onPressed: _choosingFolder ? null : _leave,
+                        child: Text(l10n.commonCancel),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            } else if (state is Connecting) {
               return Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
@@ -191,6 +267,11 @@ class _DownloadProgressPageState extends State<DownloadProgressPage> {
                       speedBytesPerSec: state.speedBps.toDouble(),
                       fileName: state.fileName,
                     ),
+                    if (state.reconnecting) ...[
+                      const SizedBox(height: 16),
+                      Text(l10n.transferReconnecting,
+                          textAlign: TextAlign.center),
+                    ],
                     const SizedBox(height: 16),
                     _buildWakelockWarning(l10n),
                   ],

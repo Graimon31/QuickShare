@@ -26,6 +26,7 @@ class NostrCodeMailbox implements CodeMailbox {
     List<String>? relays,
     this.connectTimeout = const Duration(seconds: 2),
     this.confirmTimeout = const Duration(milliseconds: 1500),
+    this.publishTimeout = const Duration(seconds: 4),
     this.reconnectDelay = const Duration(seconds: 3),
     this.maxReconnects = 5,
     Uint8List? secretKey,
@@ -46,6 +47,7 @@ class NostrCodeMailbox implements CodeMailbox {
   /// makes the difference between a message that is delivered and one that is
   /// lost to a subscriber the relay had not heard of yet.
   final Duration confirmTimeout;
+  final Duration publishTimeout;
 
   /// The first wait before a dropped relay is tried again; doubled each time.
   final Duration reconnectDelay;
@@ -83,7 +85,8 @@ class NostrCodeMailbox implements CodeMailbox {
   Stream<MailboxMessage> get messages => _controller.stream;
 
   /// How many relays are connected right now.
-  int get connectedRelays => _links.values.where((l) => l.socket != null).length;
+  int get connectedRelays =>
+      _links.values.where((l) => l.socket != null).length;
 
   /// Subscription ids are the topic's hash, not the topic: the id is capped at
   /// 64 characters and has to be distinct per topic on one socket.
@@ -97,12 +100,11 @@ class NostrCodeMailbox implements CodeMailbox {
     _topics.putIfAbsent(topic, () => subscriptionId(topic));
 
     final first = Completer<void>();
-    var pending = relays.length;
+    var pending = _links.length;
     for (final link in _links.values) {
       unawaited(() async {
         final ok = await _ensure(link);
-        if (ok) {
-          await _request(link, topic);
+        if (ok && await _request(link, topic)) {
           if (!first.isCompleted) first.complete();
         }
         pending--;
@@ -120,7 +122,8 @@ class NostrCodeMailbox implements CodeMailbox {
     final id = _topics.remove(topic);
     if (id == null) return;
     for (final link in _links.values) {
-      link.registered.remove(id);
+      final pending = link.registered.remove(id);
+      if (pending != null && !pending.isCompleted) pending.complete(false);
       _send(link, jsonEncode(['CLOSE', id]));
     }
   }
@@ -129,17 +132,19 @@ class NostrCodeMailbox implements CodeMailbox {
   Future<void> publish(String topic, Uint8List payload) async {
     if (_closed) throw const MailboxUnavailable('the mailbox is closed');
     if (relays.isEmpty) throw const MailboxUnavailable('no Nostr relays');
-    final encoded = jsonEncode([
-      'EVENT',
-      buildNostrEvent(secretKey: _secretKey, topic: topic, payload: payload),
-    ]);
+    final event =
+        buildNostrEvent(secretKey: _secretKey, topic: topic, payload: payload);
+    final encoded = jsonEncode(['EVENT', event]);
+    final eventId = event['id'] as String;
 
     final sent = Completer<void>();
-    var pending = relays.length;
+    var pending = _links.length;
     for (final link in _links.values) {
       unawaited(() async {
         final ok = await _ensure(link);
-        if (ok && _send(link, encoded) && !sent.isCompleted) sent.complete();
+        if (ok && await _publish(link, eventId, encoded) && !sent.isCompleted) {
+          sent.complete();
+        }
         pending--;
         if (pending == 0 && !sent.isCompleted) {
           sent.completeError(MailboxUnavailable(
@@ -182,7 +187,7 @@ class NostrCodeMailbox implements CodeMailbox {
       );
       // Every topic still wanted, on a socket that is new to the relay.
       for (final entry in _topics.entries) {
-        link.registered.putIfAbsent(entry.value, Completer<void>.new);
+        link.registered.putIfAbsent(entry.value, Completer<bool>.new);
         _send(link, _requestFrame(entry.key, entry.value));
       }
       return true;
@@ -201,6 +206,7 @@ class NostrCodeMailbox implements CodeMailbox {
   void _lost(_Link link, WebSocketChannel socket) {
     if (!identical(link.socket, socket)) return;
     link.socket = null;
+    _failPending(link);
     link.registered.clear();
     unawaited(link.listening?.cancel());
     link.listening = null;
@@ -236,20 +242,46 @@ class NostrCodeMailbox implements CodeMailbox {
 
   /// Asks [link]'s relay for [topic] and waits, for a moment, until the relay
   /// says it is listening.
-  Future<void> _request(_Link link, String topic) async {
+  Future<bool> _request(_Link link, String topic) async {
     final id = _topics[topic];
-    if (id == null) return;
-    // Asked for already — by the connection that has just been opened, which
-    // asks for every topic wanted — is asked for once.
+    if (id == null || _closed || link.socket == null) return false;
     final asked = link.registered.containsKey(id);
-    final registered = link.registered.putIfAbsent(id, Completer<void>.new);
-    if (!asked && !_send(link, _requestFrame(topic, id))) return;
+    final registered = link.registered.putIfAbsent(id, Completer<bool>.new);
+    if (!asked && !_send(link, _requestFrame(topic, id))) return false;
     try {
-      await registered.future.timeout(confirmTimeout);
+      return await registered.future.timeout(confirmTimeout);
     } on TimeoutException {
-      // A relay that never says so is taken at its word that it got the
-      // frame.
+      // Sending REQ is not evidence that the relay registered it.
+      if (identical(link.registered[id], registered)) {
+        link.registered.remove(id);
+      }
+      return false;
     }
+  }
+
+  Future<bool> _publish(_Link link, String id, String frame) async {
+    if (_closed || link.socket == null) return false;
+    final accepted = link.publications.putIfAbsent(id, Completer<bool>.new);
+    try {
+      if (!_send(link, frame)) return false;
+      return await accepted.future.timeout(publishTimeout);
+    } on TimeoutException {
+      return false;
+    } finally {
+      if (identical(link.publications[id], accepted)) {
+        link.publications.remove(id);
+      }
+    }
+  }
+
+  void _failPending(_Link link) {
+    for (final pending in [
+      ...link.registered.values,
+      ...link.publications.values
+    ]) {
+      if (!pending.isCompleted) pending.complete(false);
+    }
+    link.publications.clear();
   }
 
   // ─── Incoming ──────────────────────────────────────────────────────────
@@ -266,9 +298,17 @@ class NostrCodeMailbox implements CodeMailbox {
         case 'EOSE':
           if (message.length >= 2 && message[1] is String) {
             final done = link.registered[message[1]];
-            if (done != null && !done.isCompleted) done.complete();
+            if (done != null && !done.isCompleted) done.complete(true);
           }
         case 'OK':
+          if (message.length >= 3 &&
+              message[1] is String &&
+              message[2] is bool) {
+            final pending = link.publications[message[1]];
+            if (pending != null && !pending.isCompleted) {
+              pending.complete(message[2] as bool);
+            }
+          }
           if (message.length >= 3 && message[2] == false) {
             AppLogger.warning(
                 'Nostr relay ${link.url} refused an event: '
@@ -276,9 +316,16 @@ class NostrCodeMailbox implements CodeMailbox {
                 tag: 'SIGNALING');
           }
         case 'NOTICE':
-          AppLogger.warning('Nostr relay ${link.url} notice: ${message.skip(1)}',
+          AppLogger.warning(
+              'Nostr relay ${link.url} notice: ${message.skip(1)}',
               tag: 'SIGNALING');
         case 'CLOSED':
+          if (message.length >= 2 && message[1] is String) {
+            final pending = link.registered.remove(message[1]);
+            if (pending != null && !pending.isCompleted) {
+              pending.complete(false);
+            }
+          }
           AppLogger.warning(
               'Nostr relay ${link.url} closed a subscription: '
               '${message.skip(1)}',
@@ -342,6 +389,8 @@ class NostrCodeMailbox implements CodeMailbox {
     for (final link in _links.values) {
       link.retry?.cancel();
       link.retry = null;
+      _failPending(link);
+      link.registered.clear();
       await link.listening?.cancel();
       link.listening = null;
       final socket = link.socket;
@@ -372,5 +421,6 @@ class _Link {
   int reconnects = 0;
 
   /// Subscription ids this relay has been asked for and has not yet confirmed.
-  final registered = <String, Completer<void>>{};
+  final registered = <String, Completer<bool>>{};
+  final publications = <String, Completer<bool>>{};
 }

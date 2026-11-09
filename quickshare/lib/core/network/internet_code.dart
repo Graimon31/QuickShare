@@ -384,7 +384,7 @@ class InternetCodeKeys {
 
 /// Which message a sealed envelope is. Bound into the associated data so that
 /// one cannot be replayed as the other.
-enum SealRole { confirm, payload }
+enum SealRole { confirm, payload, cancel }
 
 /// ChaCha20-Poly1305 over the exchange's messages: `nonce ‖ ciphertext ‖ tag`.
 class InternetCodeSeal {

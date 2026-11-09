@@ -33,6 +33,8 @@ import 'package:quickshare/features/sender/presentation/bloc/sender_bloc.dart';
 
 class _MockSenderRepository extends Mock implements SenderRepository {}
 
+class _FakeTransferSession extends Fake implements TransferSession {}
+
 /// Stands in for the native side, which does not exist under `flutter test`.
 class _FakePeerLink extends PeerLinkService {
   const _FakePeerLink();
@@ -112,6 +114,7 @@ void main() {
 
   setUpAll(() {
     registerFallbackValue(const Duration(seconds: 1));
+    registerFallbackValue(_FakeTransferSession());
   });
 
   setUp(() {
@@ -123,6 +126,13 @@ void main() {
 
     messenger.setMockMethodCallHandler(method, (call) async {
       nativeCalls.add(call);
+      if (call.method == 'startAdvertising') {
+        await messenger.handlePlatformMessage(
+            events.name,
+            const StandardMethodCodec()
+                .encodeSuccessEnvelope({'type': 'advertisingStarted'}),
+            (_) {});
+      }
       return null;
     });
     // The transport subscribes to the event channel on initialize().
@@ -194,6 +204,63 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
     }
   }
+
+  test('completion names the selection and resets it for the next send',
+      () async {
+    final folder = Directory(p.join(workspace.path, 'Holiday'))..createSync();
+    File(p.join(folder.path, 'chunk01.txt')).writeAsStringSync('one');
+    File(p.join(folder.path, 'chunk02.txt')).writeAsStringSync('two');
+    final single = write('single.txt');
+    const wifiFile = FileMetadata(
+        name: 'wifi.txt',
+        path: '/tmp/wifi.txt',
+        size: 7,
+        mimeType: 'text/plain');
+    when(() => repository.startQhtpTransfer(any(),
+            authToken: any(named: 'authToken'),
+            sessionCode: any(named: 'sessionCode'),
+            onIndexProgress: any(named: 'onIndexProgress'),
+            onIndexed: any(named: 'onIndexed'),
+            onIndexFailed: any(named: 'onIndexFailed')))
+        .thenAnswer((_) async => Right(TransferSession(
+              id: 'wifi',
+              fileMetadata: wifiFile,
+              serverPort: 8000,
+              authToken: 'token',
+              localIp: '127.0.0.1',
+              startedAt: DateTime.now(),
+            )));
+    when(() => repository.generateQRPayload(any()))
+        .thenAnswer((_) async => const Right('quickshare://join?room=123456'));
+
+    final bloc = SenderBloc(
+        repository: repository, peerLinkService: const _FakePeerLink());
+    addTearDown(bloc.close);
+
+    Future<TransferComplete> send(
+        List<String> paths, TransportType mode) async {
+      final ready = bloc.stream.firstWhere((s) => mode == TransportType.wifi
+          ? s is QRReady
+          : s is BluetoothAdvertising);
+      bloc.add(StartQhtpSend(paths, mode: mode));
+      await ready.timeout(const Duration(seconds: 20));
+      final done = bloc.stream
+          .where((s) => s is TransferComplete)
+          .cast<TransferComplete>()
+          .first;
+      bloc.add(TransferCompleted());
+      return done.timeout(const Duration(seconds: 20));
+    }
+
+    final folderDone = await send([folder.path], TransportType.bluetooth);
+    expect(folderDone.file.name, 'Holiday');
+    expect(folderDone.file.size, 6);
+    expect(folderDone.file.mimeType, 'inode/directory');
+    final singleDone = await send([single.path], TransportType.bluetooth);
+    expect(singleDone.file.name, 'single.txt');
+    final wifiDone = await send([wifiFile.path], TransportType.wifi);
+    expect(wifiDone.file.name, 'wifi.txt');
+  });
 
   test('progress on the direct link moves the sender off its QR code',
       () async {

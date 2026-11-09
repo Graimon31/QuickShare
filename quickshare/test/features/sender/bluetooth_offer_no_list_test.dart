@@ -1,4 +1,4 @@
-// The Bluetooth screen is a QR code, and only that.
+// The Bluetooth screen offers a QR and digits, without a device list.
 //
 // Another device in radio range announcing itself must not appear on this
 // screen as a row to be picked: devices are joined by the QR or the code, and
@@ -58,8 +58,13 @@ void main() {
   }
 
   setUp(() {
-    binding.defaultBinaryMessenger
-        .setMockMethodCallHandler(methods, (call) async => null);
+    binding.defaultBinaryMessenger.setMockMethodCallHandler(methods,
+        (call) async {
+      if (call.method == 'startAdvertising') {
+        await radioSays({'type': 'advertisingStarted'});
+      }
+      return null;
+    });
     binding.defaultBinaryMessenger
         .setMockMethodCallHandler(events, (call) async => null);
   });
@@ -131,6 +136,10 @@ void main() {
 
       final shown = (bloc.state as BluetoothAdvertising).qrData;
       expect(find.byType(QrImageView), findsOneWidget);
+      final code = (bloc.state as BluetoothAdvertising).code;
+      expect(code, isNotNull);
+      expect(find.text(code!.display), findsOneWidget);
+      expect(find.byIcon(Icons.copy_rounded), findsOneWidget);
       expect(BluetoothQrPayload.tryDecode(shown), isNotNull,
           reason: 'the code on screen is a Bluetooth session');
 

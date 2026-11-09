@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +8,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 
 import 'package:quickshare/core/storage/received_item.dart';
+import 'package:quickshare/core/storage/save_location_store.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
 import 'package:quickshare/features/receiver/domain/usecases/download_file_usecase.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
@@ -26,7 +28,10 @@ class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
   Future<bool> get enabled async => false;
 }
 
+class _MockSaveLocationStore extends Mock implements SaveLocationStore {}
+
 class _MockDownloadFileUseCase extends Mock implements DownloadFileUseCase {}
+
 class _MockReceiverRepository extends Mock implements ReceiverRepository {}
 
 class _TestReceiverBloc extends ReceiverBloc {
@@ -68,6 +73,7 @@ void main() {
     required Widget child,
     required ReceiverBloc bloc,
     String initialLocation = '/current',
+    Locale? locale,
   }) {
     final router = GoRouter(
       initialLocation: initialLocation,
@@ -100,12 +106,149 @@ void main() {
       child: MaterialApp.router(
         localizationsDelegates: AppLocalizations.localizationsDelegates,
         supportedLocales: AppLocalizations.supportedLocales,
+        locale: locale,
         routerConfig: router,
       ),
     );
   }
 
   group('Receiver Navigation & UI Flow', () {
+    testWidgets(
+        'unavailable folder offers localized recovery and preserves a cancelled choice',
+        (tester) async {
+      final bloc = _TestReceiverBloc(
+          downloadFileUseCase: _MockDownloadFileUseCase(),
+          repository: _MockReceiverRepository());
+      final store = _MockSaveLocationStore();
+      bloc.emit(ReceiverDestinationUnavailable());
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        await bloc.close();
+      });
+      await tester.pumpWidget(wrapWithRouterAndBloc(
+        bloc: bloc,
+        locale: const Locale('ru'),
+        child: DownloadProgressPage(
+            saveLocation: store, pickFolder: (_) async => null),
+      ));
+      await tester.pump();
+      expect(
+          find.text(
+              'Папка сохранения недоступна. Подключите диск или выберите другую папку.'),
+          findsOneWidget);
+      await tester.tap(find.text('Выбрать папку'));
+      await tester.pump();
+      verifyNever(() => store.set(any()));
+      expect(bloc.state, isA<ReceiverDestinationUnavailable>());
+      final before = bloc.recordedEvents.whereType<StartDownload>().length;
+      await tester.tap(find.text('Повторить'));
+      expect(bloc.recordedEvents.whereType<StartDownload>().length, before + 1);
+    });
+
+    testWidgets(
+        'chosen folder is saved and retried, but a late picker result after cancellation is ignored',
+        (tester) async {
+      final bloc = _TestReceiverBloc(
+          downloadFileUseCase: _MockDownloadFileUseCase(),
+          repository: _MockReceiverRepository());
+      final store = _MockSaveLocationStore();
+      when(() => store.set(any())).thenAnswer((_) async {});
+      final choice = Completer<String?>();
+      bloc.emit(ReceiverDestinationUnavailable());
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        await bloc.close();
+      });
+      await tester.pumpWidget(wrapWithRouterAndBloc(
+        bloc: bloc,
+        child: DownloadProgressPage(
+            saveLocation: store, pickFolder: (_) => choice.future),
+      ));
+      await tester.pump();
+      await tester.tap(find.text('Choose folder'));
+      await tester.pump();
+      bloc.emit(Connecting());
+      await tester.pump();
+      bloc.emit(ReceiverDestinationUnavailable());
+      await tester.pump();
+      choice.complete('/late');
+      await tester.pump();
+      verifyNever(() => store.set(any()));
+    });
+
+    testWidgets('cancel from unavailable folder returns home', (tester) async {
+      final bloc = _TestReceiverBloc(
+          downloadFileUseCase: _MockDownloadFileUseCase(),
+          repository: _MockReceiverRepository());
+      bloc.emit(ReceiverDestinationUnavailable());
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        await bloc.close();
+      });
+      await tester.pumpWidget(wrapWithRouterAndBloc(
+          bloc: bloc, child: const DownloadProgressPage()));
+      await tester.pump();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(bloc.recordedEvents.whereType<CancelDownload>(), hasLength(1));
+      expect(find.text('home_page'), findsOneWidget);
+    });
+
+    testWidgets('a new unavailable request during save is not retried',
+        (tester) async {
+      final bloc = _TestReceiverBloc(
+          downloadFileUseCase: _MockDownloadFileUseCase(),
+          repository: _MockReceiverRepository());
+      final store = _MockSaveLocationStore();
+      final save = Completer<void>();
+      when(() => store.set('/chosen')).thenAnswer((_) => save.future);
+      bloc.emit(ReceiverDestinationUnavailable());
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        await bloc.close();
+      });
+      await tester.pumpWidget(wrapWithRouterAndBloc(
+        bloc: bloc,
+        child: DownloadProgressPage(
+            saveLocation: store, pickFolder: (_) async => '/chosen'),
+      ));
+      await tester.pump();
+      final before = bloc.recordedEvents.whereType<StartDownload>().length;
+      await tester.tap(find.text('Choose folder'));
+      await tester.pump();
+      bloc.emit(Connecting());
+      await tester.pump();
+      bloc.emit(ReceiverDestinationUnavailable());
+      await tester.pump();
+      save.complete();
+      await tester.pump();
+      expect(bloc.recordedEvents.whereType<StartDownload>().length, before);
+    });
+
+    testWidgets('choosing a folder saves it and retries', (tester) async {
+      final bloc = _TestReceiverBloc(
+          downloadFileUseCase: _MockDownloadFileUseCase(),
+          repository: _MockReceiverRepository());
+      final store = _MockSaveLocationStore();
+      when(() => store.set('/chosen')).thenAnswer((_) async {});
+      bloc.emit(ReceiverDestinationUnavailable());
+      addTearDown(() async {
+        await tester.pumpWidget(const SizedBox());
+        await bloc.close();
+      });
+      await tester.pumpWidget(wrapWithRouterAndBloc(
+        bloc: bloc,
+        child: DownloadProgressPage(
+            saveLocation: store, pickFolder: (_) async => '/chosen'),
+      ));
+      await tester.pump();
+      final before = bloc.recordedEvents.whereType<StartDownload>().length;
+      await tester.tap(find.text('Choose folder'));
+      await tester.pump();
+      verify(() => store.set('/chosen')).called(1);
+      expect(bloc.recordedEvents.whereType<StartDownload>().length, before + 1);
+    });
+
     testWidgets(
         'TransferPreviewPage displays folder icon, item count and receive button for QHTP session',
         (tester) async {
@@ -187,7 +330,10 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      expect(bloc.recordedEvents.any((e) => e is StartDownload && e.payload == btPayload), isTrue);
+      expect(
+          bloc.recordedEvents
+              .any((e) => e is StartDownload && e.payload == btPayload),
+          isTrue);
       expect(find.byType(DownloadProgressPage), findsOneWidget);
     });
 
@@ -254,8 +400,8 @@ void main() {
       await tester.pump(const Duration(milliseconds: 500));
 
       expect(find.byType(CustomProgressIndicator), findsOneWidget);
-      final indicator =
-          tester.widget<CustomProgressIndicator>(find.byType(CustomProgressIndicator));
+      final indicator = tester.widget<CustomProgressIndicator>(
+          find.byType(CustomProgressIndicator));
       expect(indicator.progress, 0.65);
       expect(indicator.fileName, 'archive.tar');
     });

@@ -1,4 +1,11 @@
+import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:quickshare/core/storage/save_location_store.dart';
+import 'package:quickshare/core/storage/receive_destination.dart';
+import 'package:quickshare/core/storage/save_destination.dart';
+import 'package:quickshare/core/storage/gallery_formats.dart';
+import 'package:quickshare/core/storage/transfer_cache.dart';
+import '../../../../support/sample_offer.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:quickshare/features/receiver/presentation/bloc/receiver_bloc.dart';
 import 'package:quickshare/features/receiver/domain/repositories/receiver_repository.dart';
@@ -11,9 +18,14 @@ import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_tra
 import 'package:quickshare/features/receiver/data/transports/bluetooth_receiver_session.dart';
 
 class MockDownloadFileUseCase extends Mock implements DownloadFileUseCase {}
+
 class MockReceiverRepository extends Mock implements ReceiverRepository {}
-class MockWebRtcReceiverTransport extends Mock implements WebRtcReceiverTransport {}
-class MockBluetoothReceiverSession extends Mock implements BluetoothReceiverSession {}
+
+class MockWebRtcReceiverTransport extends Mock
+    implements WebRtcReceiverTransport {}
+
+class MockBluetoothReceiverSession extends Mock
+    implements BluetoothReceiverSession {}
 
 void main() {
   late ReceiverBloc receiverBloc;
@@ -47,6 +59,134 @@ void main() {
     receiverBloc.close();
   });
 
+  test(
+      'unavailable destination stops each transport and retry keeps the session',
+      () async {
+    var calls = 0;
+    var bluetoothCreated = false;
+    var internetCreated = false;
+    final bloc = ReceiverBloc(
+      downloadFileUseCase: mockDownloadFileUseCase,
+      repository: mockReceiverRepository,
+      resolveDestination: () async {
+        calls++;
+        throw const SaveLocationUnavailableException('/missing');
+      },
+      bluetoothSessionFactory: () {
+        bluetoothCreated = true;
+        return MockBluetoothReceiverSession();
+      },
+      serverlessTransportFactory: () {
+        internetCreated = true;
+        return MockWebRtcReceiverTransport();
+      },
+    );
+    addTearDown(bloc.close);
+    final payloads = [
+      const QRPayload(
+          version: 2,
+          ip: 'host',
+          port: 123,
+          token: 'lan',
+          sessionId: 'session'),
+      const QRPayload(
+          version: 2, ip: '', port: 0, token: 'bt', mode: 'bluetooth'),
+      QRPayload(
+          version: 2,
+          ip: '',
+          port: 0,
+          token: 'internet',
+          mode: 'webrtc-qs1',
+          sdpOffer: sampleOffer()),
+    ];
+    for (final payload in payloads) {
+      final failed =
+          bloc.stream.firstWhere((s) => s is ReceiverDestinationUnavailable);
+      bloc.add(StartDownload(payload: payload));
+      await failed;
+      final retry =
+          bloc.stream.firstWhere((s) => s is ReceiverDestinationUnavailable);
+      bloc.add(const StartDownload());
+      await retry;
+    }
+    expect(calls, 6);
+    expect(bluetoothCreated, isFalse);
+    expect(internetCreated, isFalse);
+    verifyNever(() => mockReceiverRepository.receiveQhtpSession(any(), any(),
+        onProgress: any(named: 'onProgress')));
+  });
+
+  test('retry after a folder returns receives the same payload', () async {
+    final root = await Directory.systemTemp.createTemp('receiver_retry_');
+    addTearDown(() => root.delete(recursive: true));
+    var available = false;
+    const payload = QRPayload(
+        version: 2,
+        ip: 'host',
+        port: 123,
+        token: 'same-token',
+        sessionId: 'session');
+    when(() => mockReceiverRepository.receiveQhtpSession(any(), any(),
+            onProgress: any(named: 'onProgress')))
+        .thenAnswer((_) async => const Left(ServerFailure('network error')));
+    final bloc = ReceiverBloc(
+      downloadFileUseCase: mockDownloadFileUseCase,
+      repository: mockReceiverRepository,
+      resolveDestination: () async {
+        if (!available) {
+          throw const SaveLocationUnavailableException('/missing');
+        }
+        return ReceiveDestination.resolve(
+          destination: const SaveDestination(
+              isDesktop: false, gallery: GalleryFormats(GalleryPlatform.ios)),
+          cache: TransferCache(overrideRoot: () => root),
+        );
+      },
+    );
+    addTearDown(bloc.close);
+    final unavailable =
+        bloc.stream.firstWhere((s) => s is ReceiverDestinationUnavailable);
+    bloc.add(const StartDownload(payload: payload));
+    await unavailable;
+    verifyNever(() => mockReceiverRepository.receiveQhtpSession(any(), any(),
+        onProgress: any(named: 'onProgress')));
+    available = true;
+    final failed = bloc.stream.firstWhere((s) => s is ReceiverError);
+    bloc.add(const StartDownload());
+    await failed;
+    verify(() => mockReceiverRepository.receiveQhtpSession(payload, any(),
+        onProgress: any(named: 'onProgress'))).called(1);
+  });
+
+  test('cancelling an unavailable destination clears the current session',
+      () async {
+    const payload = QRPayload(
+        version: 2,
+        ip: 'host',
+        port: 123,
+        token: 'token',
+        sessionId: 'session');
+    when(() => mockReceiverRepository.cancelDownload()).thenReturn(null);
+    final bloc = ReceiverBloc(
+      downloadFileUseCase: mockDownloadFileUseCase,
+      repository: mockReceiverRepository,
+      resolveDestination: () async =>
+          throw const SaveLocationUnavailableException('/missing'),
+    );
+    addTearDown(bloc.close);
+    final unavailable =
+        bloc.stream.firstWhere((s) => s is ReceiverDestinationUnavailable);
+    bloc.add(const StartDownload(payload: payload));
+    await unavailable;
+    final initial = bloc.stream.firstWhere((s) => s is ReceiverInitial);
+    bloc.add(CancelDownload());
+    await initial;
+    final missing = bloc.stream.firstWhere((s) => s is ReceiverError);
+    bloc.add(const StartDownload());
+    expect((await missing as ReceiverError).message,
+        contains('session is missing'));
+  });
+
   test('initial state should be ReceiverInitial', () {
     expect(receiverBloc.state, equals(ReceiverInitial()));
   });
@@ -74,8 +214,8 @@ void main() {
 
   test('should emit ReceiverError when invalid QR code is scanned', () async {
     const rawQr = 'invalid_qr_string';
-    when(() => mockReceiverRepository.parseQRCode(rawQr))
-        .thenAnswer((_) async => const Left(ServerFailure('Invalid QR format')));
+    when(() => mockReceiverRepository.parseQRCode(rawQr)).thenAnswer(
+        (_) async => const Left(ServerFailure('Invalid QR format')));
 
     receiverBloc.add(const QRCodeScanned(rawQr));
 
@@ -91,7 +231,8 @@ void main() {
     );
   });
 
-  test('a typed code that leads to nothing readable does not tell the user to '
+  test(
+      'a typed code that leads to nothing readable does not tell the user to '
       'point a camera', () async {
     const raw = 'not-a-payload';
     when(() => mockReceiverRepository.parseQRCode(raw))
@@ -102,7 +243,8 @@ void main() {
       emits(isA<ReceiverError>().having(
         (e) => e.message,
         'message',
-        allOf(contains('code'), isNot(contains('camera')), isNot(contains('link'))),
+        allOf(contains('code'), isNot(contains('camera')),
+            isNot(contains('link'))),
       )),
     );
     receiverBloc.add(const QRCodeScanned(raw, fromPaste: true));
@@ -133,7 +275,8 @@ void main() {
     await second;
   });
 
-  test('should emit ReceiverInitial when CancelDownload event is added', () async {
+  test('should emit ReceiverInitial when CancelDownload event is added',
+      () async {
     when(() => mockReceiverRepository.cancelDownload()).thenReturn(null);
 
     final expectation = expectLater(
@@ -164,7 +307,8 @@ void main() {
     expect(receiverBloc.serverlessTransport, isNull);
   });
 
-  test('should emit QRParsed with preview when Bluetooth QR code is scanned', () async {
+  test('should emit QRParsed with preview when Bluetooth QR code is scanned',
+      () async {
     const btPayload = QRPayload(
       version: 2,
       ip: 'bt',

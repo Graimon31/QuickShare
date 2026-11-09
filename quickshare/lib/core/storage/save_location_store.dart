@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -24,6 +25,17 @@ class SaveLocation {
         path: json['path'] as String? ?? '',
         bookmark: json['bookmark'] as String? ?? '',
       );
+}
+
+/// A saved folder cannot currently be accessed. The saved choice is retained.
+class SaveLocationUnavailableException implements Exception {
+  final String path;
+  final Object? cause;
+
+  const SaveLocationUnavailableException(this.path, [this.cause]);
+
+  @override
+  String toString() => 'Saved folder is unavailable: $path';
 }
 
 /// Persists the desktop "where do received files go" choice.
@@ -78,8 +90,8 @@ class SaveLocationStore {
         ? await _bookmark.create(directoryPath)
         : '';
     final file = await _file();
-    await file.writeAsString(
-        jsonEncode(SaveLocation(path: directoryPath, bookmark: bookmark).toJson()));
+    await file.writeAsString(jsonEncode(
+        SaveLocation(path: directoryPath, bookmark: bookmark).toJson()));
   }
 
   /// Clears the choice, reverting to this platform's default folder.
@@ -99,8 +111,7 @@ class SaveLocationStore {
       AppLogger.warning('Could not refresh a stale bookmark: $e', tag: 'SAVE');
     }
     if (freshPath != location.path) {
-      AppLogger.info(
-          'Saved folder moved from ${location.path} to $freshPath',
+      AppLogger.info('Saved folder moved from ${location.path} to $freshPath',
           tag: 'SAVE');
     }
   }
@@ -115,35 +126,51 @@ class SaveLocationStore {
     final location = await read();
     if (location == null) return null;
 
-    if (!SaveLocationBookmark.isSupported) {
-      return Directory(location.path);
+    var path = location.path;
+    var scopeOpened = false;
+    BookmarkAccess? access;
+    if (SaveLocationBookmark.isSupported && location.bookmark.isNotEmpty) {
+      try {
+        access = await _bookmark.startAccessing(location.bookmark);
+        scopeOpened = true;
+        path = access.path;
+      } catch (e) {
+        AppLogger.warning('Saved folder "${location.path}" is unreachable ($e)',
+            tag: 'SAVE');
+        throw SaveLocationUnavailableException(location.path, e);
+      }
     }
-
-    if (location.bookmark.isEmpty) {
-      // Set on a different platform, or before this store existed. Nothing
-      // to resolve; the plain path is what there is.
-      return Directory(location.path);
-    }
-
-    BookmarkAccess access;
     try {
-      access = await _bookmark.startAccessing(location.bookmark);
+      await _checkWritable(Directory(path));
     } catch (e) {
-      // The folder behind the bookmark is gone or the bookmark itself is
-      // damaged — an unplugged external drive, a folder deleted in Finder.
-      // null means "use the platform default", so this one batch falls back
-      // instead of the failure surfacing mid-save and wedging the screen
-      // that is waiting on it. The stored choice is kept: a transient
-      // condition like a disconnected drive should not erase a deliberate
-      // setting, and once the folder comes back, transfers head there again.
-      AppLogger.warning(
-          'Saved folder "${location.path}" is unreachable ($e); saving to '
-          'the platform default this once',
-          tag: 'SAVE');
-      return null;
+      if (scopeOpened) {
+        try {
+          await _bookmark.stopAccessing();
+        } catch (_) {
+          // Preserve the destination error if scope cleanup fails.
+        }
+      }
+      throw SaveLocationUnavailableException(path, e);
     }
-    if (access.stale) await _refresh(location, access.path);
-    return Directory(access.path);
+    if (access?.stale == true) await _refresh(location, path);
+    return Directory(path);
+  }
+
+  static Future<void> _checkWritable(Directory directory) async {
+    if (!await directory.exists()) {
+      throw FileSystemException('Directory does not exist', directory.path);
+    }
+    final random = Random.secure();
+    final probe = File(p.join(directory.path,
+        '.quickshare-write-probe-${random.nextInt(1 << 32)}-${random.nextInt(1 << 32)}'));
+    var created = false;
+    try {
+      await probe.create(exclusive: true);
+      created = true;
+      await probe.writeAsBytes(const [0], flush: true);
+    } finally {
+      if (created) await probe.delete();
+    }
   }
 
   /// Releases whatever [resolveForWriting] opened. A no-op off macOS.

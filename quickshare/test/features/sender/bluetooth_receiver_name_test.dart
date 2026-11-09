@@ -93,8 +93,12 @@ void main() {
     scratch = Directory.systemTemp.createTempSync('bt_receiver_name');
     File('${scratch.path}/offer.bin').writeAsBytesSync([1, 2, 3, 4, 5]);
     sent = [];
-    binding.defaultBinaryMessenger.setMockMethodCallHandler(methods, (call) async {
+    binding.defaultBinaryMessenger.setMockMethodCallHandler(methods,
+        (call) async {
       sent.add(call);
+      if (call.method == 'startAdvertising') {
+        await radioSays({'type': 'advertisingStarted'});
+      }
       return null;
     });
     binding.defaultBinaryMessenger
@@ -141,8 +145,9 @@ void main() {
             .thenAnswer((_) => const Stream.empty());
         when(() => repository.sessionTlsFingerprint).thenReturn('AA:BB');
         when(() => repository.lastQhtpClientAddress).thenReturn(null);
-        when(() => repository.waitForFirstClient(
-            timeout: any(named: 'timeout'))).thenAnswer((_) async => true);
+        when(() =>
+                repository.waitForFirstClient(timeout: any(named: 'timeout')))
+            .thenAnswer((_) async => true);
         when(() => repository.startQhtpTransfer(
               any(),
               authToken: any(named: 'authToken'),

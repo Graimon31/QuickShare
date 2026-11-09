@@ -7,6 +7,7 @@ enum TransferStatus {
   connecting,
   serving,
   transferring,
+  reconnecting,
   completed,
   failed,
   cancelled,

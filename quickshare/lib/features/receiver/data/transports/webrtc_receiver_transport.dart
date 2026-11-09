@@ -22,8 +22,19 @@ import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/core/webrtc/idle_watchdog.dart';
 import 'package:quickshare/core/webrtc/relay_availability.dart';
 import 'package:quickshare/core/webrtc/sdp_compressor.dart';
+import 'package:quickshare/core/webrtc/resume/item_digest.dart';
+import 'package:quickshare/core/webrtc/resume/cancellation_notifier.dart';
+import 'package:quickshare/core/webrtc/resume/receiver_link.dart';
+import 'package:quickshare/core/webrtc/resume/reconnect_policy.dart';
+import 'package:quickshare/core/webrtc/resume/resume_signaling.dart';
+import 'package:quickshare/core/webrtc/resume/webrtc_links.dart';
 import 'package:quickshare/core/webrtc/transfer_protocol.dart';
+import 'package:quickshare/core/webrtc/transfer_stats_sampler.dart';
 import 'package:quickshare/core/webrtc/turn_credential_refresher.dart';
+import 'package:quickshare/core/signaling/code_mailbox_factory.dart';
+import 'package:quickshare/core/signaling/serverless_qr.dart';
+import 'package:quickshare/core/webrtc/compact_sdp.dart';
+import 'package:quickshare/core/errors/failures.dart';
 import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 import 'package:quickshare/core/utils/app_logger.dart';
 
@@ -66,7 +77,34 @@ class WebRtcReceiverTransport {
     DiskSpaceProbe? diskSpace,
     this.debugFileFactory,
     this.iceConnectBudget = IceConnectDeadline.defaultBudget,
+    this.stall = const StallPolicy(),
+    this.reconnectPolicy = const ReconnectPolicy(),
+    this.completionGrace = const Duration(seconds: 30),
+    this.debugLinkOpener,
+    this.forceInlineDigest = false,
   }) : _diskSpace = diskSpace ?? DiskSpaceProbe.forCurrentPlatform();
+
+  /// How long the connection may be silent before it is called dead; see
+  /// [StallPolicy] for why these numbers.
+  final StallPolicy stall;
+
+  /// How hard a dead connection is waited out; see [ReconnectPolicy].
+  final ReconnectPolicy reconnectPolicy;
+
+  /// After a transfer is complete the receiver stays reachable this long, so
+  /// that a sender that never heard `done` can find it and be told. The
+  /// transfer is reported complete at once; only the listening goes on.
+  final Duration completionGrace;
+
+  /// Test seam: answers an offer for a replacement link without a real peer
+  /// connection. Null in production.
+  @visibleForTesting
+  final ReceiverLinkOpener? debugLinkOpener;
+
+  /// Hashes in the calling isolate whatever the size (a test under a fake
+  /// clock never gets a worker's reply).
+  @visibleForTesting
+  final bool forceInlineDigest;
 
   /// How long a negotiation may take once the answer is delivered.
   /// Overridable only so a test need not spend a minute to see the deadline
@@ -109,7 +147,6 @@ class WebRtcReceiverTransport {
   String? _stagedRoot;
   String? _finalRoot;
 
-
   DateTime _lastTick = DateTime.now();
   int _lastBytes = 0;
   int _speedBps = 0;
@@ -120,8 +157,7 @@ class WebRtcReceiverTransport {
   /// a Desktop→iOS transfer "hanging". Same cadence as the QHTP client, and
   /// for the same reason.
   static const Duration _progressInterval = Duration(milliseconds: 100);
-  DateTime _lastProgressReport =
-      DateTime.now().subtract(_progressInterval);
+  DateTime _lastProgressReport = DateTime.now().subtract(_progressInterval);
 
   /// How large the item now open is meant to be, from the manifest. The seal
   /// checks the file against it before the name goes on: a truncated item
@@ -150,14 +186,63 @@ class WebRtcReceiverTransport {
   /// no signaling channel to report a disconnect through, so ICE state and a
   /// lack of incoming bytes are the only signals available.
   IdleWatchdog? _idleWatchdog;
+
+  /// What a sender that cannot resume is given before it is written off: it
+  /// has no way to say it is still there except by sending.
   static const _idleTimeout = Duration(seconds: 30);
 
-  /// How long ICE may sit in `disconnected` before giving up — matches the
-  /// sender's grace period ([WebRtcTransferTransport._iceRecoveryGrace]) for
-  /// the same reason: routine on a relay path under a VPN, not fatal on its
-  /// own.
-  static const _iceRecoveryGrace = Duration(seconds: 20);
-  Timer? _iceRecoveryTimer;
+  // ─── Reconnection ──────────────────────────────────────────────────────
+
+  /// What the sender said it speaks: 1 for every build that predates
+  /// reconnection (which cannot resume and is spoken to as it always was), 2
+  /// from a manifest that names a session.
+  int _peerVersion = 1;
+
+  /// The session the manifest opened, as the sender named it.
+  String? _sid;
+
+  ResumeSetup? _resumeSetup;
+  ResumeReceiverSignaling? _signaling;
+  StreamSubscription<ResumeOffer>? _offers;
+  WebRtcReceiverLink? _firstLink;
+
+  /// The link bytes are being taken from, and the number frames must carry to
+  /// be believed: a frame from a link that has been replaced is the old
+  /// connection's, and the sender will send it again on the new one.
+  ReceiverLink? _link;
+  int _linkId = 0;
+  int _linkGeneration = 0;
+
+  /// New arrivals from the current link are being turned away while a
+  /// replacement is made ready, so that what the receiver reports as held is
+  /// exactly what it holds.
+  bool _quiescing = false;
+
+  /// Quiet for [StallPolicy.suspectAfter]: listening for an offer, not yet
+  /// calling the connection dead.
+  bool _suspect = false;
+
+  /// The connection is dead and a replacement is awaited.
+  bool _reconnecting = false;
+  IdleWatchdog? _suspectWatchdog;
+  Timer? _pingTimer;
+  Timer? _waitForSenderTimer;
+  ResumeOffer? _pendingOffer;
+  bool _handlingOffer = false;
+  bool _cleanedUp = false;
+  final Completer<void> _shutdown = Completer<void>();
+  final Map<int, IceSetup> _replacementIceSetups = {};
+  Completer<void>? _newerOffer;
+  late final ReconnectLedger _ledger = ReconnectLedger(reconnectPolicy);
+
+  /// The SHA-256 of the item now open, over what has been written to it, and
+  /// the one the sender says the original has.
+  ItemDigest? _digest;
+  String? _expectedSha;
+
+  /// Set when a failure carries a [FailureCode] the screen says in the
+  /// person's language.
+  NetworkException? _codedFailure;
 
   /// §8 — whether the incoming binary stream is gzip-compressed.
   bool _isCompressed = false;
@@ -288,11 +373,13 @@ class WebRtcReceiverTransport {
     return SafePath.resolve(fileName, baseDir, defaultName: 'received_file');
   }
 
-  Future<IceSetup> _buildIceConfiguration() => IceServers.configurationDynamic();
+  Future<IceSetup> _buildIceConfiguration() =>
+      IceServers.configurationDynamic();
 
   /// Starts the TURN credential refresh timer (§9).
   Future<void> _startTurnRefresher({DateTime? expiresAt}) async {
     _turnRefresher?.cancel();
+    _turnRefresher = null;
     final workerUrl = AppConstants.workerBaseUrl.trim();
     if (workerUrl.isEmpty || _peerConnection == null) return;
     // Switched off or never configured will still be so in 25 minutes.
@@ -318,8 +405,10 @@ class WebRtcReceiverTransport {
     String sdpOffer, {
     String? targetDir,
     Future<void> Function(String answerSdp)? deliverAnswer,
+    ResumeSetup? resume,
   }) async {
     try {
+      _resumeSetup = resume;
       _emit('connecting', detail: 'Processing serverless SDP offer…');
       _statusController.add(TransferStatus.connecting);
       await _wakelockGuard.acquire(); // §6
@@ -352,13 +441,25 @@ class WebRtcReceiverTransport {
           'relay=${_relayUnavailable?.reason.name ?? 'available'}, '
           'policy=${ice['iceTransportPolicy']})',
           tag: 'WEBRTC_RECEIVER');
-      _peerConnection = await createPeerConnection(ice);
+      final firstConnection = await createPeerConnection(ice);
+      _peerConnection = firstConnection;
       await _startTurnRefresher(); // §9
 
-      _peerConnection!.onDataChannel = (RTCDataChannel channel) {
+      firstConnection.onDataChannel = (RTCDataChannel channel) {
+        if (_cleanedUp || !identical(_peerConnection, firstConnection)) {
+          unawaited(channel.close());
+          return;
+        }
         debugPrint('WebRTC receiver serverless: data channel received');
         _dataChannel = channel;
-        channel.onMessage = _handleMessage;
+        final link = WebRtcReceiverLink(
+          generation: 1,
+          connection: firstConnection,
+          channel: channel,
+          stall: stall,
+        );
+        _firstLink = link;
+        _adoptLink(link);
       };
 
       // The answer is sealed and published once; like the offer, it has no
@@ -369,7 +470,11 @@ class WebRtcReceiverTransport {
       // connection here produced no error until the flat 120s timeout further
       // down expired, and that timeout counted the whole transfer, not just
       // the time since the connection actually died.
-      _peerConnection!.onIceConnectionState = _onIceStateChanged;
+      firstConnection.onIceConnectionState = (state) {
+        if (identical(_peerConnection, firstConnection)) {
+          _onIceStateChanged(state);
+        }
+      };
 
       AppLogger.info('Receiver: decompressed offer, ${rawSdp.length} chars',
           tag: 'WEBRTC_RECEIVER');
@@ -426,6 +531,7 @@ class WebRtcReceiverTransport {
                 ? const TransferCancelledBySender()
                 : _iceFailure ??
                     _storageFailure ??
+                    _codedFailure ??
                     Exception('Serverless WebRTC transfer failed'));
           }
         }
@@ -457,7 +563,6 @@ class WebRtcReceiverTransport {
     }
   }
 
-
   /// Serialises message handling.
   ///
   /// `onMessage` is a `void` callback, so an async handler assigned to it is
@@ -469,15 +574,43 @@ class WebRtcReceiverTransport {
   /// the wire protocol already guarantees.
   Future<void> _handlerChain = Future<void>.value();
 
-  void _handleMessage(RTCDataChannelMessage message) {
-    _handlerChain = _handlerChain.then((_) => _processMessage(message));
+  void _handleMessage(RTCDataChannelMessage message, {int? linkId}) {
+    // A frame from a link that has since been replaced is the old
+    // connection's: the sender will send what it carried again on the new one.
+    if (linkId != null && (linkId != _linkId || _quiescing)) return;
+    _noteLife();
+    _handlerChain =
+        _handlerChain.then((_) => _processMessage(message, linkId: linkId));
+  }
+
+  /// Anything at all arriving from the current link is proof that it is alive:
+  /// the silence clocks start again, and a connection that was being given up
+  /// on is taken back.
+  void _noteLife() {
+    _idleWatchdog?.kick();
+    _suspectWatchdog?.kick();
+    if (_reconnecting || _suspect) {
+      final wasReconnecting = _reconnecting;
+      _reconnecting = false;
+      _suspect = false;
+      _waitForSenderTimer?.cancel();
+      _waitForSenderTimer = null;
+      if (wasReconnecting) {
+        _ledger.recovered();
+        AppLogger.info('Receiver: the connection came back by itself',
+            tag: 'WEBRTC_RECEIVER');
+        _statusController.add(TransferStatus.transferring);
+        _emit('transferring');
+      }
+    }
   }
 
   /// Feeds one frame the way `onMessage` would, and resolves when the handler
   /// chain has drained it. The chained model means a caller cannot otherwise
   /// know when a message has finished being processed.
   @visibleForTesting
-  Future<void> deliverForTest(RTCDataChannelMessage message, {String? baseDir}) {
+  Future<void> deliverForTest(RTCDataChannelMessage message,
+      {String? baseDir}) {
     if (baseDir != null) _baseDir = baseDir;
     _handleMessage(message);
     return _handlerChain;
@@ -488,16 +621,27 @@ class WebRtcReceiverTransport {
   @visibleForTesting
   Future<String> get completionForTest => _completion.future;
 
+  /// Exercises the same link, signaling and file handlers without native ICE.
+  @visibleForTesting
+  void attachLinkForTest(ReceiverLink link,
+      {required String baseDir, required ResumeSetup resume}) {
+    _baseDir = baseDir;
+    _resumeSetup = resume;
+    _adoptLink(link);
+  }
+
   /// §8 — handles incoming DataChannel messages.
   ///
   /// Binary messages are decompressed if the sender advertised
   /// `"compressed": true` in the `file-meta` JSON.
-  Future<void> _processMessage(RTCDataChannelMessage message) async {
+  Future<void> _processMessage(RTCDataChannelMessage message,
+      {int? linkId}) async {
     // Whatever was queued behind a failure belongs to a session that is being
     // taken apart. Handling it is not harmless: a `file-end` would try to seal
     // the very file that is being closed and deleted, and what that raised
     // was then reported as a second, unrelated failure.
     if (_failed) return;
+    if (linkId != null && linkId != _linkId) return;
     try {
       if (message.isBinary) {
         if (_currentFile == null) return;
@@ -518,9 +662,10 @@ class WebRtcReceiverTransport {
           return;
         }
 
-        _idleWatchdog?.kick();
         await _currentFile!.add(bytes);
+        await _digest?.add(bytes);
         _currentItemReceived += bytes.length;
+        _ledger.moved(bytes.length);
         // Progress is reported across the whole session, so a ten-photo
         // transfer does not snap back to 0% ten times.
         _sessionReceivedBytes += bytes.length;
@@ -543,13 +688,33 @@ class WebRtcReceiverTransport {
       final data = jsonDecode(message.text) as Map<String, dynamic>;
       final type = data['type'] as String?;
 
-      if (_sessionFinished && type != TransferProtocol.complete) return;
+      if (type == TransferProtocol.bye) {
+        // The sender has heard `done` and is leaving: nothing more will come,
+        // and there is no reason to stay reachable.
+        if (_sessionFinished && !_failed) {
+          _teardownTimer?.cancel();
+          _teardownTimer = null;
+          unawaited(_cleanup());
+        }
+        return;
+      }
+      if (_sessionFinished && type != TransferProtocol.complete) {
+        return;
+      }
 
       switch (type) {
+        case TransferProtocol.ping:
+          break;
+
+        case TransferProtocol.resume:
+          _checkResume(data);
+
         case TransferProtocol.manifest:
+          if (!_acceptSessionHeader(data)) return;
           await _openSession(TransferProtocol.parseManifest(data));
 
         case TransferProtocol.manifestBegin:
+          if (!_acceptSessionHeader(data)) return;
           // Only the promise of a manifest so far. Sessions large enough to
           // need this are folders, and a folder half-announced is worse than
           // none: nothing opens until the last part lands.
@@ -573,8 +738,7 @@ class WebRtcReceiverTransport {
             return;
           }
           final parsed = TransferProtocol.parseManifest(data);
-          if (pending.length + parsed.length >
-              AppConstants.qhtpMaxFileCount) {
+          if (pending.length + parsed.length > AppConstants.qhtpMaxFileCount) {
             _fail(
                 'Manifest item count exceeds the limit of ${AppConstants.qhtpMaxFileCount}');
             return;
@@ -594,6 +758,17 @@ class WebRtcReceiverTransport {
                 'which is not in a manifest of ${_manifest.length}');
             return;
           }
+          final offset = data['offset'] is int ? data['offset'] as int : 0;
+          // The item that was open when the link died, continued on the new
+          // one: the file, its digest and the count are all as they were, and
+          // the sender has been told exactly how far they got.
+          if (_currentFile != null &&
+              _peerVersion >= 2 &&
+              index == _currentItemIndex &&
+              offset == _currentItemReceived) {
+            _emit('transferring');
+            return;
+          }
           // One item at a time, each closed before the next opens. A
           // file-start over an open file used to replace it without sealing
           // it: its bytes still counted, the file was never committed, and
@@ -601,6 +776,11 @@ class WebRtcReceiverTransport {
           if (_currentFile != null) {
             _fail('file-start for item $index arrived while item '
                 '$_currentItemIndex was still open');
+            return;
+          }
+          if (offset != 0) {
+            _fail('file-start asked to continue item $index at byte $offset, '
+                'but no partial of it is open here');
             return;
           }
           if (_sealedItems.contains(index)) {
@@ -612,13 +792,19 @@ class WebRtcReceiverTransport {
           _currentItemExpectedBytes = item.size;
           _currentItemIndex = index;
           _currentItemReceived = 0;
+          _expectedSha = null;
           _currentFile = _openIncoming(item.path);
           await _currentFile!.open();
-          _lastProgressReport =
-              DateTime.now().subtract(_progressInterval);
+          _digest = _peerVersion >= 2
+              ? await ItemDigest.start(item.size,
+                  forceInline: forceInlineDigest)
+              : null;
+          _lastProgressReport = DateTime.now().subtract(_progressInterval);
           _emit('transferring');
 
         case TransferProtocol.fileEnd:
+          final claimed = data['sha256'];
+          _expectedSha = claimed is String ? claimed.toLowerCase() : null;
           await _sealCurrentFile();
           // The seal fails the whole transfer when the item came up short;
           // do not then turn around and declare it delivered on the running
@@ -629,7 +815,8 @@ class WebRtcReceiverTransport {
           // relay, and waiting for it is what left receivers hanging on
           // 98-100% forever.
           if (_sessionTotalBytes > 0 &&
-              _sessionReceivedBytes >= _sessionTotalBytes) {
+              _sessionReceivedBytes >= _sessionTotalBytes &&
+              _everyItemSealed) {
             await _completeSession(holdConnection: true);
           }
 
@@ -658,8 +845,7 @@ class WebRtcReceiverTransport {
           _sealedItems.clear();
           _currentFile = _openIncoming(_fileName);
           await _currentFile!.open();
-          _lastProgressReport =
-              DateTime.now().subtract(_progressInterval);
+          _lastProgressReport = DateTime.now().subtract(_progressInterval);
           _statusController.add(TransferStatus.transferring);
           _emit('transferring');
           _armIdleWatchdog();
@@ -670,17 +856,23 @@ class WebRtcReceiverTransport {
           // is kept — a cancelled transfer leaves no debris.
           AppLogger.info('Sender cancelled the transfer',
               tag: 'WEBRTC_RECEIVER');
-          await _discardInFlight();
           _cancelledBySender = true;
+          await _discardInFlight();
           _idleWatchdog?.cancel();
           _fail('The sender cancelled the transfer');
 
         case TransferProtocol.complete:
         case TransferProtocol.legacyFileComplete:
+          // A sender asking again after the session was finished has not
+          // heard `done`: say it again.
+          if (_sessionFinished) {
+            if (_peerVersion >= 2) _sendDone(ok: true);
+            return;
+          }
           // A legacy sender closes the only file here rather than with
           // file-end, so flush whatever is still open.
           await _sealCurrentFile();
-          _idleWatchdog?.cancel();
+          if (_peerVersion < 2) _idleWatchdog?.cancel();
           if (_ended) return;
 
           if (_sessionTotalBytes > 0 &&
@@ -688,7 +880,7 @@ class WebRtcReceiverTransport {
             _fail('Transfer completed prematurely: received '
                 '$_sessionReceivedBytes of $_sessionTotalBytes bytes');
           } else {
-            await _completeSession();
+            await _completeSession(holdConnection: _peerVersion >= 2);
           }
       }
     } catch (e) {
@@ -699,13 +891,30 @@ class WebRtcReceiverTransport {
   }
 
   void _armIdleWatchdog() {
+    final resumable = _peerVersion >= 2;
     _idleWatchdog ??= IdleWatchdog(
-      timeout: _idleTimeout,
-      onTimeout: () =>
-          _fail('No data received for ${_idleTimeout.inSeconds}s — the '
-              'connection appears to have died'),
+      timeout: resumable ? stall.receiveSilence : _idleTimeout,
+      onTimeout: _onSilence,
     );
     _idleWatchdog!.kick();
+    if (resumable) {
+      _suspectWatchdog ??=
+          IdleWatchdog(timeout: stall.suspectAfter, onTimeout: _onSuspect);
+      _suspectWatchdog!.kick();
+    }
+  }
+
+  /// Nothing has arrived for as long as the policy allows.
+  void _onSilence() {
+    if (_sessionFinished || _ended) return;
+    if (_peerVersion >= 2) {
+      _linkLost('nothing arrived for ${stall.receiveSilence.inSeconds}s');
+    } else {
+      _fail(
+          'No data received for ${_idleTimeout.inSeconds}s — the '
+          'connection appears to have died',
+          code: FailureCode.connectionLostPeerTooOld);
+    }
   }
 
   /// Starts a session from the manifest it opened with, however many frames
@@ -864,8 +1073,8 @@ class WebRtcReceiverTransport {
 
   /// Aborts whatever file is mid-write and clears every trace of the session
   /// from disk — the in-flight partial, and a staged folder directory whole.
-  Future<void> _discardInFlight() => _discarding ??=
-      _discardNow().whenComplete(() => _discarding = null);
+  Future<void> _discardInFlight() =>
+      _discarding ??= _discardNow().whenComplete(() => _discarding = null);
 
   /// The discard in progress, so that a second caller — [cancel] while a
   /// failure is still putting the file down, say — waits for the same work
@@ -877,6 +1086,9 @@ class WebRtcReceiverTransport {
     // it is being closed finds none, rather than a handle that is shutting.
     final file = _currentFile;
     _currentFile = null;
+    final digest = _digest;
+    _digest = null;
+    await digest?.abort();
     await file?.abort();
     if (_folderMode && _stagedRoot != null) {
       if (_keptStagedRoot == _stagedRoot) {
@@ -962,15 +1174,44 @@ class WebRtcReceiverTransport {
     _currentItemExpectedBytes = -1;
     if (file == null) return;
 
+    final digest = _digest;
+    _digest = null;
+    final claimed = _expectedSha;
+    _expectedSha = null;
+
     if (expected >= 0 && file.length != expected) {
       // Discard the partial rather than rename it: half a file under the
       // right name is worse than no file, because nobody goes looking for
       // what is missing.
       final short = file.length;
+      await digest?.abort();
       await file.abort();
       _fail('"${p.basename(file.finalPath)}" arrived with $short of '
           '$expected bytes');
       return;
+    }
+
+    // The right size is not the right file, least of all after a splice. The
+    // sender took a SHA-256 of the whole original as it read it, and this end
+    // took one of everything it wrote: the file is committed under its name
+    // only if they are the same.
+    if (digest != null) {
+      final actual = await digest.finish();
+      final name = p.basename(file.finalPath);
+      if (claimed == null) {
+        await file.abort();
+        _fail('"$name" ended without the checksum the sender promised',
+            code: FailureCode.integrityMismatch);
+        return;
+      }
+      if (actual != claimed) {
+        await file.abort();
+        _fail(
+            '"$name" does not match the checksum the sender took of the '
+            'original (arrived as $actual, the sender had $claimed)',
+            code: FailureCode.integrityMismatch);
+        return;
+      }
     }
 
     final path = await file.commit();
@@ -991,9 +1232,13 @@ class WebRtcReceiverTransport {
   /// completion, and closing under that drain turns its success into a
   /// stall. The frame (or the timer) then finishes the teardown.
   Future<void> _completeSession({bool holdConnection = false}) async {
+    final resumable = _peerVersion >= 2;
     if (!_sessionFinished) {
       _sessionFinished = true;
       _idleWatchdog?.cancel();
+      _suspectWatchdog?.cancel();
+      _waitForSenderTimer?.cancel();
+      _waitForSenderTimer = null;
       await _sealCurrentFile();
       // A short final item fails inside the seal. Nothing below should run:
       // no folder commit, no "completed", no successful completion.
@@ -1018,6 +1263,16 @@ class WebRtcReceiverTransport {
       if (!_completion.isCompleted) {
         _completion.complete(_resultPath());
       }
+      // Said only now, when every item has been checked and is in place. A
+      // sender that is told this has nothing left to wonder about.
+      if (resumable) _sendDone(ok: true);
+    }
+    if (resumable) {
+      // Reachable for a while longer. If `done` is lost on a dying link the
+      // sender will look for this device again, and must be told.
+      unawaited(_ensureSignaling());
+      _teardownTimer ??= Timer(completionGrace, () => unawaited(_cleanup()));
+      return;
     }
     if (holdConnection && _teardownTimer == null) {
       _teardownTimer =
@@ -1127,6 +1382,449 @@ class WebRtcReceiverTransport {
     }
   }
 
+  // ─── Links, and getting one back ───────────────────────────────────────
+
+  /// Takes [link] as the one frames come from, tells the sender what is held
+  /// here, and lets the link it replaces go.
+  void _adoptLink(ReceiverLink link) {
+    final previous = _link;
+    if (link is WebRtcReceiverLink &&
+        !identical(_peerConnection, link.connection)) {
+      _peerConnection = link.connection;
+      _dataChannel = link.channel;
+      _relayUnavailable =
+          _replacementIceSetups.remove(link.generation)?.relayUnavailable;
+      _statsProbe?.stop();
+      _statsProbe = null;
+      unawaited(_startTurnRefresher());
+      _startStatsProbe();
+      unawaited(_recordSelectedPath());
+    }
+    if (link is WebRtcReceiverLink) {
+      link.waitForHandledFrame = () => _handlerChain;
+    }
+    final id = ++_linkId;
+    _link = link;
+    _linkGeneration = link.generation;
+    _quiescing = false;
+    link.bind(
+      onFrame: (m) => _handleMessage(m, linkId: id),
+      // A close event can follow a manifest or file-end already delivered to
+      // Dart while that frame is still being written. Decide what was received
+      // only after the ordered message handlers have finished.
+      onClosed: (reason) {
+        _handlerChain = _handlerChain.then((_) => _onLinkClosed(id, reason));
+      },
+    );
+    link.sendText(_helloFrame(link.generation));
+    // A sender that is asking after the session was finished is told at once.
+    if (_sessionFinished && !_failed && _peerVersion >= 2) {
+      link.sendText(TransferProtocol.buildDone(ok: true));
+    }
+    _startPings();
+    if (previous != null && !identical(previous, link)) {
+      unawaited(previous.close());
+    }
+  }
+
+  /// The first item that is not whole here. Items are sealed in order, so
+  /// this is also how many are.
+  int _firstUnsealed() {
+    var i = 0;
+    while (_sealedItems.contains(i)) {
+      i++;
+    }
+    return i;
+  }
+
+  /// How far into the first unsealed item the file on disk goes.
+  int _heldOfNext() {
+    final next = _firstUnsealed();
+    return _currentFile != null && _currentItemIndex == next
+        ? _currentItemReceived
+        : 0;
+  }
+
+  /// The receiver's first word on a link: what it holds, so that the sender
+  /// can go on from exactly there.
+  String _helloFrame(int generation) => TransferProtocol.buildHello(
+        generation: generation,
+        sessionId: _manifest.isEmpty ? null : _sid,
+        next: _manifest.isEmpty ? 0 : _firstUnsealed(),
+        offset: _manifest.isEmpty ? 0 : _heldOfNext(),
+      );
+
+  void _sendDone({required bool ok, String? code}) {
+    try {
+      _link?.sendText(TransferProtocol.buildDone(ok: ok, code: code));
+    } catch (_) {}
+  }
+
+  void _startPings() {
+    _pingTimer ??= Timer.periodic(stall.pingEvery, (_) {
+      final link = _link;
+      if (_peerVersion < 2 || link == null || !link.isOpen || _failed) return;
+      link.sendText(TransferProtocol.buildPing());
+    });
+  }
+
+  /// What a manifest says about its sender. False when the frame is not to be
+  /// acted on: the same session announced again.
+  bool _acceptSessionHeader(Map<String, dynamic> data) {
+    final session = TransferProtocol.sessionOf(data);
+    if (_manifest.isNotEmpty) {
+      if (session.sessionId != null && session.sessionId == _sid) return false;
+      _fail('a second manifest arrived for a session that is already open');
+      return false;
+    }
+    // Nothing is open yet, so a manifest again (the link died before the first
+    // finished, and the sender began again) simply starts over.
+    _partialManifest = null;
+    _peerVersion = session.version >= 2 && session.sessionId != null ? 2 : 1;
+    _sid = session.sessionId;
+    return true;
+  }
+
+  /// The sender's answer to a `hello` on a replacement link: where it will
+  /// continue. It has to be where this end said it was.
+  void _checkResume(Map<String, dynamic> data) {
+    final next = data['next'];
+    final offset = data['offset'];
+    if (data['sid'] != _sid ||
+        next is! int ||
+        offset is! int ||
+        next != _firstUnsealed() ||
+        offset != _heldOfNext()) {
+      _fail(
+          'the sender asked to resume at item $next, byte $offset, but this '
+          'device holds item ${_firstUnsealed()}, byte ${_heldOfNext()}',
+          code: FailureCode.connectionLostNotRecovered);
+      return;
+    }
+    _emit('transferring');
+  }
+
+  void _onLinkClosed(int id, String reason) {
+    if (id != _linkId || _failed || _sessionFinished || _cancelledBySender) {
+      return;
+    }
+    // A dead peer with every announced byte already on disk is a finished
+    // transfer, not a failed one: a sender that cannot resume closes as soon
+    // as its last frame leaves, which can win the race against its `complete`
+    // frame.
+    if (_peerVersion < 2 &&
+        _sessionTotalBytes > 0 &&
+        _sessionReceivedBytes >= _sessionTotalBytes) {
+      unawaited(_completeSession());
+      return;
+    }
+    _linkLost(reason);
+  }
+
+  /// The connection is dead. A sender that can resume is waited for; one that
+  /// cannot is not, and the failure says so.
+  void _linkLost(String reason) {
+    if (_failed || _sessionFinished || _cancelledBySender) return;
+    if (_peerVersion < 2 || _sid == null) {
+      _fail('Peer connection failed ($reason)',
+          code: _manifest.isNotEmpty
+              ? FailureCode.connectionLostPeerTooOld
+              : null);
+      return;
+    }
+    if (_reconnecting) return;
+    _reconnecting = true;
+    _suspect = true;
+    _ledger.lost();
+    AppLogger.warning(
+        'Receiver: the connection is lost ($reason); waiting '
+        'for the sender to reconnect',
+        tag: 'WEBRTC_RECEIVER');
+    _idleWatchdog?.cancel();
+    _suspectWatchdog?.cancel();
+    _statusController.add(TransferStatus.reconnecting);
+    _emit('reconnecting', detail: reason);
+    unawaited(_ensureSignaling());
+    _armWaitForSender();
+  }
+
+  /// How long the receiver waits for a sender to come back: as long as the
+  /// sender's own attempts can take, and no longer than the budget has left.
+  void _armWaitForSender() {
+    _waitForSenderTimer?.cancel();
+    final theirs =
+        reconnectPolicy.attemptTimeout * reconnectPolicy.maxAttempts +
+            const Duration(seconds: 30);
+    final left = reconnectPolicy.totalBudget - _ledger.spent;
+    final wait = left < theirs ? left : theirs;
+    _waitForSenderTimer = Timer(wait.isNegative ? Duration.zero : wait, () {
+      if (!_reconnecting || _failed || _sessionFinished) return;
+      _fail(
+          'The connection was lost and the sender did not reconnect within '
+          '${wait.inSeconds}s',
+          code: FailureCode.connectionLostNotRecovered);
+    });
+  }
+
+  /// Quiet for a while: listen for an offer, in case the sender noticed first.
+  void _onSuspect() {
+    if (_peerVersion < 2 || _sessionFinished || _failed) return;
+    _suspect = true;
+    unawaited(_ensureSignaling());
+  }
+
+  /// Starts listening for the sender's offers. Tried again every few seconds
+  /// while it is needed: the public mailbox may be out of reach for a minute
+  /// behind the same tunnel that just dropped the connection.
+  Future<void> _ensureSignaling() async {
+    final setup = _resumeSetup;
+    if (_signaling != null || setup == null || _failed || _cleanedUp) return;
+    ResumeReceiverSignaling? signaling;
+    try {
+      signaling = ResumeReceiverSignaling(
+        mailbox: (setup.mailboxFactory ?? buildCodeMailbox)(),
+        keys: setup.keys,
+      );
+      _signaling = signaling;
+      signaling.startFrom(_linkGeneration);
+      _offers = signaling.offers.listen(_onOffer);
+      await signaling.open();
+      if (_cleanedUp) {
+        await signaling.close();
+        return;
+      }
+      AppLogger.info('Receiver: listening for a reconnection offer',
+          tag: 'WEBRTC_RECEIVER');
+    } catch (e) {
+      AppLogger.warning(
+          'Receiver: the mailbox is out of reach (${e.runtimeType}); will '
+          'try again',
+          tag: 'WEBRTC_RECEIVER');
+      if (identical(_signaling, signaling)) {
+        _signaling = null;
+        unawaited(_offers?.cancel());
+        _offers = null;
+      }
+      await signaling?.close();
+      await Future.any<void>([
+        Future<void>.delayed(const Duration(seconds: 5)),
+        _shutdown.future,
+      ]);
+      if (!_failed &&
+          !_cleanedUp &&
+          (_reconnecting || _suspect || _sessionFinished)) {
+        unawaited(_ensureSignaling());
+      }
+    }
+  }
+
+  void _onOffer(ResumeOffer offer) {
+    if (_failed || _cleanedUp || _peerVersion < 2) return;
+    _pendingOffer = offer;
+    // A newer offer means the sender gave up on the attempt it was making.
+    final newer = _newerOffer;
+    if (newer != null && !newer.isCompleted) newer.complete();
+    if (!_handlingOffer) unawaited(_drainOffers());
+  }
+
+  Future<void> _drainOffers() async {
+    _handlingOffer = true;
+    try {
+      while (_pendingOffer != null && !_failed) {
+        final offer = _pendingOffer!;
+        _pendingOffer = null;
+        await _acceptOffer(offer);
+      }
+    } finally {
+      _handlingOffer = false;
+    }
+  }
+
+  /// Answers an authenticated offer for a replacement link and, when the
+  /// channel on it opens, makes it the link frames are taken from.
+  ///
+  /// Everything that had already arrived on the old link is handled first and
+  /// put on the device, so that what is reported as held is exactly what is
+  /// held. Frames that arrive on the old link after that are turned away; the
+  /// sender sends them again on the new one.
+  Future<void> _acceptOffer(ResumeOffer offer) async {
+    final counted = !_sessionFinished;
+    if (counted) {
+      if (_ledger.isReconnecting == false) _ledger.lost();
+      final over = _ledger.exhausted;
+      if (over != null) {
+        _fail('The reconnection limit was reached (${over.name})',
+            code: FailureCode.connectionLostNotRecovered);
+        return;
+      }
+      _ledger.startAttempt();
+    }
+    AppLogger.info('Receiver: an offer for link ${offer.generation}',
+        tag: 'WEBRTC_RECEIVER');
+    final newer = _newerOffer = Completer<void>();
+    final abort = Completer<void>();
+    void abortAttempt() {
+      if (!abort.isCompleted) abort.complete();
+    }
+
+    unawaited(newer.future.then((_) => abortAttempt()));
+    unawaited(_shutdown.future.then((_) => abortAttempt()));
+    final timeout = Timer(reconnectPolicy.attemptTimeout, abortAttempt);
+    Future<T> interrupted<T>() => abort.future.then<T>(
+        (_) => throw StateError('the reconnection attempt was interrupted'));
+    _quiescing = true;
+    ReceiverLinkAttempt? attempt;
+    Future<ReceiverLinkAttempt>? opening;
+    ResumeAnswerPublication? publication;
+    var adopted = false;
+    void abandonLater(Future<void> Function() abandon) {
+      unawaited(Future<void>.sync(abandon).catchError((Object _) {}));
+    }
+
+    try {
+      await _handlerChain;
+      await _currentFile?.sync();
+      if (abort.isCompleted) throw StateError('attempt interrupted');
+      opening = debugLinkOpener != null
+          ? debugLinkOpener!(offer)
+          : _openWebRtcReplacement(offer, abort.future);
+      final openedAttempt = await Future.any<ReceiverLinkAttempt>(
+          [opening, interrupted<ReceiverLinkAttempt>()]);
+      attempt = openedAttempt;
+      final signaling = _signaling;
+      if (signaling == null) throw StateError('the mailbox was closed');
+      publication = signaling.answer(
+        generation: offer.generation,
+        answerSdp: openedAttempt.answerSdp,
+        forAtMost: reconnectPolicy.attemptTimeout,
+      );
+      final link = await Future.any<ReceiverLink>([
+        openedAttempt.ready,
+        interrupted<ReceiverLink>(),
+      ]);
+      publication.stop();
+      if (_failed || _cleanedUp) {
+        await link.close();
+        return;
+      }
+      _waitForSenderTimer?.cancel();
+      _waitForSenderTimer = null;
+      final wasReconnecting = _reconnecting || _suspect;
+      _reconnecting = false;
+      _suspect = false;
+      _adoptLink(link);
+      adopted = true;
+      if (counted && wasReconnecting) _ledger.recovered();
+      _lastBytes = _sessionReceivedBytes;
+      _lastTick = DateTime.now();
+      if (_manifest.isNotEmpty && !_sessionFinished) {
+        _armIdleWatchdog();
+        _statusController.add(TransferStatus.transferring);
+        _emit('transferring');
+      }
+      AppLogger.info('Receiver: link ${offer.generation} is up',
+          tag: 'WEBRTC_RECEIVER');
+    } catch (e) {
+      AppLogger.warning(
+          'Receiver: the attempt for link ${offer.generation} failed: $e',
+          tag: 'WEBRTC_RECEIVER');
+      publication?.stop();
+      if (attempt != null) {
+        abandonLater(attempt.abandon);
+      } else if (opening != null) {
+        unawaited(opening.then((lateAttempt) {
+          abandonLater(lateAttempt.abandon);
+        }, onError: (Object _) {}));
+      }
+      // The old link, if it comes back by itself, is taken again.
+      _quiescing = false;
+    } finally {
+      timeout.cancel();
+      if (!adopted) abortAttempt();
+      _replacementIceSetups.remove(offer.generation);
+      if (identical(_newerOffer, newer)) _newerOffer = null;
+    }
+  }
+
+  /// Production: a new peer connection that answers [offer].
+  Future<ReceiverLinkAttempt> _openWebRtcReplacement(
+      ResumeOffer offer, Future<void> abort) async {
+    var aborted = false;
+    Future<void> Function()? closePending;
+    unawaited(abort.then((_) {
+      aborted = true;
+      final close = closePending;
+      if (close != null) unawaited(close());
+    }));
+    void checkAbort() {
+      if (aborted || _cleanedUp) throw StateError('attempt interrupted');
+    }
+
+    final setup = await _buildIceConfiguration();
+    checkAbort();
+    final ice = setup.configuration;
+    final connection = await createPeerConnection(ice);
+    Future<void>? closing;
+    Future<void> closeConnection() =>
+        closing ??= connection.close().catchError((Object _) {});
+    closePending = closeConnection;
+    final gathering = IceGatheringTracker();
+    final ready = Completer<ReceiverLink>();
+    unawaited(ready.future.then((_) {}, onError: (Object _) {}));
+    WebRtcReceiverLink? link;
+    connection.onIceCandidate = gathering.observe;
+    connection.onIceConnectionState = (state) => link?.iceState(state);
+    connection.onDataChannel = (channel) {
+      final made = WebRtcReceiverLink(
+        generation: offer.generation,
+        connection: connection,
+        channel: channel,
+        stall: stall,
+      );
+      link = made;
+      made.opened.then((_) {
+        if (!ready.isCompleted) ready.complete(made);
+      }, onError: (Object e) {
+        if (!ready.isCompleted) ready.completeError(e);
+      });
+    };
+    try {
+      checkAbort();
+      await connection.setRemoteDescription(RTCSessionDescription(
+          CompactSdp.fromBytes(offer.sdp).toSdp(isOffer: true), 'offer'));
+      checkAbort();
+      final answer = await connection.createAnswer();
+      checkAbort();
+      await connection.setLocalDescription(answer);
+      checkAbort();
+      await waitForUsableCandidates(connection, gathering,
+          expectingRelay: IceServers.containsTurn(ice), tag: 'WEBRTC_RECEIVER');
+      checkAbort();
+      final local = await connection.getLocalDescription();
+      checkAbort();
+      final sdp = local?.sdp ?? answer.sdp;
+      if (sdp == null || sdp.isEmpty) {
+        throw StateError('WebRTC produced no answer');
+      }
+      _replacementIceSetups[offer.generation] = setup;
+      closePending = null;
+      return ReceiverLinkAttempt(
+        answerSdp: ServerlessQr.trimForQr(CompactSdp.fromSdp(sdp)).toBytes(),
+        ready: ready.future,
+        abandon: () async {
+          if (link != null) {
+            await link!.close();
+          } else {
+            await connection.close();
+          }
+        },
+      );
+    } catch (_) {
+      await closeConnection();
+      rethrow;
+    }
+  }
+
   void _emit(String phase, {String? detail}) {
     if (_progressController.isClosed) return;
     _progressController.add(WebRtcReceiveProgress(
@@ -1165,31 +1863,22 @@ class WebRtcReceiverTransport {
       case RTCIceConnectionState.RTCIceConnectionStateCompleted:
         _iceEstablished = true;
         _connectDeadline.connected();
-        _iceRecoveryTimer?.cancel();
-        _iceRecoveryTimer = null;
+        _firstLink?.iceState(state);
+        _startStatsProbe();
         unawaited(_recordSelectedPath());
       case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
-        _iceRecoveryTimer?.cancel();
-        _iceRecoveryTimer = Timer(_iceRecoveryGrace, () {
-          _fail('ICE stayed disconnected for '
-              '${_iceRecoveryGrace.inSeconds}s — giving up on this session');
-        });
+        // Once the connection has been up, what ICE says about it is the
+        // link's to weigh (see [WebRtcReceiverLink]): `disconnected` is a
+        // grace, not a verdict.
+        if (_iceEstablished) _firstLink?.iceState(state);
       case RTCIceConnectionState.RTCIceConnectionStateFailed:
       case RTCIceConnectionState.RTCIceConnectionStateClosed:
-        _iceRecoveryTimer?.cancel();
-        _iceRecoveryTimer = null;
-        // A dead peer with every announced byte already on disk is a finished
-        // transfer, not a failed one: the sender closes as soon as its last
-        // frame leaves, which can win the race against its `complete` frame.
-        if (_sessionTotalBytes > 0 &&
-            _sessionReceivedBytes >= _sessionTotalBytes) {
-          unawaited(_completeSession());
-        } else if (!_iceEstablished) {
+        if (_iceEstablished) {
+          _firstLink?.iceState(state);
+        } else {
           // Never connected: not an interruption but an absent route, and the
           // useful thing to say is why there was no relay to fall back on.
           unawaited(_failNegotiation());
-        } else {
-          _fail('Peer connection failed (ICE $state)');
         }
       default:
         break;
@@ -1203,6 +1892,23 @@ class WebRtcReceiverTransport {
   IcePathKind? lastIcePath;
   String? lastIcePair;
   bool _readingPath = false;
+  TransferStatsSampler? _statsProbe;
+
+  void _startStatsProbe() {
+    final connection = _peerConnection;
+    if (!kDebugMode ||
+        !AppConstants.statsProbe ||
+        connection == null ||
+        _statsProbe != null) {
+      return;
+    }
+    _statsProbe = TransferStatsSampler(
+      label: 'receiver',
+      connection: connection,
+      withLivenessProbe: true,
+      extra: () => {'received_session': _sessionReceivedBytes},
+    )..start();
+  }
 
   /// Reads the chosen pair once ICE is up, and again when it settles. Only
   /// reads and remembers: nothing here decides anything about the transfer.
@@ -1213,6 +1919,7 @@ class WebRtcReceiverTransport {
     try {
       final path = await selectedPathKind(connection);
       final pair = await selectedPairDescription(connection);
+      if (!identical(connection, _peerConnection)) return;
       // A read that finds no pair — the connection is already going away —
       // must not erase one that did.
       if (path == IcePathKind.unknown && lastIcePath != null) return;
@@ -1270,7 +1977,7 @@ class WebRtcReceiverTransport {
   /// on Windows a folder with an open file in it cannot be renamed or
   /// deleted, so whoever reacted to the failure by clearing the destination
   /// got a sharing violation, and a partial was left behind.
-  void _fail(String reason, {StorageProblem? problem}) {
+  void _fail(String reason, {StorageProblem? problem, String? code}) {
     if (_failed) {
       debugPrint('WebRTC receive failed again, after it already had: $reason');
       return;
@@ -1278,13 +1985,35 @@ class WebRtcReceiverTransport {
     _failed = true;
     debugPrint('WebRTC receive failed: $reason');
     if (problem != null) _storageFailure ??= problem.toException();
+    if (code != null && problem == null) {
+      _codedFailure ??= NetworkException(reason, code);
+    }
     // Decided now, not when the file is down: a later event must not change
     // what this failure was.
     final Object error = _cancelledBySender
         ? const TransferCancelledBySender()
-        : _iceFailure ?? _storageFailure ?? Exception(reason);
+        : _iceFailure ?? _storageFailure ?? _codedFailure ?? Exception(reason);
     unawaited(_report(reason, error));
-    _cleanup();
+
+    // The sender is told why it is not getting a `done`, so that it does not
+    // spend minutes looking for a receiver that has deliberately stopped. The
+    // channel is kept a moment so that the frame can leave.
+    var told = false;
+    if (_peerVersion >= 2 && !_cancelledBySender && (_link?.isOpen ?? false)) {
+      final wire = code == FailureCode.integrityMismatch
+          ? 'integrity'
+          : problem != null
+              ? 'disk'
+              : 'error';
+      _sendDone(ok: false, code: wire);
+      told = true;
+    }
+    if (told) {
+      unawaited(Future<void>.delayed(const Duration(milliseconds: 400))
+          .then((_) => _cleanup()));
+    } else {
+      _cleanup();
+    }
   }
 
   Future<void> _report(String reason, Object error) async {
@@ -1302,23 +2031,53 @@ class WebRtcReceiverTransport {
   }
 
   Future<void> _cleanup() async {
+    if (_cleanedUp) return;
+    _cleanedUp = true;
+    if (!_shutdown.isCompleted) _shutdown.complete();
     _connectDeadline.cancel();
     _idleWatchdog?.cancel();
+    _suspectWatchdog?.cancel();
+    _pingTimer?.cancel();
+    _pingTimer = null;
+    _waitForSenderTimer?.cancel();
+    _waitForSenderTimer = null;
     _teardownTimer?.cancel();
     _teardownTimer = null;
-    _iceRecoveryTimer?.cancel();
-    _iceRecoveryTimer = null;
+    _statsProbe?.stop();
+    _statsProbe = null;
     _turnRefresher?.cancel(); // §9
     _turnRefresher = null;
+    unawaited(_offers?.cancel());
+    _offers = null;
+    final signaling = _signaling;
+    _signaling = null;
+    unawaited(signaling?.close());
     await _wakelockGuard.release(); // §6
-    await _dataChannel?.close();
+    final link = _link;
+    _link = null;
+    await link?.close();
+    if (link is! WebRtcReceiverLink || !identical(link.channel, _dataChannel)) {
+      await _dataChannel?.close();
+    }
     _dataChannel = null;
-    await _peerConnection?.close();
+    if (link is! WebRtcReceiverLink ||
+        !identical(link.connection, _peerConnection)) {
+      await _peerConnection?.close();
+    }
     _peerConnection = null;
   }
 
   Future<void> cancel() async {
+    final link = _link;
+    final notify = !_failed && link != null && link.isOpen;
     _failed = true;
+    if (notify) {
+      if (link is CancellationNotifier) {
+        await (link as CancellationNotifier).notifyCancellation();
+      } else {
+        link.sendText(TransferProtocol.buildCancelled());
+      }
+    }
     await _discardInFlight();
     _statusController.add(TransferStatus.cancelled);
     if (!_completion.isCompleted) {

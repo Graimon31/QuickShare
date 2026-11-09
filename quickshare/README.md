@@ -39,14 +39,16 @@ Release builds live on the
 | **QHTP over Wi-Fi/LAN** | Both devices on one network | Bounded by Dart's TLS stack, not the link: 72 MB/s receiving over loopback in `benchmark/README.md` (2021 M1 Pro); a real link is slower |
 | **Serverless WebRTC** | Different networks, over the internet | Depends on the path; 27 MB/s over loopback (`docs/specs/2026-09-23-performance-review.md`). A relayed route is the slowest |
 | **Direct Wi-Fi link** | No shared network: one device raises a hotspot, or two Apple devices use Apple's peer-to-peer Wi-Fi | The same QHTP protocol over whatever link comes up; not benchmarked |
-| **Bluetooth LE** | No network at all; the receiver scans the sender's QR code, so it is a phone. Sends from macOS, iOS, Android, Windows and Linux (see [Bluetooth](#bluetooth) for what has been tried on devices) | Bluetooth only finds the other device and sets up a direct Wi-Fi link; the file crosses that link, not Bluetooth |
+| **Bluetooth LE** | No shared network; join with the sender's ten-digit code, or scan its QR on a phone. Available on macOS, iOS, Android, Windows and Linux (see [Bluetooth](#bluetooth) for what has been tried on devices) | Bluetooth only finds the other device and sets up a direct Wi-Fi link; the file crosses that link, not Bluetooth |
 
 Folders are transferred whole, with their structure. A transfer over QHTP —
 local network, hotspot, peer-to-peer link, and a Bluetooth-started link — resumes
-from the exact byte after an interruption; a WebRTC transfer has no resume and
-starts again. QHTP verifies each file before it is published under its real
+from the exact byte after an interruption. With current builds on both ends,
+WebRTC reconnects automatically during an active transfer and continues from
+the bytes the receiver has retained. QHTP verifies each file before it is published under its real
 name (byte count always, SHA-256 when a digest is available), and the WebRTC
-receiver checks the byte count of each item. See
+receiver checks each item's byte count and, with protocol v2, SHA-256 before
+publishing it. The v2 sender waits for the receiver to confirm completion. See
 [On the receiving disk](#on-the-receiving-disk).
 
 ### The home screen
@@ -325,14 +327,22 @@ With Wi-Fi switched off the session stops with "Wi-Fi is turned off. The
 transfer builds a direct Wi-Fi link between the devices, so it cannot start
 without it."
 
-**Bluetooth is joined by the QR code and by nothing else, which makes the
-receiver a phone.** Neither side lists devices: a receiver does not advertise
-itself to be picked, and a sender does not scan for or show the devices around
-it. Scanning needs a camera, so a phone receives over Bluetooth and a computer
-does not. A computer receives with the code, on the local network or over the
-internet, and it can still *send* over Bluetooth to a phone. The Bluetooth
-screen shows the QR and nothing to type: there is nowhere to type a code into a
-Bluetooth session.
+**Bluetooth accepts a QR or a ten-digit code on every supported platform.**
+Neither side lists nearby devices. A phone can scan the QR; any receiver can
+choose Receive file and enter the numeric code. The app searches Bluetooth,
+the local network and the internet together, and accepts the first sender to
+prove the code. Bluetooth needs nearby devices with Bluetooth enabled, without
+a shared network or internet connection. The transfer still uses direct Wi-Fi.
+
+The digits, advertised locator and bearer token are independently random.
+Bluetooth code entry uses SPAKE2 with fresh shares and explicit confirmation;
+the QR offer is then sealed with ChaCha20-Poly1305 under an HKDF-derived key.
+The code, its hash and the bearer token are never part of this code exchange
+in cleartext. Each offer allows at most 12 attempts per minute, 48 in total,
+and four pending exchanges; proofs expire after 15 seconds and cannot be
+reused. Pairing control writes and metadata notifications are framed to fit
+links with only 20-byte payloads. Both devices need the updated app for code
+pairing; QR remains compatible with existing generation-5 receivers.
 
 #### What each sender puts on the air
 
@@ -489,6 +499,12 @@ and sees:
 travels by Nostr only and the relay comes from build-time TURN settings or not
 at all.
 
+WebRTC recovery uses two additional topics derived from the QR seed and first
+offer. Replacement offers and answers are sealed with ChaCha20-Poly1305 under
+a separate derived key and bound to their connection generation and message
+kind. The mailbox still carries no file bytes; old or unauthenticated offers
+and answers are ignored.
+
 ---
 
 ## Encryption, per transport
@@ -585,8 +601,11 @@ limit and is bounded only by the protocol (100 GB per file, 500 GB per session,
   link (`/tmp` is one on macOS) and is resolved once.
 - **Nothing existing is replaced.** A name that is taken, even by a dangling
   link, becomes `name (1).ext`. In flight a file is `<name>.qs.partial`, created
-  exclusively; it is flushed to disk, renamed, and the directory flushed, before
-  it is reported as received. A folder is staged whole and renamed in one step.
+  exclusively; it is flushed to disk and renamed before it is reported as
+  received. Directory flushing is best-effort on POSIX and unavailable on
+  Windows. A folder is staged whole and renamed in one step. On Windows and
+  volumes without atomic no-replace support, a concurrent local writer can
+  still race the final name check; see the path-race limitation below.
 - **Resume re-checks what it is about to trust.** Before any byte is counted as
   received or skipped, each item the saved state calls complete is looked at on
   disk. Same size and the SHA-256 the sender gives (or the one recorded) matches:
@@ -632,7 +651,13 @@ limit and is bounded only by the protocol (100 GB per file, 500 GB per session,
 - **Relayed transfers are capped at 2 GB** (`QUICKSHARE_RELAY_LIMIT`), for the
   reason given above; the app offers the local network instead.
 - **iOS cannot receive in the background over WebRTC.** Keep the screen on.
-- **A WebRTC transfer cannot resume.** Only QHTP can.
+- **WebRTC recovery lasts only for the active session.** Both apps must remain
+  running, both builds must support protocol v2, and a rendezvous channel must
+  be reachable. Recovery is bounded by three consecutive failed attempts,
+  five minutes of reconnection time and twelve interruptions. An app restart
+  does not restore a WebRTC transfer; persistent resume is available through
+  QHTP. An older peer cannot resume a broken WebRTC connection and the app
+  explains that both devices need updating.
 - **The symbolic-link checks are checks of a path, made just before it is used.**
   Dart has no `openat` and no `O_NOFOLLOW`, so someone who can already write into
   the destination folder and wins a race measured in microseconds could redirect
@@ -661,13 +686,11 @@ discover them.
    the pull: it is random, lasts as long as the QR does, and is of no use without
    also being on the same Wi-Fi network, but it is readable. It is not derived
    from the code, so it does not lead to it.
-3. **A computer cannot receive over Bluetooth.** Devices no longer see each
-   other: a receiver does not advertise its name and a Bluetooth sender shows no
-   list. A Bluetooth session is joined by scanning its QR, which takes a camera,
-   so it reaches phones. Typing the session's code does not join it — code entry
-   looks for local-network and internet senders, not Bluetooth ones — so a
-   computer receives with a code over Wi-Fi or over the internet. This is
-   deliberate.
+3. **Bluetooth code entry requires the updated app at both ends.** A computer
+   can receive by typing the digits; a phone can also scan the QR. Bluetooth
+   discovers and authenticates the sender, and the files travel over a direct
+   Wi-Fi link. Hardware and platform restrictions on Bluetooth and direct Wi-Fi
+   still apply.
 4. **The code is short.** What protects it is that the exchange is online-only
    (a captured SPAKE2 run gives nothing to test guesses against) and rate-limited
    as above.
@@ -713,6 +736,27 @@ three ABIs and 2% dex, so minification moved the total from 101.9 MB to
 solved by shipping one ABI per device. `android/app/proguard-rules.pro` is kept
 for whenever someone can validate it on a real device.
 
+### TURN smoke check on an iPhone over Wi-Fi
+
+Use a paired, unlocked device on the same network, with Developer Mode enabled
+and a valid development signing profile. Flutter 3.44.8's `flutter test` disables
+VM service publication and cannot start on a wireless iPhone; use `flutter drive`:
+
+```bash
+flutter drive --no-pub -d <iphone-device-id> \
+  --driver=test_driver/integration_test.dart \
+  --target=integration_test/turn_smoke_test.dart --publish-port \
+  --dart-define=QUICKSHARE_FORCE_RELAY=true
+```
+
+The debug check sends 512 KiB through a public TURN relay, verifies SHA-256,
+waits for receiver confirmation and requires the selected route to be relay.
+Both peers run on the selected device; this does not test two devices or networks.
+The test uses temporary files and does not access the photo library.
+After testing, restore the normal app with `tools/deploy_ios.sh`. For the same
+check on macOS, use `-d macos`; restore its normal app with
+`flutter build macos --debug` afterwards.
+
 ### Android release signing
 
 Signing material comes from environment variables (CI) or `android/key.properties`
@@ -742,6 +786,10 @@ fails if this table and the code drift apart.
 | `QUICKSHARE_TURN_PASS` | — | Password for the TURN hosts above. No default; without both user and password the hosts are ignored |
 | `QUICKSHARE_RELAY_LIMIT` | `2147483648` | Relay transfer ceiling in bytes (2 GB); `0` disables |
 | `QUICKSHARE_FORCE_RELAY` | `false` | **Debug builds only.** Gather relay candidates and nothing else (`iceTransportPolicy: relay`), for the hand-run NET-02-B check in `integration_test/live_turn_relay_check.dart`. Ignored in profile and release |
+| `QUICKSHARE_STATS_PROBE` | `false` | **Debug builds only.** Log connection counters and the selected ICE pair once a second for transfer diagnostics |
+| `QUICKSHARE_TURN_TRANSPORT` | — | **Debug builds only.** Restrict TURN URLs to `udp`, `tcp` or `tls` to compare relay transports; other values keep all URLs |
+| `QUICKSHARE_SEND_RATE_KIB` | `0` | **Debug builds only.** Pace the sender in KiB/s; `0` leaves it unpaced |
+| `QUICKSHARE_MAX_BUFFERED` | `0` | **Debug builds only.** Override the sender buffer window in bytes; `0` keeps the normal 4 MiB window |
 
 A private TURN account in the three TURN defines is a fallback: it is used when
 the Worker cannot be reached or supplies no relay, and not alongside the

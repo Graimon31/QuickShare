@@ -181,6 +181,26 @@ class RacingCodeMailbox implements CodeMailbox {
     await delivered.future;
   }
 
+  /// Gives every channel a chance to publish before its owner closes us.
+  /// Used for cancellation, where closing on the first channel's success
+  /// would interrupt a retry on the channel the other device may be using.
+  Future<void> publishToAll(String topic, Uint8List payload) async {
+    if (_closed) throw const MailboxUnavailable('the mailbox is closed');
+    var delivered = false;
+    await Future.wait(channels.map((channel) async {
+      try {
+        await channel.publish(topic, payload);
+        delivered = true;
+      } catch (e) {
+        AppLogger.warning('Mailbox ${channel.name} could not publish: $e',
+            tag: 'SIGNALING');
+      }
+    }));
+    if (!delivered) {
+      throw const MailboxUnavailable('could not publish through any channel');
+    }
+  }
+
   void _onMessage(CodeMailbox channel, MailboxMessage message) {
     if (_closed) return;
     // The same message arrives once per healthy channel; hand it on once. The

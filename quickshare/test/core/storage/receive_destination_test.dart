@@ -73,7 +73,8 @@ void main() {
     await dest.release(); // no-op, must not throw
   });
 
-  test('desktop with a chosen folder writes straight into it, placed', () async {
+  test('desktop with a chosen folder writes straight into it, placed',
+      () async {
     final chosen = Directory(p.join(root.path, 'MyDrop'))..createSync();
     final bookmark = _FakeBookmark();
     final store = SaveLocationStore(
@@ -98,8 +99,7 @@ void main() {
     }
   });
 
-  test('an unavailable bookmark falls back for this receive and keeps the choice',
-      () async {
+  test('an unavailable bookmark fails and keeps the choice', () async {
     final paths = PathProviderPlatform.instance;
     PathProviderPlatform.instance = _ScratchPaths(root);
     addTearDown(() => PathProviderPlatform.instance = paths);
@@ -114,20 +114,93 @@ void main() {
     expect(saved!.bookmark, isNotEmpty);
     bookmark.failStart = true;
 
+    await expectLater(
+      ReceiveDestination.resolve(
+        destination: const SaveDestination(
+            isDesktop: true, gallery: GalleryFormats(GalleryPlatform.none)),
+        saveLocation: store,
+      ),
+      throwsA(isA<SaveLocationUnavailableException>()),
+    );
+    final after = await store.read();
+    expect(after?.path, saved.path);
+    expect(after?.bookmark, saved.bookmark);
+    expect(bookmark.stopCalled, isFalse);
+  }, skip: !SaveLocationBookmark.isSupported);
+
+  test(
+      'missing selected folder fails without recreation and works after restore',
+      () async {
+    final chosen = Directory(p.join(root.path, 'chosen'))..createSync();
+    final bookmark = _FakeBookmark();
+    final store = SaveLocationStore(
+      overrideDir: () => Directory(p.join(root.path, 'settings')),
+      bookmark: bookmark,
+    );
+    await store.set(chosen.path);
+    final saved = await store.read();
+    await chosen.delete();
+    const desktop = SaveDestination(
+        isDesktop: true, gallery: GalleryFormats(GalleryPlatform.none));
+
+    await expectLater(
+      ReceiveDestination.resolve(destination: desktop, saveLocation: store),
+      throwsA(isA<SaveLocationUnavailableException>()
+          .having((e) => e.path, 'path', chosen.path)),
+    );
+    expect(await chosen.exists(), isFalse);
+    expect((await store.read())?.toJson(), saved?.toJson());
+    if (SaveLocationBookmark.isSupported) expect(bookmark.stopCalled, isTrue);
+
+    await chosen.create();
+    final dest = await ReceiveDestination.resolve(
+        destination: desktop, saveLocation: store);
+    expect(dest.path, chosen.path);
+    expect(await chosen.list().toList(), isEmpty,
+        reason: 'the write probe is cleaned up');
+    await dest.release();
+  });
+
+  test('desktop without a selected folder uses Downloads', () async {
+    final paths = PathProviderPlatform.instance;
+    PathProviderPlatform.instance = _ScratchPaths(root);
+    addTearDown(() => PathProviderPlatform.instance = paths);
+    final store = SaveLocationStore(
+        overrideDir: () => Directory(p.join(root.path, 'settings')));
     final dest = await ReceiveDestination.resolve(
       destination: const SaveDestination(
           isDesktop: true, gallery: GalleryFormats(GalleryPlatform.none)),
       saveLocation: store,
     );
-
     expect(dest.path, p.join(root.path, 'downloads'));
-    expect(dest.placed, isTrue);
-    File(p.join(dest.path, 'received.txt')).writeAsStringSync('received');
-    expect(File(p.join(dest.path, 'received.txt')).readAsStringSync(), 'received');
-    final after = await store.read();
-    expect(after?.path, saved.path);
-    expect(after?.bookmark, saved.bookmark);
     await dest.release();
-    expect(bookmark.stopCalled, isFalse);
-  }, skip: !SaveLocationBookmark.isSupported);
+  });
+
+  test('unwritable chosen directory fails and releases its scope', () async {
+    if (Platform.isWindows) return;
+    final uid = await Process.run('id', ['-u']);
+    if (uid.stdout.toString().trim() == '0') return;
+    final chosen = Directory(p.join(root.path, 'read_only'))..createSync();
+    final bookmark = _FakeBookmark();
+    final store = SaveLocationStore(
+      overrideDir: () => Directory(p.join(root.path, 'settings')),
+      bookmark: bookmark,
+    );
+    await store.set(chosen.path);
+    await Process.run('chmod', ['555', chosen.path]);
+    try {
+      await expectLater(
+        ReceiveDestination.resolve(
+          destination: const SaveDestination(
+              isDesktop: true, gallery: GalleryFormats(GalleryPlatform.none)),
+          saveLocation: store,
+        ),
+        throwsA(isA<SaveLocationUnavailableException>()),
+      );
+      expect((await store.read())?.path, chosen.path);
+      if (SaveLocationBookmark.isSupported) expect(bookmark.stopCalled, isTrue);
+    } finally {
+      await Process.run('chmod', ['755', chosen.path]);
+    }
+  });
 }

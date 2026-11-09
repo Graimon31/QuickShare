@@ -22,6 +22,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as p;
 
+import 'package:quickshare/core/constants/app_constants.dart';
 import 'package:quickshare/core/signaling/answer_channel.dart';
 import 'package:quickshare/core/signaling/sealed_envelope.dart';
 import 'package:quickshare/core/signaling/serverless_qr.dart';
@@ -30,6 +31,7 @@ import 'package:quickshare/core/webrtc/ice_gathering.dart';
 import 'package:quickshare/features/receiver/data/transports/webrtc_receiver_transport.dart';
 import 'package:quickshare/features/sender/data/transports/webrtc_transfer_transport.dart';
 import 'package:quickshare/features/sender/domain/entities/file_metadata.dart';
+import 'package:quickshare/features/sender/domain/entities/transfer_session.dart';
 
 /// Hands a published payload straight back to the subscriber.
 ///
@@ -65,7 +67,7 @@ class _LoopbackAnswerChannel implements AnswerChannel {
   }
 }
 
-void main() {
+void main({bool relaySmokeOnly = false}) {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   late Directory workspace;
@@ -77,8 +79,8 @@ void main() {
   /// byte unnoticed.
   ({File file, String digest}) makePayload(int bytes, {String? name}) {
     final random = Random(20260816 + bytes);
-    final data =
-        Uint8List.fromList(List<int>.generate(bytes, (_) => random.nextInt(256)));
+    final data = Uint8List.fromList(
+        List<int>.generate(bytes, (_) => random.nextInt(256)));
     final file = File(p.join(workspace.path, name ?? 'payload.bin'))
       ..writeAsBytesSync(data);
     return (file: file, digest: sha256.convert(data).toString());
@@ -94,8 +96,21 @@ void main() {
     final channel = _LoopbackAnswerChannel();
     final sender = WebRtcTransferTransport();
     final receiver = WebRtcReceiverTransport();
+    final confirmed = Completer<void>();
+    final senderStatus = sender.statusStream.listen((status) {
+      if (status == TransferStatus.completed && !confirmed.isCompleted) {
+        confirmed.complete();
+      }
+      if (status == TransferStatus.failed && !confirmed.isCompleted) {
+        confirmed
+            .completeError(StateError('sender failed before confirmation'));
+      }
+    });
+    unawaited(confirmed.future.then((_) {}, onError: (Object _) {}));
     addTearDown(() async {
       await sender.stopSharing();
+      await receiver.cancel();
+      await senderStatus.cancel();
       await channel.close();
     });
 
@@ -165,12 +180,19 @@ void main() {
     expect(bytes.length, equals(sizeBytes));
     expect(sha256.convert(bytes).toString(), equals(payload.digest),
         reason: 'byte-for-byte, not just the right size');
+    await confirmed.future.timeout(const Duration(seconds: 20));
+    if (AppConstants.forceRelay) {
+      expect(sender.lastIcePath, IcePathKind.relayed,
+          reason: 'this run must transfer bytes through TURN');
+    }
 
     // The screen used to sit on "Connecting" for the whole transfer because
     // nothing listened to this stream.
     expect(progressPhases, contains('transferring'));
     expect(progressPhases, contains('completed'));
   }, timeout: const Timeout(Duration(minutes: 3)));
+
+  if (relaySmokeOnly) return;
 
   testWidgets('several files cross one DataChannel and each lands intact',
       (tester) async {
@@ -262,19 +284,22 @@ void main() {
     for (final path in landed) {
       final name = p.basename(path);
       final bytes = File(path).readAsBytesSync();
-      expect(digests.containsKey(name), isTrue, reason: 'unexpected file $name');
+      expect(digests.containsKey(name), isTrue,
+          reason: 'unexpected file $name');
       expect(sha256.convert(bytes).toString(), equals(digests[name]),
           reason: '$name arrived corrupted — byte-for-byte is the whole point '
               'for photos and video');
     }
 
     expect(fractions, isNotEmpty);
-    expect(fractions.reduce((a, b) => a < b ? a : b), greaterThanOrEqualTo(0.0));
+    expect(
+        fractions.reduce((a, b) => a < b ? a : b), greaterThanOrEqualTo(0.0));
     expect(fractions.last, closeTo(1.0, 0.001),
         reason: 'session progress must finish at 100%, not per-file');
   }, timeout: const Timeout(Duration(minutes: 3)));
 
-  testWidgets('a folder lands whole under its own name, with no .qs.partial left',
+  testWidgets(
+      'a folder lands whole under its own name, with no .qs.partial left',
       (tester) async {
     // Variant B: the tree is written to `Trip.qs.partial/` and renamed onto
     // `Trip/` in one atomic step once the last byte is in — a folder opened
@@ -347,14 +372,17 @@ void main() {
     );
 
     expect(result, equals(p.join(destination.path, 'Trip')),
-        reason: 'the session result points at the folder, not a file inside it');
+        reason:
+            'the session result points at the folder, not a file inside it');
     expect(
-        Directory(p.join(destination.path, 'Trip${'.qs.partial'}')).existsSync(),
+        Directory(p.join(destination.path, 'Trip${'.qs.partial'}'))
+            .existsSync(),
         isFalse,
         reason: 'the staging directory is gone once renamed');
 
     for (final spec in specs) {
-      final landed = File(p.join(destination.path, p.split(spec.rel).join(p.separator)));
+      final landed =
+          File(p.join(destination.path, p.split(spec.rel).join(p.separator)));
       expect(landed.existsSync(), isTrue, reason: '${spec.rel} is missing');
       expect(sha256.convert(landed.readAsBytesSync()).toString(),
           equals(digests[spec.rel]),

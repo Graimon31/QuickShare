@@ -67,7 +67,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get homeAirdropAltSubtitle =>
-      'На телефон поблизости, общая сеть не нужна';
+      'На устройство поблизости, общая сеть не нужна';
 
   @override
   String get homeReceiveTitle => 'Получить файл';
@@ -595,15 +595,14 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get btSendPreparingDetail =>
-      'Готовим код, который отсканирует второй телефон';
+      'Готовим QR и цифровой код для получателя';
 
   @override
-  String get btSendScanPrompt =>
-      'Отсканируйте этот QR-код на телефоне-получателе';
+  String get btSendScanPrompt => 'Отсканируйте QR или введите цифровой код';
 
   @override
   String get btSendAutoConnectNote =>
-      'По Bluetooth принимает телефон: откройте на нём DirectDrop, нажмите «Получить файл» и отсканируйте этот код. Компьютер по Bluetooth не принимает — для него используйте Wi-Fi.';
+      'На устройстве-получателе откройте DirectDrop и нажмите «Получить файл». Отсканируйте QR или введите код вручную. Включите Bluetooth на обоих устройствах и держите их рядом.';
 
   @override
   String get codeReceiveTitle => 'Получить файл';
@@ -645,7 +644,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get codeReceiveNotFound =>
-      'Отправитель не найден. Проверьте код: он меняется каждые 5 минут. Для локальной сети оба устройства должны быть в одной сети.';
+      'Отправитель не найден. Проверьте код: он меняется каждые 5 минут. Для «Аналога AirDrop» включите Bluetooth и держите устройства рядом. Для локальной сети подключите оба устройства к одной сети.';
 
   @override
   String get codeReceiveSearching => 'Ищем отправителя…';
@@ -656,7 +655,7 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get codeReceiveNoNetwork =>
-      'Нет связи с интернет-сервисом, а в локальной сети отправитель не найден. Проверьте подключение и код и повторите попытку.';
+      'Отправитель не найден по Bluetooth и в локальной сети; интернет-сервис недоступен. Проверьте код, Bluetooth и подключение.';
 
   @override
   String get codeCopied => 'Код скопирован';
@@ -705,6 +704,17 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get downloadVerifyingDetail => 'Проверяем целостность файла';
+
+  @override
+  String get downloadSaveFolderUnavailable =>
+      'Папка сохранения недоступна. Подключите диск или выберите другую папку.';
+
+  @override
+  String get downloadChooseFolder => 'Выбрать папку';
+
+  @override
+  String get downloadSaveFolderChooseError =>
+      'Не удалось использовать эту папку. Выберите другую папку.';
 
   @override
   String get downloadPreparing => 'Готовим скачивание…';
@@ -976,4 +986,26 @@ class AppLocalizationsRu extends AppLocalizations {
 
   @override
   String get qrDisplayStillCounting => 'Считаем файлы…';
+
+  @override
+  String get errorCancelledByReceiver => 'Получатель отменил передачу.';
+
+  @override
+  String get errorConnectionLostNotRecovered =>
+      'Связь прервалась во время передачи, и после нескольких попыток её не удалось восстановить. Отправьте ещё раз: ничего не считается полученным, если оно пришло не целиком.';
+
+  @override
+  String get errorConnectionLostPeerTooOld =>
+      'Связь прервалась, а на другом устройстве стоит старая версия DirectDrop, которая не умеет продолжать прерванную передачу. Обновите приложение на этом устройстве и отправьте ещё раз.';
+
+  @override
+  String get errorIntegrityMismatch =>
+      'Файл пришёл повреждённым: его контрольная сумма (SHA-256) не совпадает с исходной, поэтому он удалён, а передача не считается завершённой. Отправьте ещё раз.';
+
+  @override
+  String get transferReconnecting => 'Связь прервалась, переподключаюсь…';
+
+  @override
+  String get transferReconnectingHint =>
+      'То, что уже передано, сохранено. Передача продолжится с места остановки.';
 }

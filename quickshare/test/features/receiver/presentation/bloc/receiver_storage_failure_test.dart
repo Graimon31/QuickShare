@@ -89,7 +89,8 @@ void main() {
     answerPathProviderWith(sandbox.path);
 
     transport = _MockTransport();
-    when(() => transport.progressStream).thenAnswer((_) => const Stream.empty());
+    when(() => transport.progressStream)
+        .thenAnswer((_) => const Stream.empty());
     when(() => transport.cancel()).thenAnswer((_) async {});
     session = _MockSession();
     when(() => session.cancel()).thenAnswer((_) async {});
@@ -118,27 +119,31 @@ void main() {
   group('over the internet', () {
     test('a full disk reaches the screen as the full-disk code', () async {
       when(() => transport.receiveWithSdpOffer(
-            any(),
-            targetDir: any(named: 'targetDir'),
-            deliverAnswer: any(named: 'deliverAnswer'),
-          )).thenThrow(const FileException('The disk is full', FailureCode.diskFull));
+                any(),
+                targetDir: any(named: 'targetDir'),
+                deliverAnswer: any(named: 'deliverAnswer'),
+                resume: any(named: 'resume'),
+              ))
+          .thenThrow(
+              const FileException('The disk is full', FailureCode.diskFull));
 
       final error = await runAndGetError(webrtcPayload);
 
       expect(error.code, FailureCode.diskFull);
       expect(error.message, 'The disk is full');
-      expect(
-          localizedFailure(ru, code: error.code, fallback: error.message),
+      expect(localizedFailure(ru, code: error.code, fallback: error.message),
           isNot(error.message));
     });
 
     test('a session that cannot fit carries both sizes to the screen',
         () async {
-      final code = FailureCode.notEnoughSpaceFor(5 * 1000 * 1000 * 1000, 2000000);
+      final code =
+          FailureCode.notEnoughSpaceFor(5 * 1000 * 1000 * 1000, 2000000);
       when(() => transport.receiveWithSdpOffer(
             any(),
             targetDir: any(named: 'targetDir'),
             deliverAnswer: any(named: 'deliverAnswer'),
+            resume: any(named: 'resume'),
           )).thenThrow(FileException('Not enough free space', code));
 
       final error = await runAndGetError(webrtcPayload);

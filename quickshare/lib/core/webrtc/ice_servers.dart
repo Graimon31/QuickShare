@@ -133,9 +133,48 @@ class IceServers {
         if (!seen.contains(stunUrl)) {'urls': stunUrl},
     ];
     return {
-      'iceServers': _fit(stun: stun, turn: turnServers),
+      'iceServers': _fit(stun: stun, turn: restrictTurnTransport(turnServers)),
       'iceTransportPolicy': transportPolicy(forceRelay: forceRelay),
     };
+  }
+
+  /// Debug builds only: keeps the TURN URLs that use [only] (`udp`, `tcp` or
+  /// `tls`) and drops the others, so an experiment can say which relay
+  /// transport carried a transfer. [only] defaults to
+  /// [AppConstants.turnTransportOnly]; anything else, and any release build,
+  /// returns [servers] unchanged. STUN entries are never touched.
+  static List<Map<String, dynamic>> restrictTurnTransport(
+    List<Map<String, dynamic>> servers, {
+    String? only,
+    bool? debug,
+  }) {
+    final wanted = (only ?? AppConstants.turnTransportOnly).trim();
+    if (!(debug ?? kDebugMode) || !const {'udp', 'tcp', 'tls'}.contains(wanted)) {
+      return servers;
+    }
+    String kind(String url) {
+      if (url.startsWith('turns:')) return 'tls';
+      if (url.contains('transport=tcp')) return 'tcp';
+      return 'udp';
+    }
+
+    final kept = <Map<String, dynamic>>[];
+    for (final server in servers) {
+      final raw = server['urls'];
+      final urls = raw is List ? raw.whereType<String>().toList() : [raw];
+      final isTurn = urls.any(
+          (u) => u is String && (u.startsWith('turn:') || u.startsWith('turns:')));
+      if (!isTurn) {
+        kept.add(server);
+        continue;
+      }
+      final chosen = [
+        for (final u in urls)
+          if (u is String && kind(u) == wanted) u,
+      ];
+      if (chosen.isNotEmpty) kept.add({...server, 'urls': chosen});
+    }
+    return kept;
   }
 
   /// Trim STUN first so a VPN session still has every TURN transport. Only

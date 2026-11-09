@@ -38,6 +38,7 @@ class _FakeWakelock extends WakelockPlusPlatformInterface {
 class _Browser implements RendezvousBrowser {
   final List<String> log = [];
   final _updates = StreamController<List<RendezvousCandidate>>.broadcast();
+  Completer<void>? stopGate;
 
   @override
   Stream<List<RendezvousCandidate>> get candidates => _updates.stream;
@@ -58,6 +59,7 @@ class _Browser implements RendezvousBrowser {
   @override
   Future<void> stop() async {
     log.add('stop');
+    await stopGate?.future;
     await _updates.close();
   }
 }
@@ -164,6 +166,28 @@ void main() {
       (address: InternetAddress.loopbackIPv4, port: port);
 
   group('the sender is on the internet', () {
+    test('cancelling after offer arrival releases the sender for retry', () async {
+      final sender = await internetSender(offer: sampleOffer());
+      browser.stopGate = Completer<void>();
+      final control = CodeSearchControl();
+      final pending = lookup().find(code, control: control);
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (!(receiverBox?.isClosed ?? false) && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(receiverBox?.isClosed, isTrue);
+      control.cancel();
+      browser.stopGate!.complete();
+      expect(await pending, isA<CodeSessionNotFound>());
+      final retryControl = CodeSearchControl();
+      final retry = await InternetCodeSearch(
+        mailbox: () => hub.endpoint('retry'), pake: _inline,
+      ).run(code, deviceName: 'Retry',
+          gate: CodeSearchArbiter(retryControl).gate('internet'));
+      expect(retry, isA<CodeSessionFoundOnline>());
+      expect(sender.asked, ['Receiving Mac', 'Retry']);
+    });
+
     test('is found, the browse is stopped and the mailbox released', () async {
       final offer = sampleOffer();
       final sender = await internetSender(offer: offer);
@@ -387,8 +411,9 @@ void main() {
     });
   });
 
-  test('a broken local search is an error, and stops the internet search too',
+  test('a broken local search still allows an authenticated internet sender',
       () async {
+    await internetSender();
     final throwing = CodeLookup(
       browser: () => browser,
       deviceName: 'Receiving Mac',
@@ -399,9 +424,8 @@ void main() {
         pake: _inline,
       ),
     );
-
-    await expectLater(throwing.find(code), throwsStateError);
-
+    final result = await throwing.find(code).timeout(const Duration(seconds: 5));
+    expect(result, isA<CodeSessionFoundOnline>());
     expect(receiverBox!.isClosed, isTrue);
     expect(browser.log.last, 'stop');
   });

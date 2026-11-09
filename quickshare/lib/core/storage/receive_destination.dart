@@ -19,7 +19,8 @@ import 'package:quickshare/features/receiver/data/store/session_state_store.dart
 /// afterwards whether it goes to the gallery or waits for the user. [placed]
 /// is false.
 class ReceiveDestination {
-  const ReceiveDestination._(this.path, {required this.placed, Future<void> Function()? release})
+  const ReceiveDestination._(this.path,
+      {required this.placed, Future<void> Function()? release})
       : _release = release;
 
   /// The directory the transport writes into.
@@ -59,7 +60,6 @@ class ReceiveDestination {
     // rename — hence release() rather than a scope around one copy.
     final custom = await saveLocation.resolveForWriting();
     if (custom != null) {
-      if (!await custom.exists()) await custom.create(recursive: true);
       _sweepInBackground(custom.path);
       return ReceiveDestination._(custom.path,
           placed: true, release: saveLocation.release);

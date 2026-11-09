@@ -140,6 +140,25 @@ class FailureCode {
   /// and the one cause that must not be blamed on it.
   static const noPathRelayWasAvailable = 'noPathRelayWasAvailable';
 
+  /// The receiver pressed Cancel. Sent over the data channel, so the sender
+  /// can say so at once instead of reconnecting to someone who left.
+  static const cancelledByReceiver = 'cancelledByReceiver';
+
+  /// The connection died in the middle of the transfer and could not be
+  /// brought back: every attempt, or the whole time allowed for them, was
+  /// used up. What had been received is not kept as a finished file.
+  static const connectionLostNotRecovered = 'connectionLostNotRecovered';
+
+  /// The connection died, and the other device runs a build of the app that
+  /// cannot pick a transfer up where it stopped. Said instead of a vague
+  /// "failed", because the way out is to update that device.
+  static const connectionLostPeerTooOld = 'connectionLostPeerTooOld';
+
+  /// A file arrived and its SHA-256 did not match the one the sender took
+  /// of the original. It was thrown away: a file that is not the one that
+  /// was sent is not a success.
+  static const integrityMismatch = 'integrityMismatch';
+
   /// The disk filled up while a file was being written. Distinct from
   /// [notEnoughSpace], which is the refusal *before* anything was written.
   static const diskFull = 'diskFull';

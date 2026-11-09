@@ -199,7 +199,9 @@ jobs:
           QUICKSHARE_KEYSTORE_PASSWORD: ${{ secrets.QUICKSHARE_KEYSTORE_PASSWORD }}
           QUICKSHARE_KEY_ALIAS: ${{ secrets.QUICKSHARE_KEY_ALIAS }}
           QUICKSHARE_KEY_PASSWORD: ${{ secrets.QUICKSHARE_KEY_PASSWORD }}
-        run: flutter build apk --release --no-pub --split-per-abi
+        # Regenerate the release plugin registrant; --no-pub would retain
+        # dev-only plugins from the preceding pub get on Flutter 3.44.
+        run: flutter build apk --release --split-per-abi
 
       # What Play actually wants; it serves each device only its own slice.
       - name: Build Android App Bundle (release)
@@ -207,7 +209,7 @@ jobs:
           QUICKSHARE_KEYSTORE_PASSWORD: ${{ secrets.QUICKSHARE_KEYSTORE_PASSWORD }}
           QUICKSHARE_KEY_ALIAS: ${{ secrets.QUICKSHARE_KEY_ALIAS }}
           QUICKSHARE_KEY_PASSWORD: ${{ secrets.QUICKSHARE_KEY_PASSWORD }}
-        run: flutter build appbundle --release --no-pub
+        run: flutter build appbundle --release
 
       # Only a signed build is uploadable. An unsigned PR build has done its
       # job by compiling; publishing it as an artifact is how one gets picked
