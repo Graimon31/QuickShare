@@ -1,0 +1,96 @@
+name: Verify published release installation
+on:
+  push:
+    branches: ['codex/release-asset-audit-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-installer:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download, verify, install, launch and uninstall the public release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $base = 'https://github.com/Graimon31/QuickShare/releases/download/all-platforms-2026-11-09-cdb1651'
+          Invoke-WebRequest "$base/DirectDrop-windows-setup.exe" -OutFile setup.exe
+          Invoke-WebRequest "$base/DirectDrop-windows-portable.zip" -OutFile portable.zip
+          if ((Get-FileHash setup.exe).Hash.ToLower() -ne '95da7d45c3ea07107eec656eb284912a63ce92766dfcb6077433eff2143ac4cd') { throw 'Installer checksum mismatch' }
+          if ((Get-FileHash portable.zip).Hash.ToLower() -ne '6676dba50c155b5861d885cafd9b3d7c0285a47a03806b35cdb962301c2860ea') { throw 'Portable checksum mismatch' }
+          $portable = Join-Path $env:RUNNER_TEMP 'Portable DirectDrop тест'
+          $installed = Join-Path $env:RUNNER_TEMP 'Installed DirectDrop тест'
+          Expand-Archive portable.zip $portable
+          $setup = Start-Process .\setup.exe -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',"/DIR=`"$installed`"",'/LOG=installer.log') -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Installer failed: $($setup.ExitCode)" }
+          $files = Get-ChildItem -LiteralPath $portable -File -Recurse
+          foreach ($file in $files) {
+            $relative = $file.FullName.Substring($portable.Length+1)
+            $target = Join-Path $installed $relative
+            if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Missing installed file: $relative" }
+            if ((Get-FileHash -LiteralPath $target).Hash -ne (Get-FileHash -LiteralPath $file.FullName).Hash) { throw "Installed file differs: $relative" }
+          }
+          foreach ($folder in @($installed,$portable)) {
+            $app = Start-Process (Join-Path $folder 'directdrop.exe') -WorkingDirectory $env:RUNNER_TEMP -PassThru
+            try {
+              Start-Sleep -Seconds 20
+              $app.Refresh()
+              if ($app.HasExited -or $app.MainWindowHandle -eq 0) { throw "App did not remain open: $folder" }
+              Write-Host "LAUNCH PASSED: $folder; window=$($app.MainWindowHandle)"
+            } finally { if (-not $app.HasExited) { Stop-Process -Id $app.Id -Force } }
+          }
+          Start-Sleep -Seconds 2
+          $uninstall = Start-Process (Join-Path $installed 'unins000.exe') -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LOG=uninstall.log') -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) { throw 'Uninstaller failed' }
+          Start-Sleep -Seconds 3
+          if (Test-Path -LiteralPath (Join-Path $installed 'directdrop.exe')) { throw 'Executable survived uninstallation' }
+          @{installer='passed';payload_matches_portable=$true;installed_launch='passed';portable_unicode_path_launch='passed';uninstall='passed';files_compared=$files.Count} | ConvertTo-Json | Set-Content windows-installation-audit.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-installation-audit
+          path: |
+            *audit.json
+            installer.log
+            uninstall.log
+  android-installed-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [24, 36]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Download and verify actual public APK
+        run: |
+          mkdir -p audit
+          curl --fail --location --retry 3 https://github.com/Graimon31/QuickShare/releases/download/all-platforms-2026-11-09-cdb1651/DirectDrop-android-x86_64.apk -o audit/release.apk
+          echo '6762a5a381a2482b811d1c9493d9bec8ab6d4349cb081bc2002451a2a4ac9db1  audit/release.apk' | sha256sum -c -
+          signer=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+          "$signer" verify --verbose --print-certs audit/release.apk | tee audit/apk-signature.txt
+          grep -qi c662c27391d44f2c58ec9cede1fe18695a5d457f8d4bb0da1ec2304d3477e97a audit/apk-signature.txt
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          script: bash quickshare/scripts/release_audit/android_installed_release.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-api-${{ matrix.api-level }}-installation-audit
+          path: audit
