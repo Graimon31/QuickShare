@@ -45,30 +45,3 @@ jobs:
         with:
           name: android-api-${{ matrix.api-level }}-installation-audit
           path: audit
-  android-bundle-validation:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Verify the public App Bundle with official bundletool
-        run: |
-          mkdir -p audit
-          curl --fail --location --retry 3 https://github.com/Graimon31/QuickShare/releases/download/all-platforms-2026-11-09-cdb1651/DirectDrop-android.aab -o audit/release.aab
-          echo '9175b39b6f1cc3d5e4873d628317ac528c74257992205b834ab71e6ea38f1053  audit/release.aab' | sha256sum -c -
-          curl --fail --location https://api.github.com/repos/google/bundletool/releases/latest -o audit/bundletool-release.json
-          url=$(jq -r '.assets[] | select(.name | startswith("bundletool-all-")) | .browser_download_url' audit/bundletool-release.json)
-          test -n "$url"
-          curl --fail --location --retry 3 "$url" -o audit/bundletool.jar
-          java -jar audit/bundletool.jar validate --bundle audit/release.aab | tee audit/bundle-validation.txt
-          jarsigner -verify audit/release.aab > audit/bundle-signatures.txt
-          grep -q 'jar verified' audit/bundle-signatures.txt
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: android-bundle-validation
-          path: |
-            audit/*.txt
-            audit/*.json

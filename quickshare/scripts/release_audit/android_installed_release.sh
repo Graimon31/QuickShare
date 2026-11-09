@@ -29,8 +29,27 @@ PY
 }
 launch first-install
 adb shell am force-stop "$package"
-adb shell svc wifi disable
-adb shell svc data disable
+# Android 7 emulator exposes an emulated Ethernet adapter; its legacy
+# svc wifi process exits 137. Disable all non-loopback adapters as root
+# and assert their IFF_UP flags instead of accepting that failed command.
+api=$(adb shell getprop ro.build.version.sdk | tr -d '\r')
+if [ "$api" -le 24 ]; then
+  adb root
+  adb wait-for-device
+  adb shell id | grep 'uid=0'
+  adb shell 'for iface in /sys/class/net/*; do name=${iface##*/}; if [ "$name" != lo ]; then ip link set "$name" down; fi; done'
+  adb shell 'for iface in /sys/class/net/*; do name=${iface##*/}; if [ "$name" != lo ]; then echo "$name $(cat "$iface/flags")"; fi; done' > audit/offline-interface-flags.txt
+  python3 - <<'PYFLAGS'
+from pathlib import Path
+rows=[line.split() for line in Path('audit/offline-interface-flags.txt').read_text().splitlines() if line.strip()]
+assert rows, 'No network adapters inspected'
+assert all(int(flags,16)&1==0 for name,flags in rows),rows
+print('All non-loopback interfaces administratively down:',rows)
+PYFLAGS
+else
+  adb shell svc wifi disable
+  adb shell svc data disable
+fi
 launch offline-restart
 adb shell am force-stop "$package"
 adb install -r audit/release.apk | tee audit/reinstall.txt
