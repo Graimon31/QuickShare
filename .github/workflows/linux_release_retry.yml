@@ -1,0 +1,59 @@
+name: Linux release package verification
+on:
+  push:
+    branches: ['codex/linux-package-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: quickshare
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cdb16516e3eb2d9eb26de49587a91ad11d5145ba
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libasound2t64 libpulse0 libgl1 xvfb dbus-x11 pulseaudio
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.8'
+          cache: true
+      - name: Build Linux and run focused regressions
+        run: |
+          flutter pub get
+          flutter test --no-pub test/core/theme/bundled_fonts_test.dart test/core/webrtc/resume test/core/storage/save_location_store_test.dart
+          flutter build linux --release
+      - name: Check Linux launch and package
+        run: |
+          bundle=build/linux/x64/release/bundle
+          test -x "$bundle/directdrop"
+          if ldd "$bundle/directdrop" | grep 'not found'; then exit 1; fi
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=directdrop_ci
+          pactl set-default-sink directdrop_ci
+          pactl set-default-source directdrop_ci.monitor
+          export LIBGL_ALWAYS_SOFTWARE=1
+          set +e
+          (cd "$bundle" && GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a timeout 8 ./directdrop) > /tmp/directdrop-linux-smoke.log 2>&1
+          result=$?
+          set -e
+          cat /tmp/directdrop-linux-smoke.log
+          if [ "$result" -ne 124 ]; then echo 'Linux application did not remain running'; exit 1; fi
+          mkdir -p dist/linux
+          tar -czf dist/linux/DirectDrop-linux-x64.tar.gz -C "$bundle" .
+          tar -tzf dist/linux/DirectDrop-linux-x64.tar.gz > /dev/null
+          python3 - <<'PY'
+          import json,os,subprocess
+          json.dump(dict(platform='linux',architecture='x64',source_commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),run_id=os.environ['GITHUB_RUN_ID'],configuration='release',build_environment='Ubuntu24.04',requires='GTK3; glibc2.39 or compatible',launch='passed under Xvfb',regressions='passed'),open('dist/linux/LINUX-BUILD-INFO.json','w'),indent=2)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: quickshare/dist/linux/*
+          if-no-files-found: error

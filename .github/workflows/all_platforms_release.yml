@@ -95,7 +95,7 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libasound2t64 libpulse0 libgl1 xvfb dbus-x11
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libsecret-1-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libasound2t64 libpulse0 libgl1 xvfb dbus-x11 pulseaudio
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.8'
@@ -110,6 +110,11 @@ jobs:
           bundle=build/linux/x64/release/bundle
           test -x "$bundle/directdrop"
           if ldd "$bundle/directdrop" | grep 'not found'; then exit 1; fi
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=directdrop_ci
+          pactl set-default-sink directdrop_ci
+          pactl set-default-source directdrop_ci.monitor
+          export LIBGL_ALWAYS_SOFTWARE=1
           set +e
           (cd "$bundle" && GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a timeout 8 ./directdrop) > /tmp/directdrop-linux-smoke.log 2>&1
           result=$?
